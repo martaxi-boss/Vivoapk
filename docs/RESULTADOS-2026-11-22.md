@@ -37,3 +37,19 @@ Nao usar URLs com passwords. Para o teste autenticado real, so com credenciais a
 5. Somente apos capturar, numa sessao propria, as chamadas reais do painel se deve programar uma integracao automatica com endpoints exatos e tests correspondentes.
 
 **Estado final da data:** testes reais de rede e navegador efetuados; engenharia reversa do painel **bloqueada por Cloudflare**; TV **nao ligada**; nenhuma alteracao feita na TV, nos dominios ou na VPS fora dos trabalhos efemeros Ferrari.
+
+## Verificacao adicional de encaminhamento DNS
+
+[Ferrari #45062232933](https://github.com/martaxi-boss/VPS/actions/runs/45062232933):
+- O hostname No-IP mais recente **nao aponta para a VPS existente** do Ferrari (comparacao exata, sem publicar os enderecos IP).
+- O hostname DuckDNS anterior **aponta para a VPS**, mas mostra a pagina padrao Nginx em HTTP 80.
+- Ambos os pedidos `/player_api.php` foram efetuados **sem credenciais**. Um HTTP 403 sem `WWW-Authenticate` nao e prova de Xtream; um 404 na raiz habitual indica que a API nao foi identificada nesse caminho/porta.
+
+## Codigo verificado com o proprio Ferrari
+
+[Ferrari #45062365308](https://github.com/martaxi-boss/VPS/actions/runs/45062365308):
+- `tools/xtream_diagnostic.py --self-test`: 8/8 verificacoes locais PASS, processo com codigo de saida zero.
+- `tools/xtream_diagnostic.py --url http://<servidor-de-teste>`: no host No-IP mais recente, DNS valido, raiz HTTP 200, `/player_api.php` HTTP 403, classificacao **not_confirmed_without_credentials**, sem envio de password ou Device Key, processo com codigo de saida zero.
+- `report.json.status=completed`, mas `quality_gate.status=not_certified`: prova a execucao da ferramenta, nao a ligacao a Smart TV.
+
+**Bloqueio operacional:** nao ha evidencia de um backend Xtream funcional acessivel na origem e porta testadas, nao foi capturada a sessao autenticada do painel Vivo Player e o hostname No-IP nao esta sob o encaminhamento da VPS Ferrari. Nenhuma configuracao de um fabricante terceiro foi modificada.
