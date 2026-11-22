@@ -8,6 +8,8 @@ Projeto independente para estudar a integração de um **servidor IPTV próprio,
 
 **Último resultado real neste hostname:** DNS apontava para a VPS do proprietário; `http://vivo-team.duckdns.org/` apresentava a página padrão Nginx, `http://vivo-team.duckdns.org/player_api.php` devolvia HTTP 404, HTTPS não tinha certificado válido para o domínio. O servidor Xtream e a ligação à TV não estão validados. Fontes: [Ferrari #45061831368](https://github.com/martaxi-boss/VPS/actions/runs/45061831368), [#45062067969](https://github.com/martaxi-boss/VPS/actions/runs/45062067969), [#45062232933](https://github.com/martaxi-boss/VPS/actions/runs/45062232933).
 
+**Teste Ferrari exclusivo ao hostname corrigido (22/11/2026):** [#45062660837](https://github.com/martaxi-boss/VPS/actions/runs/45062660837) — DNS resolvido; `GET /` HTTP 200 (615 bytes, HTML); `GET /player_api.php` HTTP 404 (162 bytes, HTML); classificação `not_confirmed_without_credentials`. O processo do Ferrari terminou com código 0, `report.status=completed`, mas `quality_gate=not_certified`. A aplicação/TV não foi conectada.
+
 ## Objetivo
 - Identificar e documentar a interface de configuração de playlists do Vivo Player (MAC virtual + Device Key, quando disponíveis na aplicação).
 - Confirmar o modo de ligação Xtream Codes oferecido oficialmente.
