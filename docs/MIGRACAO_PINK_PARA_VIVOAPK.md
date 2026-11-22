@@ -52,3 +52,7 @@ seguro destruir os dados de quem ainda depende dele. Nenhuma remocao foi feita.
 - **Pendente:** a instalacao de um novo role/banco PostgreSQL, runtime Python independente, unit systemd, endpoint HTTPS VivoAPK e teste real de login/reproducao. Uma tentativa de iniciar esta etapa atraves da ferramenta foi bloqueada pela respetiva verificacao de seguranca **antes da execucao**. Nao ha prova de backend VivoAPK instalado na VPS, nem apps para Samsung/LG/iOS validadas.
 - **Sem desinstalacao PINK nesta fase**: so desativar ou remover os servicos/dados do projeto depois de o VivoAPK responder com autenticacao real autorizada, mapeamento dos dois DNS, cliente com playback direto, comprovacao dos consumidores antigos e backup recuperavel. A disponibilizacao de um cofre nao prova continuidade de servico.
 - O timer `project-secrets-offsite-backup.timer` foi identificado, mas a sua execucao, cobertura da nova pasta e restaurabilidade ainda precisam de verificacao; nao marcar o cofre como copiado offsite sem prova.
+
+## Conferência de DNS base (Ferrari 22/11/2026)
+
+Com a leitura do cofre privado [#45079375660](https://github.com/martaxi-boss/VPS/actions/runs/45079375660), foram observadas as bases comuns zvpnm.com (geral) e daizsmart.com (Samsung/LG), com 4 subdomínios distintos em cada campo, sem qualquer alteração dos URLs completos dos clientes. Ver [relatório DNS real](PINK_DNS_BASE_VERIFICADO_20261122.md) e as fontes Android em reference/pink-android-core/.
