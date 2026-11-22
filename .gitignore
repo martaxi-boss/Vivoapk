@@ -1,0 +1,30 @@
+# Segredos e configuracoes locais
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets/
+private/
+credentials.json
+device.json
+
+# Capturas com MAC, tokens, cookies ou credenciais
+*.har
+*.pcap
+*.pcapng
+cookies.json
+session.json
+auth.json
+logs/private/
+captures/private/
+
+# Artefactos binarios proprietarios e builds
+*.apk
+*.wgt
+*.ipk
+*.tpk
+node_modules/
+__pycache__/
+*.pyc
