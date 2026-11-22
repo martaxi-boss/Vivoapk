@@ -1,0 +1,28 @@
+name: Vivoapk - private deployment code quality
+on:
+  push:
+    paths:
+      - "infra/**"
+      - ".github/workflows/vivoapk-infra-ci.yml"
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/vivoapk-infra-ci.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check Python syntax
+        run: python3 -m py_compile infra/deploy.py infra/tests/test_deploy.py
+      - name: Verify deployment guardrails
+        run: python3 -m unittest discover -v -s infra/tests
