@@ -12,6 +12,8 @@ Data: 2026-11-22. Projeto destino: **Vivoapk**. Origem de referência: projeto *
 - `.env.example` e `backend/app/config.py`: o token real Mega é lido em runtime através de `MEGA_OTT_API_TOKEN`. O repositório privado não publica esse token.
 - `docs/MEGA_OTT_INTEGRATION.md` e `PROJECT_STATE.md`: documentam prova anterior **real** de autenticação Mega/Xtream com credenciais legítimas; isso não prova a situação atual de uma determinada linha, nem a compatibilidade com Vivo Player Samsung/LG.
 
+**Clarificação confirmada pelo proprietário (22/11/2026):** o endereço de servidor marcado **Samsung/LG** no painel Mega OTT aplica-se a Smart TVs Samsung e LG em geral, e **não** é exclusivo de IPTV Smarters. Por conseguinte, o primeiro URL a configurar no Vivo Player de uma Samsung/LG é o `dns_link_for_samsung_lg`, mantendo `dns_link` para outras aplicações/dispositivos. Isto define a seleção correta do URL, mas **não prova** ainda a compatibilidade ou o carregamento da playlist no Vivo Player. Os domínios reais da subscrição não ficam reproduzidos no GitHub público.
+
 ## Implicação para Vivo Player Samsung / LG
 
 1. Primeiro consultar a **própria subscrição Mega** com o token de backend autorizado e obter **o valor exato** `dns_link_for_samsung_lg`, sem deduzir subdomínios nem substituir pelo DuckDNS.
