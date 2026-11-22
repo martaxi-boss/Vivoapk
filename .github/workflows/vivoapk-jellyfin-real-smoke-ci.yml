@@ -39,6 +39,12 @@ jobs:
           echo "JELLYFIN_TEST_BINARY=$file" >> "$GITHUB_ENV"
           echo "JELLYFIN_TEST_WEB=$RUNNER_TEMP/jellyfin-test-web/usr/share/jellyfin/web" >> "$GITHUB_ENV"
           echo JELLYFIN_TEST_RUNTIME_READY=PASS
+      - name: Install FFmpeg only on the disposable GitHub Actions runner
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          ffmpeg -version | head -n 1
       - name: Run real Jellyfin 12.4 server with a fake local Mega backend
         shell: bash
         run: |
