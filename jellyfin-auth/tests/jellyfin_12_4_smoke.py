@@ -54,6 +54,8 @@ def request(method, uri, data=None, token=None):
         "Content-Type": "application/json", "Accept": "application/json",
         "Authorization": 'MediaBrowser Client="VivoAPK-CI", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0"'
     }
+    if uri.startswith("/Startup/"):
+        headers.pop("Authorization", None)
     if token:
         headers["X-Emby-Token"] = token
     conn.request(method, uri, body=json.dumps(data) if data is not None else None, headers=headers)
@@ -112,13 +114,15 @@ def main():
             time.sleep(1)
         if not running:
             raise RuntimeError("Jellyfin 12.4 failed to start")
+        # Follow the same Jellyfin startup order proven on the private VPS.
+        request("GET", "/Startup/User")
         code, _ = request("POST", "/Startup/User",
                           {"Name": "ci-admin", "Password": "synthetic-admin-password"})
         if code not in (200, 204):
-            raise RuntimeError("Admin setup rejected")
+            raise RuntimeError(f"Admin setup rejected with HTTP {code}")
         code, _ = request("POST", "/Startup/Complete", {})
         if code not in (200, 204):
-            raise RuntimeError("Startup wizard rejected")
+            raise RuntimeError(f"Startup wizard rejected with HTTP {code}")
         code, admin = request("POST", "/Users/AuthenticateByName",
                               {"Username": "ci-admin", "Pw": "synthetic-admin-password"})
         if code != 200 or not isinstance(admin, dict) or not admin.get("AccessToken"):
