@@ -6,7 +6,7 @@
 
 **Comparação do menu de DNS Mega OTT com o PINK:** [domínios, plataformas e login de dois campos](docs/MEGA_MENU_PLATAFORMAS_LOGIN.md). A lista visível no painel não é um limite fixo de domínios do fornecedor.
 
-**Trabalho novo:** [backend independente](backend/README.md) | [arquitetura e DNS](docs/ARQUITETURA_VIVOAPK.md) | [migração PINK -> Vivoapk](docs/MIGRACAO_PINK_PARA_VIVOAPK.md). A API está em código e teste, **não foi instalada em produção**; as aplicações Android/iOS/Samsung/LG e login Mega OTT nas apps Jellyfin ainda não estão concluídos.
+**Trabalho novo:** [backend independente](backend/README.md) | [arquitetura e DNS](docs/ARQUITETURA_VIVOAPK.md) | [migração PINK -> Vivoapk](docs/MIGRACAO_PINK_PARA_VIVOAPK.md). O backend Mega OTT está **instalado na VPS e ativo em socket privado**, a partir da revisão Git `540846e48ca3655acb3b0a8601dea700a082979d`, com 4 subscrições importadas. **Ainda faltam** o plugin de login Jellyfin e a integração de catálogo por utilizador, bem como testes reais de reprodução. [Prova da instalação](docs/DEPLOY_GITHUB_VPS_20261122.md).
 
 **Atenção:** a app Jellyfin oficial instalada no Android aceita contas Jellyfin, não credenciais Mega OTT. Não vender este trabalho como compatibilidade Jellyfin automática. Não se contorna licença Vivo Player nem se publica o token do revendedor.
 

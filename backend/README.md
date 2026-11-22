@@ -34,7 +34,7 @@ Com Python 3.12 no ambiente de desenvolvimento:
 
 Nenhum teste da CI utiliza contas reais ou comunica com o Mega OTT.
 
-## Configuracao futura (exclusivamente privada)
+## Configuracao privada (já instalada na VPS)
 Valores de ambiente necessarios:
 
     APP_ENV=production
@@ -48,13 +48,18 @@ Executar migracoes no banco PRIVADO do novo projeto apenas depois de auditoria:
 
     alembic upgrade head
 
-Servidor local de demonstracao, NAO ainda implantado:
+Servico real instalado a partir do GitHub, com ambiente Python proprio e base PostgreSQL independente:
 
-    uvicorn app.main:app --host 127.0.0.1 --port 8021
+    /srv/projects/Vivoapk/source
+    /srv/projects/Vivoapk/.venv
+    systemctl status vivoapk-backend.service
+    /srv/projects/Vivoapk/run/backend.sock  (Unix socket interno)
+
+Nao foi criada uma porta HTTP publica para esta API. A prova e revisao instalada constam de docs/DEPLOY_GITHUB_VPS_20261122.md.
 
 O hostname vivo-team.duckdns.org ainda nao esta provado como backend Vivoapk.
 O hostname serveriptv.duckdns.org hospeda Jellyfin SEPARADO.
-Nenhuma subscricao real, media, canal ou playlist esta integrada nesta fase.
+Quatro mapeamentos de subscricoes reais foram copiados da base PINK e verificados no PostgreSQL Vivoapk, sem passwords de cliente. Ainda nao ha login Jellyfin, catalogo por utilizador nem playback real provados. Nao foram importados media para a VPS.
 
 ## Exemplo da API (dados totalmente ficticios)
 

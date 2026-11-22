@@ -58,9 +58,7 @@ segredo de endpoints ou reproducao direta com Jellyfin, testar o
 trafego de rede e os metadados transmitidos.
 
 **Estado atual (nao confundir com operacao):**
-O Jellyfin foi instalado e o backend Mega do PINK foi copiado para
-VivoAPK, mas **nao ha plugin de autenticacao Mega e catalogo dinamico
-por Jellyfin user a trabalhar na VPS**. O Jellyfin instalado continua
+O Jellyfin está instalado e o backend VivoAPK/Mega OTT foi instalado de modo independente em `/srv/projects/Vivoapk` (serviço ativo na VPS, ver [provas](DEPLOY_GITHUB_VPS_20261122.md)), mas **nao ha plugin de autenticacao Mega e catalogo dinamico por Jellyfin user a trabalhar na VPS**. O Jellyfin instalado continua
 com login proprio. O requisito so e entregue apos prova real do
 ecrã de login Jellyfin + importacao isolada de catalogo + playback
 no aparelho, sem configuracao individual no painel.
@@ -194,8 +192,7 @@ https://jellyfin.org/docs/general/server/live-tv/
 
 - Jellyfin 12.4.0 instalado e com HTTPS em `serveriptv.duckdns.org`; login
   `pink-admin` foi comprovado no Android, sem bibliotecas/TV na instalacao.
-- Codigo VivoAPK para autenticar Mega/Xtream e selecionar origem por plataforma
-  ja foi publicado e testado com dados artificiais; nao e um plugin Jellyfin.
+- O codigo VivoAPK para autenticar Mega/Xtream e selecionar origem por plataforma foi publicado e testado com dados artificiais; o backend foi instalado na VPS em socket privado e verificado com 4 mapeamentos, mas nao e um plugin Jellyfin.
 - Cofre privado na VPS: `/root/project-secrets/VIVOAPK` com API Mega OTT,
   quatro subscricoes e dois DNS por subscricao. Nao publicar valores.
 - **Ainda nao implementado**: provider de autenticacao Jellyfin 12.4 -> Mega,
