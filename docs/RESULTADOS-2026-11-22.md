@@ -1,5 +1,7 @@
 # Vivo Player - resultados reais do Ferrari (22/11/2026)
 
+> **CORREÇÃO DE DESTINO (22/11/2026):** o proprietário confirmou que o teste atual é exclusivamente em **`vivo-team.duckdns.org`**. O nome `vivoteam.dns.org`, referido nesta auditoria histórica como No-IP, foi uma interpretação errada da URL e não deve voltar a ser utilizado como destino de ligação. Preservam-se os seus resultados apenas para transparência, não como configuração recomendada.
+
 Este documento distingue **provas de rede**, **inspecao de interface** e **ligacao efetiva a uma Smart TV**. O codigo publicado nao contem MAC, Device Key, username nem password reais.
 
 ## Evidencia de rede
