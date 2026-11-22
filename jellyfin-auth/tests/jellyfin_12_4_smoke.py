@@ -57,6 +57,7 @@ def request(method, uri, data=None, token=None):
     if uri.startswith("/Startup/"):
         headers.pop("Authorization", None)
     if token:
+        headers["Authorization"] = 'MediaBrowser Client="VivoAPK-CI", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'
         headers["X-Emby-Token"] = token
     conn.request(method, uri, body=json.dumps(data) if data is not None else None, headers=headers)
     response = conn.getresponse()
@@ -130,7 +131,7 @@ def main():
         token = admin["AccessToken"]
         code, plugins = request("GET", "/Plugins", token=token)
         if code != 200 or not isinstance(plugins, list):
-            raise RuntimeError("Plugin inventory failed")
+            raise RuntimeError(f"Plugin inventory failed: HTTP {code}; response type {type(plugins).__name__}; admin={bool(admin.get('User', {}).get('Policy', {}).get('IsAdministrator'))}")
         if not any(str(item.get("Id", "")).lower() == PLUGIN_ID for item in plugins):
             raise RuntimeError("VivoAPK plugin not loaded")
         print("JELLYFIN_12_4_PLUGIN_LOADED=PASS")
