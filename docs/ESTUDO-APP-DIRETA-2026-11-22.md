@@ -57,3 +57,11 @@ São opções independentes **não instaladas**, a considerar apenas se o propri
 - **LG webOS:** [TiviBro](https://github.com/ohmybahgosh/TiviBro), licença MIT; a release [v0.6.0-alpha.199](https://github.com/ohmybahgosh/TiviBro/releases/tag/v0.6.0-alpha.199) contém `app.tivibro.tv_0.5.10199_all.ipk` (8 036 040 bytes), com ligação Xtream/M3U. A versão é **alpha**, e a instalação/reprodução real permanecem por testar. Fonte: GitHub API da release e README.
 
 **A existência do artefacto publicado não é uma prova de funcionamento na TV do proprietário.** O modelo/versão de sistema operativo da TV não foi confirmado. Não foram fornecidos IP local, modo de desenvolvimento, certificados/dispositivo nem acesso remoto à TV. Não realizar instalações sem esses pré-requisitos e sem consentimento no próprio dispositivo.
+
+## Execuções Ferrari REA desta investigação
+
+1. [#45064744786](https://github.com/martaxi-boss/VPS/actions/runs/45064744786) — pedido `analyze_javascript_application` sobre um módulo TypeScript MIT falhou com `isError=true`; **não** gerou relatório aproveitável. Não confundir esta falha com falta de suporte Xtream no projeto.
+2. [#45064863777](https://github.com/martaxi-boss/VPS/actions/runs/45064863777) — análise estrutural através do `capture_process_scenario` (Python privado Ferrari). Foram observados **7/8** campos, mas um teste tinha um erro na expressão regular. O processo terminou com `exit_code=2`, embora o wrapper Ferrari tenha reportado `status=completed`. Esta execução **não** é uma validação funcional.
+3. **[#45064996879](https://github.com/martaxi-boss/VPS/actions/runs/45064996879)** — repetição corrigida sobre `web/src/net/xtream.ts` do Ultra TV, upstream MIT. `report.json.status=completed`, `FERRARI_SKILL_END_TO_END=PASS`, `REA process exit.code=0`, **8/8 verificações estáticas verdadeiras**: origem `player_api.php`, query `username`, query `password`, handshake, Live, VOD, Series e EPG. SHA-256 do módulo ensaiado `4877c0037667463cc6a5f197e6ebe2269fc82a7f30558755e46f8c2c985c4054`.
+
+Em `#45064996879`, `quality_gate.status=not_certified`: o teste **não** prova execução de um player completo, instalação, ligação física a uma Samsung/LG, credenciais válidas do Mega, nem análise do binário proprietário Vivo. A prova é exclusivamente uma verificação estrutural do código de uma **alternativa aberta**.
