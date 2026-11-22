@@ -1,0 +1,49 @@
+name: VivoAPK Jellyfin 12.4 disposable server integration
+on:
+  push:
+    paths:
+      - "jellyfin-auth/**"
+      - ".github/workflows/vivoapk-jellyfin-real-smoke-ci.yml"
+  pull_request:
+    paths:
+      - "jellyfin-auth/**"
+      - ".github/workflows/vivoapk-jellyfin-real-smoke-ci.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build original VivoAPK plugin against Jellyfin 12.4
+        run: dotnet build jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj -c Release
+      - name: Download test-only Jellyfin 12.4 binaries (no VPS changes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/jellyfin-test-bin" "$RUNNER_TEMP/jellyfin-test-web"
+          curl -fsSL --retry 2 --max-time 300             'https://repo.jellyfin.org/files/server/linux/latest-stable/amd64/jellyfin_12.4-amd64.tar.gz'             -o "$RUNNER_TEMP/jellyfin-server.tar.gz"
+          curl -fsSL --retry 2 --max-time 300             'https://repo.jellyfin.org/files/server/ubuntu/latest-stable/amd64/jellyfin-web_12.4+ubu2404_all.deb'             -o "$RUNNER_TEMP/jellyfin-web.deb"
+          tar -xzf "$RUNNER_TEMP/jellyfin-server.tar.gz" -C "$RUNNER_TEMP/jellyfin-test-bin"
+          dpkg-deb -x "$RUNNER_TEMP/jellyfin-web.deb" "$RUNNER_TEMP/jellyfin-test-web"
+          file="$(find "$RUNNER_TEMP/jellyfin-test-bin" -maxdepth 5 -type f -name jellyfin -perm /111 -print -quit)"
+          test -n "$file"
+          test -s "$RUNNER_TEMP/jellyfin-test-web/usr/share/jellyfin/web/index.html"
+          echo "JELLYFIN_TEST_BINARY=$file" >> "$GITHUB_ENV"
+          echo "JELLYFIN_TEST_WEB=$RUNNER_TEMP/jellyfin-test-web/usr/share/jellyfin/web" >> "$GITHUB_ENV"
+          echo JELLYFIN_TEST_RUNTIME_READY=PASS
+      - name: Run real Jellyfin 12.4 server with a fake local Mega backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 /srv/projects/Vivoapk/run
+          sudo chown -R "$(id -u):$(id -g)" /srv/projects/Vivoapk
+          python3 -m py_compile jellyfin-auth/tests/jellyfin_12_4_smoke.py
+          python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
