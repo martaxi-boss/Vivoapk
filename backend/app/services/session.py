@@ -12,9 +12,10 @@ from app.clients.xtream import (
 )
 from app.config import Settings
 from app.models import SubscriptionMapping
-from app.schemas import ClientPlatform, NATIVE_TV_PLATFORMS, ResolveCode, ResolveResponse
+from app.schemas import ClientPlatform, ResolveCode, ResolveResponse
 from app.security import issue_session_token
 from app.services.mappings import MappingConflictError, discover_and_import_subscription
+from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
 
 
 class SessionResolver:
@@ -60,8 +61,10 @@ class SessionResolver:
             if expiry <= datetime.now(UTC):
                 return ResolveResponse(code=ResolveCode.EXPIRED)
 
-        chosen_dns = (mapping.dns_link_samsung_lg if platform in NATIVE_TV_PLATFORMS else mapping.dns_link)
-        if not chosen_dns:
+        # Keep the exact authoritative provider URL; only select by platform.
+        try:
+            chosen_dns = select_provider_dns(mapping, platform)
+        except ProviderDNSUnavailable:
             return ResolveResponse(code=ResolveCode.UPSTREAM_ERROR)
 
         try:

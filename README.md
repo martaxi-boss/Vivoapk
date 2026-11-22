@@ -2,6 +2,8 @@
 
 **Direção atual (22/11/2026):** concentrar neste repositório o novo sistema IPTV; descontinuar o PINK IPTV depois de uma migração validada. O utilizador final deve inserir apenas username/password da sua subscrição Mega OTT. A VPS só autentica e escolhe o DNS correto; a reprodução fica diretamente no fornecedor.
 
+**Comparação do menu de DNS Mega OTT com o PINK:** [domínios, plataformas e login de dois campos](docs/MEGA_MENU_PLATAFORMAS_LOGIN.md). A lista visível no painel não é um limite fixo de domínios do fornecedor.
+
 **Trabalho novo:** [backend independente](backend/README.md) | [arquitetura e DNS](docs/ARQUITETURA_VIVOAPK.md) | [migração PINK -> Vivoapk](docs/MIGRACAO_PINK_PARA_VIVOAPK.md). A API está em código e teste, **não foi instalada em produção**; as aplicações Android/iOS/Samsung/LG e login Mega OTT nas apps Jellyfin ainda não estão concluídos.
 
 **Atenção:** a app Jellyfin oficial instalada no Android aceita contas Jellyfin, não credenciais Mega OTT. Não vender este trabalho como compatibilidade Jellyfin automática. Não se contorna licença Vivo Player nem se publica o token do revendedor.

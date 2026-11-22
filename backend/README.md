@@ -13,6 +13,19 @@ Esta copia e independente e NAO depende do repositorio antigo em runtime.
 - Conserva protecao contra SSRF, DNS pinning, limites de autenticacao e
   tokens temporarios. Nunca guarda passwords Mega de clientes.
 
+## Selecao de DNS com o menu do fornecedor
+
+Os domínios exibidos ao criar M3U no painel Mega OTT (por exemplo
+zvpnm.com, fqvpnw.com, fhvpnw.com ou beuaya.com) nao sao uma
+whitelist de origens permitidas no login. A API retorna o URL inteiro.
+O backend valida a forma/seguranca do URL, preserva-o exactamente,
+escolhe genericamente dns_link para Android/Windows/iOS (iOS por testar)
+e dns_link_for_samsung_lg para Smart TVs Tizen/webOS nativas.
+A plataforma e configuracao interna da app, nao um terceiro campo
+visivel para o cliente. O menu de disponibilidade nao e servido pelo
+backend: consultar sempre o painel Mega para criar novas linhas.
+Consultar docs/MEGA_MENU_PLATAFORMAS_LOGIN.md para evidencias e limites.
+
 ## Testes artificiais
 Com Python 3.12 no ambiente de desenvolvimento:
 
