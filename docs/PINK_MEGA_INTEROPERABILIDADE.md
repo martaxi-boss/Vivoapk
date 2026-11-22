@@ -50,3 +50,10 @@ Nunca executar com segredos num pedido GitHub Actions de repositório público, 
 - Não existe evidência de que o Vivo Player já esteja associado; a aplicação comercial e o respetivo painel continuam independentes do nosso backend.
 - A API/porta Xtream no endereço `vivo-team.duckdns.org` permanece não confirmada (responde com Nginx padrão/404 nos testes anteriores à porta 80).
 - Portanto, o trabalho entrega **código de interoperabilidade verificável**, não uma sessão autenticada real nem reprodução na TV.
+
+## Prova da ferramenta no Ferrari (dados sinteticos)
+
+- [GitHub Actions #45063258187](https://github.com/martaxi-boss/VPS/actions/runs/45063258187) — fluxo de transporte Ferrari concluido, `FERRARI_SKILL_JOB_STATUS=completed` e `FERRARI_SKILL_END_TO_END=PASS`.
+- O `response.zip` foi aberto e o `artifacts/rea-mcp-result.json` foi inspecionado. O executor REA correu o script atraves do Python privado Ferrari; processo terminou com **exit code 0**.
+- Saida verificada do proprio script: `{"self_test":"passed","checks":13,"network_access":false,"real_credentials_used":false}`.
+- `report.json.quality_gate=not_certified`: nao foi pedido um gate de aceitacao semantico. Esta prova confirma **13 verificacoes de schema e seguranca com dados ficticios**; NAO certifica comunicacao real com Mega, dados de subscricao, painel Vivo nem TV.
