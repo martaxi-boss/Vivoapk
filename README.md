@@ -2,6 +2,13 @@
 
 Projeto independente para estudar a integração de um **servidor IPTV próprio, com conteúdos autorizados**, com a aplicação comercial **Vivo Player** instalada numa Smart TV Samsung (Tizen) ou LG (webOS), sem criar uma aplicação de substituição.
 
+## Conclusao Ferrari — app instalada vs controlo proprio (22/11/2026)
+
+- **Vivo Player instalado:** a TV mostra "A conta expirou"; a ativacao pertence ao fabricante. O repositorio **nao contem o binario Vivo** nem uma sessao de depuracao propria, pelo que substituir a origem de ativacao ou provar uma integracao direta atraves de DuckDNS **nao foi demonstrado**. Nao tentar simular uma licenca.
+- **Alternativa independente e licenciada:** leitores livres Xtream para Samsung Tizen e LG webOS possuem codigo aberto e pacotes publicados. O modulo de Xtream do projeto MIT `vantaflow/ultra-tv` passou **8/8 testes estaticos Ferrari** ([execucao #45064996879](https://github.com/martaxi-boss/VPS/actions/runs/45064996879)), nao testes fisicos. A rota pode ser indicada pelo servidor Mega OTT para Samsung/LG (credenciais sempre privadas).
+- **Relatorio com evidencias, falhas e instaladores pesquisados:** [docs/ESTUDO-APP-DIRETA-2026-11-22.md](docs/ESTUDO-APP-DIRETA-2026-11-22.md).
+- **Status:** nenhuma alteracao na TV, no dominio, no Nginx ou na ativacao Vivo; nenhuma reproducao real demonstrada.
+
 ## Endereço definitivo de teste
 
 **`vivo-team.duckdns.org`** — confirmado pelo proprietário como o único hostname a utilizar na ligação de teste à Smart TV (22/11/2026). O endereço alternativo `vivoteam.dns.org` foi considerado numa investigação anterior, mas **não é o destino solicitado**. Não misturar os dois servidores nem presumir a porta Xtream.
