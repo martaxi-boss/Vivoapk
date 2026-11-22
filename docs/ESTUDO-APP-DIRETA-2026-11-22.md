@@ -48,3 +48,12 @@ Se se adotar uma app independente, a URL de Xtream a usar na Samsung/LG é o **v
 **Dentro do Vivo Player instalado:** não é possível comprovar a substituição do servidor/ativação com os materiais atualmente acessíveis. Continuar a tentar por DNS sem pacote ou tráfego real não é engenharia reversa.
 
 **Para ter controlo independente do servidor e do leitor:** a via demonstrada por código público é instalar uma aplicação aberta compatível, sem alterar a licença do Vivo Player. Esta é uma alternativa separada e não deve ser representada como desbloqueio do Vivo existente. Exige TV Samsung/LG identificada, pacote instalável e teste físico.
+
+## Alternativas abertas com pacotes de instalação já publicados (consulta 22/11/2026)
+
+São opções independentes **não instaladas**, a considerar apenas se o proprietário aceitar utilizar outro leitor em vez do Vivo Player:
+
+- **Samsung Tizen:** [EN TV Player](https://github.com/Nur-allhi/en-tvplayer), licença MIT; a release [v3.2.0](https://github.com/Nur-allhi/en-tvplayer/releases/tag/v3.2.0) contém `EN-IPTV_Player_v3.2.0.wgt` (479 660 bytes) com entrada Xtream e M3U. A instalação no hardware concreto, assinatura/permissões e compatibilidade com a versão Tizen ainda não foram testadas. Fonte: GitHub API da release e README.
+- **LG webOS:** [TiviBro](https://github.com/ohmybahgosh/TiviBro), licença MIT; a release [v0.6.0-alpha.199](https://github.com/ohmybahgosh/TiviBro/releases/tag/v0.6.0-alpha.199) contém `app.tivibro.tv_0.5.10199_all.ipk` (8 036 040 bytes), com ligação Xtream/M3U. A versão é **alpha**, e a instalação/reprodução real permanecem por testar. Fonte: GitHub API da release e README.
+
+**A existência do artefacto publicado não é uma prova de funcionamento na TV do proprietário.** O modelo/versão de sistema operativo da TV não foi confirmado. Não foram fornecidos IP local, modo de desenvolvimento, certificados/dispositivo nem acesso remoto à TV. Não realizar instalações sem esses pré-requisitos e sem consentimento no próprio dispositivo.
