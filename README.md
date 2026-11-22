@@ -9,15 +9,17 @@ Projeto independente para estudar a integração de um **servidor IPTV próprio,
 - Preparar um conector **independente** para configurar uma instalação própria, caso os testes o justifiquem.
 - Testar numa Smart TV real com conteúdos que temos o direito de disponibilizar.
 
-## Estado em 22-11-2026
-- [x] Repositório de destino identificado: `martaxi-boss/Vivoapk`.
-- [x] Motor Ferrari e ponte GitHub Actions/VPS existentes identificados, sem duplicar infraestrutura.
-- [x] Ferramentas REA listadas numa execução real: [Ferrari #45060469022](https://github.com/martaxi-boss/VPS/actions/runs/45060469022).
-- [x] Pré-verificação do Playwright realizada com `--dry-run` pelo Ferrari: [#45061225958](https://github.com/martaxi-boss/VPS/actions/runs/45061225958). Este teste **não** abriu o portal e **não** demonstra integração.
-- [ ] Captura autorizada do portal Vivo Player: pendente.
-- [ ] Mapa de endpoints privados do painel: pendente, **não assumir API da família IBO**.
-- [ ] Autenticação e associação de playlist à nossa instalação da TV: pendentes.
-- [ ] Teste real na Samsung/LG e reprodução do conteúdo autorizado: pendente.
+## Estado em 22-11-2026 (evidencias reais)
+- [x] Motor Ferrari e ponte GitHub/VPS executados, sem reinstalacoes: [#45061831368](https://github.com/martaxi-boss/VPS/actions/runs/45061831368).
+- [x] Testados ambos os dominios: HTTP raiz responde, mas as falhas de TLS impedem HTTPS validado.
+- [x] Investigado o acesso nao autenticado a `/player_api.php`: No-IP devolveu **403**; DuckDNS, **404** ([#45062067969](https://github.com/martaxi-boss/VPS/actions/runs/45062067969)).
+- [x] Verificada a rota DNS: o host No-IP mencionado mais recentemente **nao aponta para a VPS Ferrari**; o DuckDNS anterior aponta para ela, mas so exibe o Nginx padrao ([#45062232933](https://github.com/martaxi-boss/VPS/actions/runs/45062232933)).
+- [x] Vivo Player `/playlists` abriu em Chromium Ferrari, mas o conteudo ficou protegido por **Cloudflare 403**, sem acesso ao painel autenticado ([#45061953094](https://github.com/martaxi-boss/VPS/actions/runs/45061953094)).
+- [x] Codigo real `tools/xtream_diagnostic.py` submetido e **executado no Ferrari**: 8 autoverificacoes passaram e o teste sem credenciais devolveu `not_confirmed_without_credentials` ([#45062365308](https://github.com/martaxi-boss/VPS/actions/runs/45062365308)).
+- [ ] Engenharia reversa dos endpoints autenticados do Vivo Player: nao comprovada.
+- [ ] Ligacao da playlist a uma TV Samsung/LG e reproducao: nao testadas; exigem instalacao propria, Device Key e configuracao autorizada.
+
+**Relatorio completo:** [docs/RESULTADOS-2026-11-22.md](docs/RESULTADOS-2026-11-22.md).
 
 **Aviso:** a aplicação Vivo Player continua sujeita às suas condições e licença de ativação. Este projeto não contorna pagamentos, DRM, CAPTCHAs ou acessos de terceiros.
 
