@@ -2,6 +2,12 @@
 
 Projeto independente para estudar a integração de um **servidor IPTV próprio, com conteúdos autorizados**, com a aplicação comercial **Vivo Player** instalada numa Smart TV Samsung (Tizen) ou LG (webOS), sem criar uma aplicação de substituição.
 
+## Endereço definitivo de teste
+
+**`vivo-team.duckdns.org`** — confirmado pelo proprietário como o único hostname a utilizar na ligação de teste à Smart TV (22/11/2026). O endereço alternativo `vivoteam.dns.org` foi considerado numa investigação anterior, mas **não é o destino solicitado**. Não misturar os dois servidores nem presumir a porta Xtream.
+
+**Último resultado real neste hostname:** DNS apontava para a VPS do proprietário; `http://vivo-team.duckdns.org/` apresentava a página padrão Nginx, `http://vivo-team.duckdns.org/player_api.php` devolvia HTTP 404, HTTPS não tinha certificado válido para o domínio. O servidor Xtream e a ligação à TV não estão validados. Fontes: [Ferrari #45061831368](https://github.com/martaxi-boss/VPS/actions/runs/45061831368), [#45062067969](https://github.com/martaxi-boss/VPS/actions/runs/45062067969), [#45062232933](https://github.com/martaxi-boss/VPS/actions/runs/45062232933).
+
 ## Objetivo
 - Identificar e documentar a interface de configuração de playlists do Vivo Player (MAC virtual + Device Key, quando disponíveis na aplicação).
 - Confirmar o modo de ligação Xtream Codes oferecido oficialmente.
