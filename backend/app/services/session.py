@@ -1,0 +1,91 @@
+from collections.abc import Callable
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.clients.mega import MegaClientError, MegaOTTClient
+from app.clients.xtream import (
+    XtreamClient,
+    XtreamDNSUnreachable,
+    XtreamUpstreamError,
+)
+from app.config import Settings
+from app.models import SubscriptionMapping
+from app.schemas import ClientPlatform, NATIVE_TV_PLATFORMS, ResolveCode, ResolveResponse
+from app.security import issue_session_token
+from app.services.mappings import MappingConflictError, discover_and_import_subscription
+
+
+class SessionResolver:
+    def __init__(
+        self,
+        session: Session,
+        xtream_client: XtreamClient,
+        settings: Settings,
+        mega_client_factory: Callable[[], MegaOTTClient] | None = None,
+    ) -> None:
+        self._session = session
+        self._xtream_client = xtream_client
+        self._settings = settings
+        self._mega_client_factory = mega_client_factory
+
+    def resolve(self, *, username: str, password: str, platform: ClientPlatform = ClientPlatform.ANDROID) -> ResolveResponse:
+        mapping = self._session.scalar(
+            select(SubscriptionMapping).where(SubscriptionMapping.username == username)
+        )
+        if mapping is None and self._mega_client_factory is not None:
+            try:
+                mega_client = self._mega_client_factory()
+                try:
+                    mapping = discover_and_import_subscription(
+                        self._session,
+                        mega_client,
+                        username,
+                    )
+                finally:
+                    close = getattr(mega_client, "close", None)
+                    if callable(close):
+                        close()
+            except (MegaClientError, MappingConflictError, RuntimeError, ValueError):
+                return ResolveResponse(code=ResolveCode.UPSTREAM_ERROR)
+
+        if mapping is None:
+            return ResolveResponse(code=ResolveCode.INVALID_CREDENTIALS)
+
+        if mapping.expiring_at is not None:
+            expiry = mapping.expiring_at
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=UTC)
+            if expiry <= datetime.now(UTC):
+                return ResolveResponse(code=ResolveCode.EXPIRED)
+
+        chosen_dns = (mapping.dns_link_samsung_lg if platform in NATIVE_TV_PLATFORMS else mapping.dns_link)
+        if not chosen_dns:
+            return ResolveResponse(code=ResolveCode.UPSTREAM_ERROR)
+
+        try:
+            result = self._xtream_client.authenticate(
+                dns_link=chosen_dns,
+                username=username,
+                password=password,
+            )
+        except XtreamDNSUnreachable:
+            return ResolveResponse(code=ResolveCode.DNS_UNREACHABLE)
+        except XtreamUpstreamError:
+            return ResolveResponse(code=ResolveCode.UPSTREAM_ERROR)
+
+        if result.code != "SUCCESS":
+            return ResolveResponse(code=ResolveCode(result.code))
+
+        token, session_expires_at = issue_session_token(
+            mapping.id,
+            self._settings,
+        )
+        return ResolveResponse(
+            code=ResolveCode.SUCCESS,
+            session_token=token,
+            session_expires_at=session_expires_at,
+            xtream_base_url=chosen_dns,
+            account_expires_at=result.account_expires_at,
+        )
