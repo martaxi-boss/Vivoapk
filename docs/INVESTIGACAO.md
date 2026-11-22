@@ -2,6 +2,10 @@
 
 Data inicial: 22/11/2026. **Documento de trabalho; resultados em revisão.**
 
+## Destino de teste confirmado
+
+O hostname correto e único para o trabalho atual é **`vivo-team.duckdns.org`**. Não utilizar `vivoteam.dns.org` (nome diferente, investigado por engano num teste anterior). Esta correção do proprietário prevalece sobre referências históricas e exemplos anteriores. No último ensaio, este hostname respondia com Nginx padrão e HTTP 404 para `/player_api.php` na porta 80; a rota/backend Xtream real e o HTTPS ainda exigem configuração e prova. Referências: [#45061831368](https://github.com/martaxi-boss/VPS/actions/runs/45061831368), [#45062067969](https://github.com/martaxi-boss/VPS/actions/runs/45062067969).
+
 ## Pedido
 Utilizar a aplicação comercial Vivo Player já instalada numa Smart TV Samsung ou LG para ligar um serviço Xtream Codes próprio, estudar a integração com o painel que associa uma instalação por MAC + Device Key e, se viável, automatizar a configuração. Não construir um leitor novo para a televisão.
 
@@ -24,7 +28,7 @@ Utilizar a aplicação comercial Vivo Player já instalada numa Smart TV Samsung
 | Comunicação privada do painel já foi descodificada | **Não demonstrado** |
 | Endpoint do Vivo igual ao IBO | **Não há evidência; nunca pressupor** |
 | Código-fonte oficial do Vivo é aberto | **Não encontrado** |
-| Servidor de teste fornecido pelo proprietário responde por HTTPS/HTTP | **Ainda por validar** |
+| Servidor de teste fornecido pelo proprietário responde por HTTPS/HTTP | HTTP porta 80: Nginx padrão, `player_api.php` 404; HTTPS inválido. Backend Xtream ainda não confirmado ([Ferrari #45062067969](https://github.com/martaxi-boss/VPS/actions/runs/45062067969)) |
 | A configuração funciona numa TV física | **Ainda por testar** |
 
 ## Plano de teste autorizado
