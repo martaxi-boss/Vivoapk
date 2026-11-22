@@ -1,0 +1,52 @@
+# Vivoapk — backend Mega OTT/Xtream
+
+Codigo migrado seletivamente do projeto do proprietario martaxi-boss/pink-iptv,
+main 32f3638d3e02f01558ef86127d865956f5c52e64 (22/11/2026).
+Esta copia e independente e NAO depende do repositorio antigo em runtime.
+
+## O que faz
+- POST /v1/session/resolve recebe username, password e platform.
+- Importa por id (CLI) ou descobre por username na API Mega OTT com token privado.
+- Confirma a conta no player_api.php do fornecedor, sem retransmitir conteudos.
+- Seleciona dns_link para android, android_tv, windows, ios; seleciona
+  dns_link_for_samsung_lg para tizen e webos, SEM fallback entre origens.
+- Conserva protecao contra SSRF, DNS pinning, limites de autenticacao e
+  tokens temporarios. Nunca guarda passwords Mega de clientes.
+
+## Testes artificiais
+Com Python 3.12 no ambiente de desenvolvimento:
+
+    python -m pip install ".[dev]"
+    python -m pytest -q
+
+Nenhum teste da CI utiliza contas reais ou comunica com o Mega OTT.
+
+## Configuracao futura (exclusivamente privada)
+Valores de ambiente necessarios:
+
+    APP_ENV=production
+    DATABASE_URL=postgresql+psycopg://...
+    SESSION_SIGNING_KEY=<segredo privado com pelo menos 32 bytes>
+    MEGA_OTT_API_TOKEN=<token privado do revendedor>
+    MEGA_OTT_API_BASE=https://megaott.net/api
+
+Os dados e segredos nunca devem ser publicados no GitHub ou em logs.
+Executar migracoes no banco PRIVADO do novo projeto apenas depois de auditoria:
+
+    alembic upgrade head
+
+Servidor local de demonstracao, NAO ainda implantado:
+
+    uvicorn app.main:app --host 127.0.0.1 --port 8021
+
+O hostname vivo-team.duckdns.org ainda nao esta provado como backend Vivoapk.
+O hostname serveriptv.duckdns.org hospeda Jellyfin SEPARADO.
+Nenhuma subscricao real, media, canal ou playlist esta integrada nesta fase.
+
+## Exemplo da API (dados totalmente ficticios)
+
+    {"username":"cliente-exemplo","password":"palavra-ficticia","platform":"webos"}
+
+A resposta de sucesso contem xtream_base_url apenas depois da validacao
+Xtream e um session_token curto. A aplicacao reproduz junto do Mega OTT,
+nao pela VPS. iOS permanece sujeito a teste real com um cliente concreto.

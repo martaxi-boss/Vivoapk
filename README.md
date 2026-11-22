@@ -1,4 +1,14 @@
-# Vivo Player — interoperabilidade Smart TV
+# Vivoapk — integração independente Mega OTT / Xtream
+
+**Direção atual (22/11/2026):** concentrar neste repositório o novo sistema IPTV; descontinuar o PINK IPTV depois de uma migração validada. O utilizador final deve inserir apenas username/password da sua subscrição Mega OTT. A VPS só autentica e escolhe o DNS correto; a reprodução fica diretamente no fornecedor.
+
+**Trabalho novo:** [backend independente](backend/README.md) | [arquitetura e DNS](docs/ARQUITETURA_VIVOAPK.md) | [migração PINK -> Vivoapk](docs/MIGRACAO_PINK_PARA_VIVOAPK.md). A API está em código e teste, **não foi instalada em produção**; as aplicações Android/iOS/Samsung/LG e login Mega OTT nas apps Jellyfin ainda não estão concluídos.
+
+**Atenção:** a app Jellyfin oficial instalada no Android aceita contas Jellyfin, não credenciais Mega OTT. Não vender este trabalho como compatibilidade Jellyfin automática. Não se contorna licença Vivo Player nem se publica o token do revendedor.
+
+---
+
+## Histórico da investigação inicial Vivo Player (preservado)
 
 Projeto independente para estudar a integração de um **servidor IPTV próprio, com conteúdos autorizados**, com a aplicação comercial **Vivo Player** instalada numa Smart TV Samsung (Tizen) ou LG (webOS), sem criar uma aplicação de substituição.
 
