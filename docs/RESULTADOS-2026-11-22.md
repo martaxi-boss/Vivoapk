@@ -55,3 +55,15 @@ Nao usar URLs com passwords. Para o teste autenticado real, so com credenciais a
 - `report.json.status=completed`, mas `quality_gate.status=not_certified`: prova a execucao da ferramenta, nao a ligacao a Smart TV.
 
 **Bloqueio operacional:** nao ha evidencia de um backend Xtream funcional acessivel na origem e porta testadas, nao foi capturada a sessao autenticada do painel Vivo Player e o hostname No-IP nao esta sob o encaminhamento da VPS Ferrari. Nenhuma configuracao de um fabricante terceiro foi modificada.
+
+## Repetição dirigida ao único hostname confirmado
+
+O utilizador confirmou **`vivo-team.duckdns.org`** como destino definitivo. [Ferrari #45062660837](https://github.com/martaxi-boss/VPS/actions/runs/45062660837), executado via REA privado e script de `Vivoapk` em 22/11/2026, devolveu:
+
+- DNS: `dns_resolves=true`, um endereço DNS.
+- `http://vivo-team.duckdns.org/`: **200**, resposta `text/html` (615 bytes).
+- `http://vivo-team.duckdns.org/player_api.php`: **404**, resposta `text/html` (162 bytes).
+- `credentials_sent=false`; `conclusion=not_confirmed_without_credentials`; processo exit code 0; `report.status=completed`; `quality_gate.status=not_certified`.
+
+**Consequência:** a porta HTTP 80 não publica API Xtream Codes na rota padrão. A porta/backend Xtream correta não está confirmada. Isso não significa que não exista um serviço noutro porto, mas também não autoriza afirmar que a aplicação Vivo Player foi ligada. Não foram feitas alterações ao Nginx nem à Smart TV.
+
