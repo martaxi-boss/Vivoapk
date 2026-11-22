@@ -54,5 +54,15 @@ Painel oficial do Vivo Player (associação MAC + Device Key)
 
 A configuração oficial e a eventual automatização do painel são problemas distintos. Um servidor Xtream operacional **não autoriza automaticamente a TV** nem ativa a licença da aplicação.
 
+## Reutilizacao Mega OTT da PinkIPTV (verificada em 22-11-2026)
+
+A base privada `martaxi-boss/pink-iptv` ja implementa consulta API Mega OTT por token Bearer, autenticacao Xtream e preservacao separada de `dns_link` (Android/Windows) e `dns_link_for_samsung_lg` (Samsung/LG nativas). **O token e as credenciais reais nao estao publicados.**
+
+- [Plano tecnico seguro](docs/PINK_MEGA_INTEROPERABILIDADE.md)
+- [Ferramenta independente e read-only para obter o endereco Samsung/LG num ambiente privado](tools/mega_samsung_lg_lookup.py)
+- [Ferrari: 13 testes sinteticos PASS, sem rede nem credenciais reais](https://github.com/martaxi-boss/VPS/actions/runs/45063258187)
+
+Isto NAO significa que uma playlist ja foi associada ao Vivo Player. A API Mega fornece metadados de subscricao; o painel Vivo e a ativacao comercial continuam separados. `vivo-team.duckdns.org` nao substitui automaticamente a origem Xtream atribuida pela Mega.
+
 ## Ferramentas
 A engenharia reversa e os testes remotos devem utilizar o **Motor Ferrari universal existente** (REA/Playwright), via GitHub Actions para a VPS; não instalar motores duplicados e não modificar outros projetos.
