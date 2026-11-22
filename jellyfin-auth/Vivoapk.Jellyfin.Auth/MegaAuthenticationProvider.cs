@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Common;
@@ -35,10 +36,10 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
     public bool IsEnabled => Plugin.Instance?.Configuration.Enabled == true;
 
     public Task<ProviderAuthenticationResult> Authenticate(string username, string password)
-        => Authenticate(username, password, null!);
+        => Authenticate(username, password, null);
 
     public async Task<ProviderAuthenticationResult> Authenticate(
-        string username, string password, User resolvedUser)
+        string username, string password, User? resolvedUser)
     {
         if (!IsEnabled || string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
             throw new AuthenticationException("Invalid username or password.");
