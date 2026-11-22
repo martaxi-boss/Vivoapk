@@ -54,6 +54,8 @@ Painel oficial do Vivo Player (associação MAC + Device Key)
 
 A configuração oficial e a eventual automatização do painel são problemas distintos. Um servidor Xtream operacional **não autoriza automaticamente a TV** nem ativa a licença da aplicação.
 
+**Correcao de configuracao do proprietario:** o `dns_link_for_samsung_lg` e o endereco **generico das Smart TVs Samsung e LG**, nao um URL exclusivo do IPTV Smarters. Para testes do Vivo Player instalado numa Samsung/LG, usar o servidor nativo Samsung/LG fornecido pelo Mega OTT; a compatibilidade efetiva e a associacao no painel Vivo continuam por validar. O hostname individual da subscricao nao e publicado neste repositorio publico.
+
 ## Reutilizacao Mega OTT da PinkIPTV (verificada em 22-11-2026)
 
 A base privada `martaxi-boss/pink-iptv` ja implementa consulta API Mega OTT por token Bearer, autenticacao Xtream e preservacao separada de `dns_link` (Android/Windows) e `dns_link_for_samsung_lg` (Samsung/LG nativas). **O token e as credenciais reais nao estao publicados.**
