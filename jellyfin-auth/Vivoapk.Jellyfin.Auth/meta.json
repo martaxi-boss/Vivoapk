@@ -1,0 +1,10 @@
+{
+  "name": "VivoAPK Mega OTT Auth",
+  "guid": "e7a31bad-3643-4da2-834e-559c39cc90b1",
+  "version": "0.1.0.0",
+  "targetAbi": "12.4.0.0",
+  "status": "Active",
+  "owner": "VivoAPK",
+  "description": "Disabled-by-default private Jellyfin 12.4 Mega OTT authentication adapter. Does not supply user catalogues yet.",
+  "autoUpdate": false
+}

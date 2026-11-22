@@ -1,0 +1,43 @@
+name: VivoAPK Jellyfin 12.4 native auth plugin build
+on:
+  push:
+    paths:
+      - "jellyfin-auth/**"
+      - ".github/workflows/vivoapk-jellyfin-auth-ci.yml"
+  pull_request:
+    paths:
+      - "jellyfin-auth/**"
+      - ".github/workflows/vivoapk-jellyfin-auth-ci.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Restore and compile Jellyfin 12.4 plugin
+        run: |
+          dotnet restore jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj
+          dotnet build jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj -c Release --no-restore
+      - name: Run synthetic authorization protocol checks
+        run: |
+          dotnet run --project jellyfin-auth/Vivoapk.Jellyfin.Auth.Tests/Vivoapk.Jellyfin.Auth.Tests.csproj --configuration Release
+      - name: Validate installable plugin DLL and metadata
+        run: |
+          python3 -m json.tool jellyfin-auth/Vivoapk.Jellyfin.Auth/meta.json >/dev/null
+          test -s jellyfin-auth/Vivoapk.Jellyfin.Auth/bin/Release/net10.0/Jellyfin.Plugin.VivoapkMegaAuth.dll
+          sha256sum jellyfin-auth/Vivoapk.Jellyfin.Auth/bin/Release/net10.0/Jellyfin.Plugin.VivoapkMegaAuth.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vivoapk-jellyfin-auth-12.4
+          path: |
+            jellyfin-auth/Vivoapk.Jellyfin.Auth/bin/Release/net10.0/Jellyfin.Plugin.VivoapkMegaAuth.dll
+            jellyfin-auth/Vivoapk.Jellyfin.Auth/meta.json
+          retention-days: 14
