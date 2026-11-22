@@ -1,0 +1,125 @@
+package com.pinkiptv.app.player
+
+import com.pinkiptv.app.model.CatchUpPlaybackRef
+import com.pinkiptv.app.model.EpisodePlaybackRef
+import com.pinkiptv.app.model.LivePlaybackRef
+import com.pinkiptv.app.model.PlaybackKind
+import com.pinkiptv.app.model.PlaybackRef
+import com.pinkiptv.app.model.PlayerError
+import com.pinkiptv.app.model.RuntimeProviderSessionStore
+import com.pinkiptv.app.model.VodPlaybackRef
+import java.text.ParsePosition
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
+import okhttp3.HttpUrl
+
+internal class ResolvedPlaybackSource(
+    val kind: PlaybackKind,
+    val title: String,
+    internal val url: HttpUrl,
+) {
+    override fun toString(): String =
+        "ResolvedPlaybackSource(kind=" + kind + ", uri=<redacted>)"
+}
+
+internal sealed interface PlaybackSourceResult {
+    data class Success(val source: ResolvedPlaybackSource) : PlaybackSourceResult
+    data class Failure(val error: PlayerError) : PlaybackSourceResult
+}
+
+internal class XtreamPlaybackUrlFactory(
+    private val sessionStore: RuntimeProviderSessionStore,
+) {
+    internal fun resolve(ref: PlaybackRef): PlaybackSourceResult {
+        return resolve(ref, legacyLive = false)
+    }
+
+    internal fun resolveLegacyLive(ref: LivePlaybackRef): PlaybackSourceResult =
+        resolve(ref, legacyLive = true)
+
+    private fun resolve(ref: PlaybackRef, legacyLive: Boolean): PlaybackSourceResult {
+        val session = sessionStore.current()
+            ?: return PlaybackSourceResult.Failure(PlayerError.SessionUnavailable)
+
+        if (!STREAM_ID.matches(ref.streamId)) {
+            return PlaybackSourceResult.Failure(PlayerError.InvalidStreamMetadata)
+        }
+
+        val builder = session.origin.newBuilder()
+        val kind = when (ref) {
+            is LivePlaybackRef -> {
+                if (!legacyLive) builder.addPathSegment("live")
+                builder
+                    .addPathSegment(session.username)
+                    .addPathSegment(session.password)
+                    .addPathSegment(ref.streamId + if (legacyLive) "" else ".ts")
+                PlaybackKind.Live
+            }
+            is VodPlaybackRef -> {
+                val extension = ref.containerExtension
+                if (extension == null || !MEDIA_EXTENSION.matches(extension)) {
+                    return PlaybackSourceResult.Failure(PlayerError.InvalidStreamMetadata)
+                }
+                builder
+                    .addPathSegment("movie")
+                    .addPathSegment(session.username)
+                    .addPathSegment(session.password)
+                    .addPathSegment(ref.streamId + "." + extension)
+                PlaybackKind.Vod
+            }
+            is EpisodePlaybackRef -> {
+                val extension = ref.containerExtension
+                if (extension == null || !MEDIA_EXTENSION.matches(extension)) {
+                    return PlaybackSourceResult.Failure(PlayerError.InvalidStreamMetadata)
+                }
+                builder
+                    .addPathSegment("series")
+                    .addPathSegment(session.username)
+                    .addPathSegment(session.password)
+                    .addPathSegment(ref.episodeId + "." + extension)
+                PlaybackKind.Series
+            }
+            is CatchUpPlaybackRef -> {
+                if (
+                    ref.durationMinutes !in 1..1440 ||
+                    !isValidCatchUpStart(ref.providerStart)
+                ) {
+                    return PlaybackSourceResult.Failure(PlayerError.InvalidStreamMetadata)
+                }
+                builder
+                    .addPathSegment("timeshift")
+                    .addPathSegment(session.username)
+                    .addPathSegment(session.password)
+                    .addPathSegment(ref.durationMinutes.toString())
+                    .addPathSegment(ref.providerStart)
+                    .addPathSegment(ref.streamId + ".m3u8")
+                PlaybackKind.CatchUp
+            }
+        }
+
+        return PlaybackSourceResult.Success(
+            ResolvedPlaybackSource(
+                kind = kind,
+                title = ref.title,
+                url = builder.build(),
+            ),
+        )
+    }
+
+    private fun isValidCatchUpStart(value: String): Boolean {
+        if (!CATCH_UP_START.matches(value)) return false
+        val parser = SimpleDateFormat("yyyy-MM-dd:HH-mm", Locale.US).apply {
+            isLenient = false
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val position = ParsePosition(0)
+        return parser.parse(value, position) != null && position.index == value.length
+    }
+
+    private companion object {
+        val STREAM_ID = Regex("^[A-Za-z0-9_-]{1,64}$")
+        val MEDIA_EXTENSION = Regex("^[A-Za-z0-9]{1,12}$")
+        val CATCH_UP_START = Regex("^\\d{4}-\\d{2}-\\d{2}:\\d{2}-\\d{2}$")
+    }
+}
