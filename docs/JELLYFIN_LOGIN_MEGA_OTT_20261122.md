@@ -12,6 +12,62 @@ O utilizador deve conseguir:
 O login `pink-admin` pertence **apenas a administracao Jellyfin** e nao e credencial Mega OTT.
 **Nao** prometer que o Jellyfin instalado ja faz isto: a versao 12.4.0 atualmente instalada autentica localmente e esta sem bibliotecas.
 
+## Contrato corrigido: o cliente nao configura playlist nem DNS Mega
+
+**Esta e a sequencia exata exigida pelo proprietario:**
+
+```text
+APP OFICIAL JELLYFIN (sem modificacao da app)
+  1. Servidor = https://serveriptv.duckdns.org
+  2. Username = username da subscricao Mega OTT
+  3. Password = password da MESMA subscricao Mega OTT
+        |
+        | login normal do protocolo Jellyfin
+        v
+JELLYFIN 12.4.0 NA VPS
+        |
+        | extensao privada de login/catalago VivoAPK
+        v
+MEGA OTT: identificar subscricao por username no momento do login,
+validar password e obter DNS oficiais completos por subscricao
+        |
+        | criar identidade Jellyfin interna automaticamente, nunca
+        | pedir ao revendedor para adicionar contas em Jellyfin
+        v
+CATALOGO SOMENTE DESSA SUBSCRICAO
+  Live TV / Filmes / Series / EPG (conforme suportado)
+        |
+        v
+Reproducao ao Mega OTT pelo cliente, se o Jellyfin e o formato
+permitirem Direct Play efetivo sem proxy/relay pela VPS
+```
+
+**Nao ha lista de clientes, playlist ou DNS Mega para configurar previamente
+no painel Jellyfin.** A integracao descobre/subscreve automaticamente
+quando recebe um login valido. Se o Jellyfin precisar de um ID de utilizador
+interno, o plugin cria-o e associa-o invisivelmente, de forma segura:
+nao se trata de uma segunda conta que o cliente tenha de conhecer.
+
+O DuckDNS e **unico para TODOS os utilizadores**, e sera substituivel
+por dominio proprio sem mudar os URLs Mega guardados. O utilizador nunca
+introduz `zvpnm.com`, `beuaya.com`, `daizsmart.com`, `fqvpnw.com`,
+subdominios, URLs de M3U ou qualquer link do fornecedor.
+A unica escolha de DNS, feita internamente, e entre os dois campos
+da subscricao recuperados na API. O sistema deve ser multissubscricao
+sem configurar uma playlist global com credenciais de um cliente.
+
+**Criterio de aceitacao funcional imediato:** numa instalacao Jellyfin
+nova e SEM tuners/manuais/contas de cliente preconfiguradas, autenticar
+uma subscricao Mega OTT valida usando somente os dois campos Jellyfin e
+ver automaticamente o catalogo desse utilizador. Repetir com outra
+subscricao, provar isolamento, renovacao/expiracao e login recusado quando
+a password nao corresponde. Nao basta que o endpoint Xtream devolva
+sucesso ou que haja biblioteca Jellyfin vazia. A reprodução sem relay
+e outro criterio obrigatorio, confirmado em rede e nos dispositivos.
+
+**Estado:** requisito documentado; NAO esta implementado no servidor Jellyfin,
+e nao foi testado com login Mega real atraves da app oficial.
+
 ## Nao confundir APIs e protocolos
 
 - `serveriptv.duckdns.org`: **ponto de entrada Jellyfin HTTPS**, nao DNS Mega.
