@@ -12,6 +12,59 @@ O utilizador deve conseguir:
 O login `pink-admin` pertence **apenas a administracao Jellyfin** e nao e credencial Mega OTT.
 **Nao** prometer que o Jellyfin instalado ja faz isto: a versao 12.4.0 atualmente instalada autentica localmente e esta sem bibliotecas.
 
+## Contrato operativo definitivo: DNS unico visivel e catalogo dinamico
+
+**Cliente (Jellyfin oficial, nao APK PINK):**
+- O cliente configura apenas `https://serveriptv.duckdns.org` como servidor.
+- No ecrã normal Jellyfin insere o **username** e a **password** da sua subscricao Mega OTT.
+- Sem formulario M3U, sem segundo DNS, sem MAC, sem escolha de operador,
+  sem painel de playlists e sem necessidade de o revendedor criar manualmente
+  uma conta Jellyfin por pessoa.
+- O acesso validado deve fazer aparecer **automaticamente e apenas**
+  os canais/filmes/series/EPG permitidos pela subscricao autenticada.
+
+**Servidor privado e Mega OTT:**
+- `serveriptv.duckdns.org` e um endereco fixo da instalacao Jellyfin do
+  revendedor, nao um proxy DNS, uma playlist, nem um DNS Xtream.
+- O dominio nao identifica magicamente contas: o servidor Jellyfin recebe
+  o login e uma integracao propria no servidor tem de chamar o resolver
+  VivoAPK/Mega OTT e reconhecer o ID de subscricao.
+- O cofre privado tem os acessos de revendedor e o mapeamento por
+  subscricao. A gama de bases observadas na captura inclui
+  `zvpnm.com`, `fqvpnw.com`, `fhvpnw.com`, `beuaya.com`;
+  os URLs nativos Samsung/LG observados usam `daizsmart.com`.
+  Esses dominios existem **apenas na configuracao backend**, nunca
+  como campos que o utilizador preenche.
+- O codigo deve selecionar o **URL completo atribuido pelo Mega OTT**
+  (`dns_link` ou `dns_link_for_samsung_lg`) na plataforma adequada,
+  nao inventar subdominios ou formar URLs por concatenacao de bases fixas.
+  A lista do menu e uma referencia observada, nao uma whitelist imutavel.
+- Uma conta PINK conhecida podia ser reutilizada pelo mapeamento local;
+  novas contas eram descobertas pelo username na API Mega, verificadas
+  por ID, depois autenticadas por Xtream. Esse fluxo e a base do VivoAPK.
+- O carregamento de conteudo tem de ser **por identidade Jellyfin**,
+  automaticamente, nunca uma playlist global partilhada entre clientes.
+  Cada utilizador ve apenas a propria subscricao, com expiracao e revogacao.
+
+**Limite de privacidade e video:**
+Nao mostrar DNS Mega na interface nem os pedir ao utilizador e viavel
+como objetivo de UX; mas **nao se pode garantir que uma origem de
+streaming direto seja tecnicamente invisivel ao dispositivo/cliente**.
+URLs de media podem ser observados na rede ou na API do player.
+Oculta-los absolutamente exigiria intermediacao/proxy de media ou
+outro protocolo que a app Jellyfin suportasse, contrariando a
+condicao de nao usar largura de banda da VPS. Antes de afirmar
+segredo de endpoints ou reproducao direta com Jellyfin, testar o
+trafego de rede e os metadados transmitidos.
+
+**Estado atual (nao confundir com operacao):**
+O Jellyfin foi instalado e o backend Mega do PINK foi copiado para
+VivoAPK, mas **nao ha plugin de autenticacao Mega e catalogo dinamico
+por Jellyfin user a trabalhar na VPS**. O Jellyfin instalado continua
+com login proprio. O requisito so e entregue apos prova real do
+ecrã de login Jellyfin + importacao isolada de catalogo + playback
+no aparelho, sem configuracao individual no painel.
+
 ## Contrato corrigido: o cliente nao configura playlist nem DNS Mega
 
 **Esta e a sequencia exata exigida pelo proprietario:**
