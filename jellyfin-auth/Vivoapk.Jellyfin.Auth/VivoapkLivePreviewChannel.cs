@@ -56,7 +56,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     !channel.Id.All(char.IsAsciiDigit) ||
                     channel.Title.Length is < 1 or > 250)
                     continue;
-                // Android Jellyfin 2.7.3 forces HTTP direct play to HLS.\n                // The authorized Mega OTT RTP1 .m3u8 was verified as a real\n                // HLS manifest via a direct upstream 302 then HTTP 200.\n                var source = origin.TrimEnd('/') + "/live/"
+                // Android Jellyfin 2.7.3 forces HTTP direct play to HLS.
+                // The authorized Mega OTT RTP1 .m3u8 was verified as a real
+                // HLS manifest via a direct upstream 302 then HTTP 200.
+                var source = origin.TrimEnd('/') + "/live/"
                     + Uri.EscapeDataString(username) + "/"
                     + Uri.EscapeDataString(password) + "/"
                     + Uri.EscapeDataString(channel.Id) + ".m3u8";
