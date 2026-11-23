@@ -8,6 +8,7 @@ using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Cryptography;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Http;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
@@ -21,18 +22,21 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
     private readonly ICryptoProvider _cryptoProvider;
     private readonly IApplicationPaths _appPaths;
     private readonly ILogger<MegaAuthenticationProvider> _logger;
+    private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly MegaResolverClient _resolver = new();
 
     public MegaAuthenticationProvider(
         IApplicationHost appHost,
         ICryptoProvider cryptoProvider,
         IApplicationPaths appPaths,
-        ILogger<MegaAuthenticationProvider> logger)
+        ILogger<MegaAuthenticationProvider> logger,
+        IHttpContextAccessor httpContextAccessor)
     {
         _appHost = appHost;
         _cryptoProvider = cryptoProvider;
         _appPaths = appPaths;
         _logger = logger;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     public string Name => "VivoAPK Mega OTT";
@@ -59,7 +63,15 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
 
         // Jellyfin usernames compare case-insensitively. Keep the stored canonical name.
         var canonicalUsername = user?.Username ?? username;
-        var verified = await _resolver.ResolveAsync(canonicalUsername, password).ConfigureAwait(false);
+        // Standard Jellyfin sign-in: choose the provider DNS without another prompt.
+        var headers = _httpContextAccessor.HttpContext?.Request.Headers;
+        var platform = JellyfinClientPlatformDetector.FromHeaders(
+            headers is null ? null : string.Concat(
+                headers["X-Emby-Authorization"].ToString(), " ",
+                headers["Authorization"].ToString()),
+            headers is null ? null : headers["User-Agent"].ToString());
+        var verified = await _resolver.ResolveAsync(
+            canonicalUsername, password, platform: platform).ConfigureAwait(false);
         if (verified is null)
             throw new AuthenticationException("Invalid username or password.");
 
@@ -120,7 +132,7 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
         // in Jellyfin files or database and never enables a shared Live TV tuner.
         if (Plugin.Instance?.Configuration.PilotLiveChannels == true)
         {
-            var preview = await _resolver.PreviewAsync(verified.SessionToken).ConfigureAwait(false);
+            var preview = await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
             if (VivoapkLivePreviewChannel.Stage(
                 user.Id, preview, verified.Origin, canonicalUsername, password))
             {

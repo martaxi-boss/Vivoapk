@@ -10,6 +10,7 @@ public sealed class ServiceRegistrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
+        services.AddHttpContextAccessor();
         services.AddSingleton<IAuthenticationProvider, MegaAuthenticationProvider>();
         services.AddSingleton<IChannel, VivoapkLivePreviewChannel>();
     }
