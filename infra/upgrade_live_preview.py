@@ -32,7 +32,9 @@ CONF = JELLY / "data/plugins/configurations/Jellyfin.Plugin.VivoapkMegaAuth.xml"
 ADMIN_DB = JELLY / "data/data/jellyfin.db"
 VIVO = "vivoapk-backend.service"
 JELLY_SERVICE = "jellyfin-pink.service"
-OTHER = ("pink-iptv-backend.service", "pink-vpn.service", "nginx.service", "postgresql.service")
+OTHER = ("nginx.service", "postgresql.service")
+# PINK backend and VPN were removed; never restart or require them.
+RETIRED = ("pink-iptv-backend.service", "pink-vpn.service")
 BACKUP_ROOT = ROOT / "backups/live-channel-pilot"
 PILOT_MARKER = "VIVOAPK_LIVE_PILOT_V1"
 REMOTE = "https://github.com/martaxi-boss/Vivoapk.git"
@@ -97,6 +99,8 @@ def preflight(expected):
         raise Rejected("config_missing")
     if not active(VIVO) or not active(JELLY_SERVICE) or any(not active(n) for n in OTHER):
         raise Rejected("protected_services_unhealthy")
+    if any(active(n) for n in RETIRED):
+        raise Rejected("retired_pink_service_reactivated")
     if run(["git", "-C", str(SOURCE), "remote", "get-url", "origin"]) != REMOTE:
         raise Rejected("unexpected_source_remote")
     if run(["git", "-C", str(SOURCE), "status", "--porcelain=v1"]):
@@ -134,6 +138,8 @@ def backup_at(sha):
 def health(expected_preview):
     if not active(VIVO) or not active(JELLY_SERVICE) or any(not active(n) for n in OTHER):
         raise Rejected("postflight_service_unhealthy")
+    if any(active(n) for n in RETIRED):
+        raise Rejected("retired_pink_service_reactivated")
     if not local_ok(ROOT / "run/backend.sock", "/openapi.json"):
         raise Rejected("postflight_backend_failed")
     if not local_ok(JELLY / "run/jellyfin.sock", "/System/Info/Public"):
