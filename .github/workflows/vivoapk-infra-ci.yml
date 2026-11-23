@@ -23,6 +23,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check Python syntax
-        run: python3 -m py_compile infra/deploy.py infra/tests/test_deploy.py
+        run: python3 -m py_compile infra/deploy.py infra/upgrade_live_preview.py infra/tests/test_deploy.py
       - name: Verify deployment guardrails
         run: python3 -m unittest discover -v -s infra/tests
