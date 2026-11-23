@@ -528,44 +528,140 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         Items = new List<ChannelItemInfo>(), TotalRecordCount = 0
     };
 
-    public Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
+    public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
         string id, CancellationToken cancellationToken)
     {
-        PilotStream? stream = null;
-        PilotSnapshot? active = null;
+        PilotSnapshot? snapshot;
         lock (Gate)
         {
-            if (Plugin.Instance?.Configuration.PilotLiveChannels == true &&
-                Pilots.TryGetValue(_slot, out var snapshot) &&
-                snapshot.Expires > DateTime.UtcNow)
-            {
-                active = snapshot;
-                stream = snapshot.CategoryNavigation
-                    ? FindAuthorizedCategoryStream(snapshot, id)
-                    : snapshot.Streams.FirstOrDefault(x =>
-                        string.Equals(x.ExternalId, id, StringComparison.Ordinal));
-            }
+            snapshot = Plugin.Instance?.Configuration.PilotLiveChannels == true &&
+                Pilots.TryGetValue(_slot, out var stored) &&
+                stored.Expires > DateTime.UtcNow ? stored : null;
         }
-        IEnumerable<MediaSourceInfo> sources = stream is null || active is null
-            ? Array.Empty<MediaSourceInfo>() : new[] { Source(active, stream) };
-        return Task.FromResult(sources);
+        if (snapshot is null)
+            return Array.Empty<MediaSourceInfo>();
+        if (!snapshot.CategoryNavigation)
+        {
+            // Legacy bounded one-subscriber preview remains unchanged.
+            var pilot = snapshot.Streams.FirstOrDefault(x =>
+                string.Equals(x.ExternalId, id, StringComparison.Ordinal));
+            return pilot is null
+                ? Array.Empty<MediaSourceInfo>() : new[] { Source(snapshot, pilot) };
+        }
+
+        // No indexed source is trusted at playback: the backend revalidates
+        // provider entitlement and exact category/item membership each time.
+        // This rejects guessed IDs and revoked subscriptions.
+        var parts = id.Split(':');
+        string kind;
+        string categoryId;
+        string providerId;
+        string? extension = null;
+        string? seriesId = null;
+        if (parts.Length == 3 && parts[0] == "live" &&
+            Digits(parts[1]) && Digits(parts[2]))
+        {
+            kind = "live"; categoryId = parts[1]; providerId = parts[2];
+        }
+        else if (parts.Length == 4 && parts[0] == "vod" &&
+            Digits(parts[1]) && Digits(parts[2]) &&
+            ValidExtension(parts[3]) == parts[3] && parts[3] != "unknown")
+        {
+            kind = "vod"; categoryId = parts[1]; providerId = parts[2];
+            extension = parts[3];
+        }
+        else if (parts.Length == 5 && parts[0] == "ep" &&
+            Digits(parts[1]) && Digits(parts[2]) && Digits(parts[3]) &&
+            ValidExtension(parts[4]) == parts[4] && parts[4] != "unknown")
+        {
+            kind = "series"; categoryId = parts[1]; seriesId = parts[2];
+            providerId = parts[3]; extension = parts[4];
+        }
+        else
+            return Array.Empty<MediaSourceInfo>();
+
+        if (!HasCategory(snapshot, kind, categoryId))
+            return Array.Empty<MediaSourceInfo>();
+        var platform = RequestPlatform(snapshot);
+        var session = await PlaybackSessionAsync(snapshot, platform, cancellationToken)
+            .ConfigureAwait(false);
+        if (session is null)
+            return Array.Empty<MediaSourceInfo>();
+
+        if (kind == "series")
+        {
+            var detail = await _resolver.SeriesDetailAsync(
+                session.Value.Token, categoryId, seriesId!, platform,
+                cancellationToken).ConfigureAwait(false);
+            if (detail is null || !detail.Episodes.Any(ep =>
+                    string.Equals(ep.Id, providerId, StringComparison.Ordinal) &&
+                    string.Equals(ValidExtension(ep.Extension), extension,
+                        StringComparison.OrdinalIgnoreCase)))
+                return Array.Empty<MediaSourceInfo>();
+        }
+        else
+        {
+            var entries = await _resolver.CategoryItemsAsync(
+                session.Value.Token, categoryId, cancellationToken,
+                platform, kind).ConfigureAwait(false);
+            if (entries is null || !entries.Any(entry =>
+                    string.Equals(entry.Id, providerId, StringComparison.Ordinal) &&
+                    (kind == "live" ||
+                     string.Equals(ValidExtension(entry.Extension), extension,
+                         StringComparison.OrdinalIgnoreCase))))
+                return Array.Empty<MediaSourceInfo>();
+        }
+
+        // The URL is passed to the client's own Jellyfin player. It is NOT a
+        // Jellyfin relay/transcode URL and never lands in the item database.
+        return new[]
+        {
+            DirectSource(snapshot, session.Value.Origin, providerId, kind, extension)
+        };
     }
 
-    private static PilotStream? FindAuthorizedCategoryStream(PilotSnapshot snapshot, string id)
+    private static MediaSourceInfo DirectSource(
+        PilotSnapshot snapshot, string origin, string providerId,
+        string kind, string? extension)
     {
-        // A callback receives only the item external ID, not the user.
-        // The Jellyfin ChannelId remains exclusively reserved for the owner.
-        // Reject guessed category IDs outside this subscriber's root list.
-        if (!id.StartsWith("live:", StringComparison.Ordinal))
-            return null;
-        var parts = id.Split(':');
-        if (parts.Length != 3 ||
-            parts[1].Length is < 1 or > 64 || parts[2].Length is < 1 or > 64 ||
-            !parts[1].All(char.IsAsciiDigit) || !parts[2].All(char.IsAsciiDigit) ||
-            !snapshot.Streams.Any(x =>
-                string.Equals(x.ProviderId, parts[1], StringComparison.Ordinal)))
-            return null;
-        return new PilotStream(id, "TV ao vivo", parts[2]);
+        var folder = kind switch
+        {
+            "vod" => "movie",
+            "series" => "series",
+            _ => "live"
+        };
+        var ext = kind == "live" ? "m3u8" : extension!;
+        var uri = origin.TrimEnd('/') + "/" + folder + "/"
+            + Uri.EscapeDataString(snapshot.Username) + "/"
+            + Uri.EscapeDataString(snapshot.Password) + "/"
+            + Uri.EscapeDataString(providerId) + "." + ext;
+        var mp4 = string.Equals(ext, "mp4", StringComparison.OrdinalIgnoreCase);
+        var isLive = kind == "live";
+        return new MediaSourceInfo
+        {
+            Name = kind switch
+            {
+                "live" => "TV ao vivo",
+                "vod" => "Filme",
+                _ => "Episódio"
+            },
+            Path = uri,
+            Protocol = MediaProtocol.Http,
+            IsRemote = true,
+            IsInfiniteStream = isLive,
+            Container = isLive ? "mpegts" : ext,
+            MediaStreams = isLive || mp4 ? new List<MediaStream>
+            {
+                new() { Index = 0, Type = MediaStreamType.Video, Codec = "h264" },
+                new() { Index = 1, Type = MediaStreamType.Audio, Codec = "aac" }
+            } : new List<MediaStream>(),
+            SupportsDirectPlay = true,
+            SupportsDirectStream = false,
+            SupportsTranscoding = false,
+            SupportsProbing = false,
+            RequiresOpening = false,
+            RequiresClosing = false
+        };
     }
 
     private static MediaSourceInfo Source(PilotSnapshot owner, PilotStream stream) => new()
