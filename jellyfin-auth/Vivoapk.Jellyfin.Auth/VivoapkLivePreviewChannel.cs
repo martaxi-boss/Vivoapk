@@ -12,10 +12,10 @@ using MediaBrowser.Model.MediaInfo;
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
 /// <summary>
-/// Explicitly opt-in, ONE subscriber only pilot. Credentials stay transient in
-/// Jellyfin RAM; never written to STRM/M3U files, databases, logs or GitHub.
+/// Explicitly opt-in, bounded per-subscriber preview. Credentials stay transient
+/// in Jellyfin RAM; never written to STRM/M3U files, databases, logs or GitHub.
 /// The upstream URLs may still be visible to the account during playback.
-/// This is NOT a certified multi-tenant channel provider.
+/// This is NOT a certified multi-tenant channel provider until tested with a real Jellyfin server.
 /// </summary>
 public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCallback, IHasCacheKey
 {
@@ -23,11 +23,12 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     private sealed record PilotStream(string ExternalId, string Title, string Url);
     private sealed record PilotSnapshot(Guid Owner, DateTime Expires, List<PilotStream> Streams);
     private static readonly object Gate = new();
-    private static PilotSnapshot? _pilot;
+    private const int MaxActivePilots = 128;
+    private static readonly Dictionary<Guid, PilotSnapshot> Pilots = new();
 
     public string Name => ChannelName;
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-hls-v3-media-profile";
+    public string DataVersion => "pilot-hls-v4-per-user-preview";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -48,9 +49,13 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
         lock (Gate)
         {
-            // Never allow a second customer into the same global channel store.
-            if (_pilot is not null && _pilot.Expires > DateTime.UtcNow &&
-                _pilot.Owner != owner)
+            // Per-identity previews are never overwritten by another login.
+            // Keep the pilot memory bounded and remove expired snapshots.
+            var now = DateTime.UtcNow;
+            foreach (var expired in Pilots.Where(kv => kv.Value.Expires <= now)
+                         .Select(kv => kv.Key).ToArray())
+                Pilots.Remove(expired);
+            if (!Pilots.ContainsKey(owner) && Pilots.Count >= MaxActivePilots)
                 return false;
             var streams = new List<PilotStream>();
             foreach (var channel in channels)
@@ -71,7 +76,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             }
             if (streams.Count == 0)
                 return false;
-            _pilot = new PilotSnapshot(owner, DateTime.UtcNow.AddMinutes(30), streams);
+            Pilots[owner] = new PilotSnapshot(owner, DateTime.UtcNow.AddMinutes(30), streams);
             return true;
         }
     }
@@ -81,7 +86,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         lock (Gate)
         {
             return Plugin.Instance?.Configuration.PilotLiveChannels == true &&
-                _pilot is { } p && p.Owner == user && p.Expires > DateTime.UtcNow
+                Pilots.TryGetValue(user, out var p) && p.Expires > DateTime.UtcNow
                 ? p : null;
         }
     }
@@ -142,10 +147,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         PilotStream? stream;
         lock (Gate)
         {
-            stream = Plugin.Instance?.Configuration.PilotLiveChannels == true &&
-                _pilot is { } p && p.Expires > DateTime.UtcNow
-                ? p.Streams.FirstOrDefault(x => string.Equals(
-                    x.ExternalId, id, StringComparison.Ordinal)) : null;
+            stream = Plugin.Instance?.Configuration.PilotLiveChannels == true
+                ? Pilots.Values.Where(p => p.Expires > DateTime.UtcNow)
+                    .SelectMany(p => p.Streams)
+                    .FirstOrDefault(x => string.Equals(x.ExternalId, id, StringComparison.Ordinal))
+                : null;
         }
         IEnumerable<MediaSourceInfo> sources = stream is null
             ? Array.Empty<MediaSourceInfo>() : new[] { Source(stream) };
