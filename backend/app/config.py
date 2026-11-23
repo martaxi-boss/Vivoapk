@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     auth_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
     auth_rate_per_username: int = Field(default=10, ge=1, le=100)
     auth_rate_global: int = Field(default=120, ge=10, le=10000)
+    # Browsing hundreds of categories must not consume the *login* budget.
+    # Both budgets remain PostgreSQL-backed and rate-limited per identity.
+    catalog_rate_per_username: int = Field(default=180, ge=20, le=1000)
+    catalog_rate_global: int = Field(default=2400, ge=100, le=20000)
 
     @field_validator("mega_ott_api_base")
     @classmethod

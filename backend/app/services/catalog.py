@@ -87,7 +87,7 @@ class CatalogService:
             raise CatalogDenied("Subscription unavailable")
 
         # Existing, cross-worker admission budget; no passwords or usernames logged.
-        charge_auth_attempt(self._db, self._settings, mapping.username)
+        charge_auth_attempt(self._db, self._settings, mapping.username, purpose="catalog")
 
         mega = self._mega_client_factory()
         try:
