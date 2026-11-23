@@ -237,7 +237,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 xtream_client_factory=request.app.state.xtream_client_factory,
                 catalog_client_factory=request.app.state.catalog_client_factory,
             ).series_detail(
-                token=authorization[7:], platform=payload.platform, series_id=payload.series_id
+                token=authorization[7:], platform=payload.platform,
+                category_id=payload.category_id, series_id=payload.series_id
             )
         except CatalogDenied:
             raise HTTPException(
@@ -271,6 +272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 catalog_client_factory=request.app.state.catalog_client_factory,
             ).short_epg(
                 token=authorization[7:], platform=payload.platform,
+                category_id=payload.category_id,
                 stream_id=payload.stream_id, limit=payload.limit
             )
         except CatalogDenied:

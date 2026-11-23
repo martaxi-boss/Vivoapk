@@ -160,18 +160,28 @@ class CatalogService:
         category_id: str, platform: ClientPlatform
     ) -> CatalogListResponse:
         origin, username, password = self._authorize(token=token, platform=platform)
+        items = self._authorized_category_items(
+            origin=origin, username=username, password=password,
+            kind=kind, category_id=category_id,
+        )
+        return CatalogListResponse(kind=kind, categories=[], items=items)
+
+    def _authorized_category_items(
+        self, *, origin: str, username: str, password: str,
+        kind: CatalogKind, category_id: str
+    ) -> list[dict[str, str | None]]:
         catalogue = self._catalog_client_factory()
         categories = catalogue.list_categories(
             dns_link=origin, username=username, password=password, kind=kind,
         )
-        # Every category ID must be part of the CURRENT authorized subscription.
+        # Check both the owner's current category and each stream's category.
         if not any(category["id"] == category_id for category in categories):
             raise CatalogDenied("Category not authorized for subscription")
         items = catalogue.list_category_items(
             dns_link=origin, username=username, password=password,
             kind=kind, category_id=category_id,
         )
-        return CatalogListResponse(kind=kind, categories=[], items=items)
+        return [entry for entry in items if entry["category_id"] == category_id]
 
     def live_preview(self, *, token: str, platform: ClientPlatform) -> CatalogListResponse:
         origin, username, password = self._authorize(token=token, platform=platform)
@@ -184,31 +194,33 @@ class CatalogService:
         )
 
     def series_detail(
-        self, *, token: str, platform: ClientPlatform, series_id: str
+        self, *, token: str, platform: ClientPlatform,
+        category_id: str, series_id: str
     ) -> SeriesDetailResponse:
         origin, username, password = self._authorize(token=token, platform=platform)
-        catalogue = self._catalog_client_factory()
-        _, items = catalogue.list(
-            dns_link=origin, username=username, password=password, kind=CatalogKind.SERIES
+        entries = self._authorized_category_items(
+            origin=origin, username=username, password=password,
+            kind=CatalogKind.SERIES, category_id=category_id,
         )
-        if not any(entry["id"] == series_id for entry in items):
+        if not any(entry["id"] == series_id for entry in entries):
             raise CatalogDenied("Series not available for this subscription")
-        payload = catalogue.series_detail(
+        payload = self._catalog_client_factory().series_detail(
             dns_link=origin, username=username, password=password, series_id=series_id
         )
         return SeriesDetailResponse.model_validate(payload)
 
     def short_epg(
-        self, *, token: str, platform: ClientPlatform, stream_id: str, limit: int
+        self, *, token: str, platform: ClientPlatform,
+        category_id: str, stream_id: str, limit: int
     ) -> EpgResponse:
         origin, username, password = self._authorize(token=token, platform=platform)
-        catalogue = self._catalog_client_factory()
-        _, items = catalogue.list(
-            dns_link=origin, username=username, password=password, kind=CatalogKind.LIVE
+        entries = self._authorized_category_items(
+            origin=origin, username=username, password=password,
+            kind=CatalogKind.LIVE, category_id=category_id,
         )
-        if not any(entry["id"] == stream_id for entry in items):
+        if not any(entry["id"] == stream_id for entry in entries):
             raise CatalogDenied("Channel not available for this subscription")
-        payload = catalogue.short_epg(
+        payload = self._catalog_client_factory().short_epg(
             dns_link=origin, username=username, password=password,
             stream_id=stream_id, limit=limit
         )

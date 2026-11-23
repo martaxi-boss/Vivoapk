@@ -100,6 +100,9 @@ class CatalogListResponse(BaseModel):
 class SeriesDetailRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Required to authorize a bounded single-category lookup, not a giant
+    # provider-global list (which exceeds limits on real Mega subscriptions).
+    category_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     series_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     platform: ClientPlatform = ClientPlatform.ANDROID
 
@@ -127,6 +130,7 @@ class SeriesDetailResponse(BaseModel):
 class EpgRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    category_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     stream_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     limit: int = Field(default=10, ge=1, le=20)
     platform: ClientPlatform = ClientPlatform.ANDROID
