@@ -27,7 +27,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public string Name => ChannelName;
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-hls-v2-artwork";
+    public string DataVersion => "pilot-hls-v3-media-profile";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -159,7 +159,17 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         Protocol = MediaProtocol.Http,
         IsRemote = true,
         IsInfiniteStream = true,
-        Container = "m3u8",
+        // HLS is the delivery protocol; MPEG-TS is the media container in its
+        // segments. The bounded Portugal pilot was measured against the real
+        // provider (H.264/AAC). Android negotiates containers/codecs before it
+        // opens the URL: a playlist extension and an empty stream list cause
+        // Jellyfin to reject otherwise playable media for its device profile.
+        Container = "mpegts",
+        MediaStreams = new List<MediaStream>
+        {
+            new() { Index = 0, Type = MediaStreamType.Video, Codec = "h264" },
+            new() { Index = 1, Type = MediaStreamType.Audio, Codec = "aac" }
+        },
         SupportsDirectPlay = true,
         SupportsDirectStream = false,
         SupportsTranscoding = false,

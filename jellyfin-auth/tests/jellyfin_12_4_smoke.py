@@ -1,5 +1,6 @@
 """Disposable real Jellyfin 12.4 integration test. No Mega OTT accounts used."""
 import http.client
+import http.server
 import json
 import os
 from pathlib import Path
@@ -73,7 +74,7 @@ class BackendHandler(socketserver.StreamRequestHandler):
                 "code": "SUCCESS" if valid else "INVALID_CREDENTIALS",
                 "session_token": ("ci-session-b" if request.get("username") ==
                                   "synthetic-mega-user-b" else "ci-session-a") if valid else None,
-                "xtream_base_url": "http://provider.example.com" if valid else None,
+                "xtream_base_url": self.server.provider_origin if valid else None,
             }).encode()
         self.wfile.write(b"HTTP/1.1 " + response_code
                          + b"\r\nContent-Type: application/json\r\n"
@@ -82,6 +83,33 @@ class BackendHandler(socketserver.StreamRequestHandler):
 
 class BackendServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
+
+
+class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
+    """Test-only provider, outside Jellyfin. No real subscriber media."""
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        self.server.requests += 1
+        if self.path.startswith("/live/") and self.path.endswith(".m3u8"):
+            self.send_response(302)
+            self.send_header("Location", "/authorized/42.m3u8")
+            self.end_headers()
+            return
+        name = Path(self.path).name
+        target = self.server.media_root / (
+            "fixture.m3u8" if name == "42.m3u8" else name)
+        if name not in ("42.m3u8", "part000.ts", "part001.ts", "part002.ts") or not target.is_file():
+            self.send_error(404)
+            return
+        payload = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.apple.mpegurl"
+                         if name.endswith(".m3u8") else "video/mp2t")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
 class Connection(http.client.HTTPConnection):
     def __init__(self, path):
@@ -152,6 +180,23 @@ def main():
     monitor_key_path.write_text("synthetic-private-monitor-key-1234567890")
     monitor_key_path.chmod(0o600)
     mock = BackendServer(str(MOCK), BackendHandler)
+    synthetic_media = base / "synthetic-provider"
+    synthetic_media.mkdir()
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=600:sample_rate=48000",
+        "-t", "3", "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p",
+        "-g", "25", "-sc_threshold", "0", "-c:a", "aac",
+        "-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
+        "-hls_segment_filename", str(synthetic_media / "part%03d.ts"),
+        str(synthetic_media / "fixture.m3u8"),
+    ], check=True, timeout=30)
+    provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SyntheticHlsHandler)
+    provider.media_root = synthetic_media
+    provider.requests = 0
+    mock.provider_origin = "http://127.0.0.1:" + str(provider.server_port)
+    threading.Thread(target=provider.serve_forever, daemon=True).start()
     mock.statuses = {
         "synthetic-mega-user": "ACTIVE",
         "synthetic-mega-user-b": "ACTIVE",
@@ -342,8 +387,7 @@ def main():
                 "HlsPath": str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8"),
             } for source in media_sources],
         }, sort_keys=True), flush=True)
-        # A native m3u8 source is represented as ONE media source.
-        # The former MPEG-TS variant produced two Jellyfin alternatives.
+        # One HLS URL, with the actual segment container described separately.
         if len(media_sources) != 1 or any(
             source.get("SupportsDirectPlay") is not True
             or source.get("SupportsDirectStream") is not False
@@ -358,7 +402,7 @@ def main():
         # A real Mega OTT HLS playlist must be provided instead.
         if any(
             not str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8")
-            or str(source.get("Container") or "").lower() != "m3u8"
+            or str(source.get("Container") or "").lower() != "mpegts"
             for source in media_sources
         ):
             raise RuntimeError("Jellyfin pilot advertises non-HLS source to Android")
@@ -404,6 +448,29 @@ def main():
         ):
             raise RuntimeError("Native Android device profile cannot direct-play pilot")
         print("JELLYFIN_ANDROID_PROFILE_DIRECT_PLAY=PASS")
+        # Decode the exact URL returned by real Jellyfin. Requests go straight
+        # to the separate synthetic provider, including its HLS redirect.
+        source_url = sources[0].get("Path", "")
+        if not source_url.startswith(mock.provider_origin + "/live/"):
+            raise RuntimeError("Playback URL no longer points directly to provider")
+        decoded = subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", source_url,
+            "-t", "2", "-map", "0:v:0", "-map", "0:a:0",
+            "-f", "framemd5", "pipe:1",
+        ], capture_output=True, text=True, timeout=30)
+        frames = [line for line in decoded.stdout.splitlines()
+                  if line and not line.startswith("#")]
+        video_frames = sum(line.startswith("0,") for line in frames)
+        audio_frames = sum(line.startswith("1,") for line in frames)
+        if (decoded.returncode or video_frames < 40 or audio_frames < 20
+                or provider.requests < 3):
+            raise RuntimeError("Direct HLS fixture did not decode video and audio")
+        print("JELLYFIN_RETURNED_HLS_DECODE=" + json.dumps({
+            "video_frames": video_frames, "audio_frames": audio_frames,
+            "provider_requests": provider.requests, "jellyfin_media_requests": 0,
+            "real_provider": False,
+        }, sort_keys=True))
+        print("JELLYFIN_RETURNED_HLS_VIDEO_AUDIO_DIRECT=PASS")
         for path in DATAROOT.rglob("*"):
             if (path.is_symlink() or not path.is_file() or
                     path.stat().st_size > 16 * 1024 * 1024):
@@ -597,6 +664,8 @@ def main():
             jellyfin.kill()
         mock.shutdown()
         mock.server_close()
+        provider.shutdown()
+        provider.server_close()
         log.close()
         if MOCK.exists():
             MOCK.unlink()
