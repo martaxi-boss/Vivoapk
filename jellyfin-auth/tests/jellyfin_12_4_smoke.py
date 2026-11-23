@@ -342,6 +342,34 @@ def main():
             raise RuntimeError("Automatic Mega expiry failed to revoke B only")
         print("JELLYFIN_SYNTHETIC_EXPIRED_MEGA_AUTOMATIC_REVOCATION=PASS")
         print("JELLYFIN_SYNTHETIC_ACTIVE_MEGA_NATIVE_SESSION_PRESERVED=PASS")
+        # Renewal of the SAME provider subscription restores only the
+        # restriction created by the VivoAPK task; no new account/password.
+        mock.statuses["synthetic-mega-user-b"] = "ACTIVE"
+        restarted = False
+        for _ in range(30):
+            code, _ = request("POST",
+                              "/ScheduledTasks/Running/" + monitor_tasks[0]["Id"],
+                              token=token)
+            if code in (200, 204):
+                restarted = True
+                break
+            time.sleep(0.5)
+        if not restarted:
+            raise RuntimeError("Cannot re-run entitlement task after renewal")
+        renewed = False
+        for _ in range(60):
+            code, profile_b = request("GET", "/Users/" + account_b, token=token)
+            if code == 200 and profile_b and profile_b["Policy"].get("IsDisabled") is False:
+                renewed = True
+                break
+            time.sleep(0.5)
+        if not renewed:
+            raise RuntimeError("Renewed Mega subscription did not reactivate same Jellyfin identity")
+        code, logged_back = request("POST", "/Users/AuthenticateByName", {
+            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"})
+        if code != 200 or logged_back["User"]["Id"] != account_b:
+            raise RuntimeError("Renewed user cannot sign in with original Mega credentials")
+        print("JELLYFIN_SYNTHETIC_MEGA_RENEWAL_SAME_IDENTITY=PASS")
         code, _ = request("POST", "/Users/AuthenticateByName", {
             "Username": "ci-admin", "Pw": "synthetic-admin-password"})
         if code != 200:
