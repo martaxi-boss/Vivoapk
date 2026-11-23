@@ -103,7 +103,23 @@ def preflight(expected):
         raise Rejected("retired_pink_service_reactivated")
     if run(["git", "-C", str(SOURCE), "remote", "get-url", "origin"]) != REMOTE:
         raise Rejected("unexpected_source_remote")
-    if run(["git", "-C", str(SOURCE), "status", "--porcelain=v1"]):
+    # Existing .NET builds leave untracked bin/obj outputs inside the project.
+    # Preserve them, but reject ALL tracked edits or unknown untracked paths.
+    # Never run git clean or force an unreviewed checkout in production.
+    worktree = run(["git", "-C", str(SOURCE), "status", "--porcelain=v1",
+                    "--untracked-files=all"])
+    generated_prefixes = (
+        "jellyfin-auth/Vivoapk.Jellyfin.Auth/bin/",
+        "jellyfin-auth/Vivoapk.Jellyfin.Auth/obj/",
+    )
+    for entry in worktree.splitlines():
+        if not entry:
+            continue
+        path = entry[3:]
+        if (entry.startswith("?? ") and
+                not any(part in ("..", ".") for part in path.split("/")) and
+                any(path.startswith(prefix) for prefix in generated_prefixes)):
+            continue
         raise Rejected("dirty_production_checkout")
     if shutil.disk_usage(ROOT).free < 6 * 1024**3:
         raise Rejected("low_disk_space")
