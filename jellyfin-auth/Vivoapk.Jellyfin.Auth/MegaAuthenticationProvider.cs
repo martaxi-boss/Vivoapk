@@ -133,12 +133,13 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
         if (Plugin.Instance?.Configuration.PilotLiveChannels == true)
         {
             var preview = await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
-            if (VivoapkLivePreviewChannel.Stage(
-                user.Id, preview, verified.Origin, canonicalUsername, password))
+            var subscriberChannel = VivoapkLivePreviewChannel.Stage(
+                user.Id, preview, verified.Origin, canonicalUsername, password);
+            if (subscriberChannel is not null)
             {
                 var library = _appHost.Resolve<ILibraryManager>();
                 var channelId = library.GetNewItemId(
-                    "Channel " + VivoapkLivePreviewChannel.ChannelName,
+                    "Channel " + subscriberChannel,
                     typeof(MediaBrowser.Controller.Channels.Channel));
                 user.SetPermission(PermissionKind.EnableAllChannels, false);
                 user.SetPreference(PreferenceKind.EnabledChannels, new[] { channelId });
