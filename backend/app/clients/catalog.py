@@ -279,7 +279,18 @@ class XtreamCatalogClient:
                     playable_candidates.sort(
                         key=lambda item: _preview_channel_rank(item["title"])
                     )
-                    return [category], playable_candidates[:5]
+                    selected: list[dict[str, str | None]] = []
+                    seen_stations: set[int] = set()
+                    for item in playable_candidates:
+                        station = _preview_channel_rank(item["title"])
+                        if station < 5 and station in seen_stations:
+                            continue
+                        if station < 5:
+                            seen_stations.add(station)
+                        selected.append(item)
+                        if len(selected) == 5:
+                            break
+                    return [category], selected
         return [], []
 
     def _detail_request(
