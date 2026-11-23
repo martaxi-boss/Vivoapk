@@ -21,8 +21,7 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCallback, IHasCacheKey
 {
     public const int MaxChannels = 2; // test-only experiment; no production rollout
-    private const int MaxIndexedCategoryMedia = 20000;
-    private readonly int _slot;
+      private readonly int _slot;
     private readonly MegaResolverClient _resolver = new();
     public VivoapkLivePreviewChannel(int slot)
     {
@@ -38,9 +37,8 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         bool CategoryNavigation, string Platform, string? SessionToken)
     {
         public string? CurrentToken { get; set; } = SessionToken;
-        // Ephemeral per-subscriber data, never included in the item database.
-        public Dictionary<string, PilotStream> LoadedStreams { get; } =
-            new(StringComparer.Ordinal);
+        // No global index of 28,841 channels in Jellyfin RAM:
+        // each media source can be resolved from its stable, category-scoped ID.
     }
     private static readonly object Gate = new();
     private static readonly Dictionary<int, PilotSnapshot> Pilots = new();
@@ -252,40 +250,23 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                         snapshot.CurrentToken = refreshed.SessionToken;
                 }
             }
-            var staged = new List<PilotStream>(entries.Count);
-            list = new List<ChannelItemInfo>(entries.Count);
-            foreach (var entry in entries)
+            list = entries.Select(entry => new ChannelItemInfo
             {
-                // Category-scoped item IDs avoid reparenting a channel
-                // indexed in two different provider categories.
-                var externalId = "live:" + category.ProviderId + ":" + entry.Id;
-                staged.Add(new PilotStream(externalId, entry.Title, entry.Id));
-                list.Add(new ChannelItemInfo
-                {
-                    Id = externalId,
-                    Name = entry.Title,
-                    Type = ChannelItemType.Media,
-                    MediaType = ChannelMediaType.Video,
-                    ContentType = ChannelMediaContentType.Clip,
-                    IsLiveStream = true
-                });
-            }
+                // Each category streams only its items, with stable IDs.
+                // No media URLs or bulk in-RAM index are persisted.
+                Id = "live:" + category.ProviderId + ":" + entry.Id,
+                Name = entry.Title,
+                Type = ChannelItemType.Media,
+                MediaType = ChannelMediaType.Video,
+                ContentType = ChannelMediaContentType.Clip,
+                IsLiveStream = true
+            }).ToList();
             lock (Gate)
             {
                 if (!Pilots.TryGetValue(_slot, out var active) ||
                     !ReferenceEquals(active, snapshot) ||
                     snapshot.Expires <= DateTime.UtcNow)
                     return EmptyResult();
-                var prefix = "live:" + category.ProviderId + ":";
-                var previous = snapshot.LoadedStreams.Keys.Where(key =>
-                    key.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
-                var projected = snapshot.LoadedStreams.Count - previous.Length + staged.Count;
-                if (projected > MaxIndexedCategoryMedia)
-                    return EmptyResult();
-                foreach (var key in previous)
-                    snapshot.LoadedStreams.Remove(key);
-                foreach (var item in staged)
-                    snapshot.LoadedStreams[item.ExternalId] = item;
             }
         }
         var total = list.Count;
@@ -314,7 +295,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             {
                 active = snapshot;
                 stream = snapshot.CategoryNavigation
-                    ? snapshot.LoadedStreams.GetValueOrDefault(id)
+                    ? FindAuthorizedCategoryStream(snapshot, id)
                     : snapshot.Streams.FirstOrDefault(x =>
                         string.Equals(x.ExternalId, id, StringComparison.Ordinal));
             }
@@ -322,6 +303,23 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         IEnumerable<MediaSourceInfo> sources = stream is null || active is null
             ? Array.Empty<MediaSourceInfo>() : new[] { Source(active, stream) };
         return Task.FromResult(sources);
+    }
+
+    private static PilotStream? FindAuthorizedCategoryStream(PilotSnapshot snapshot, string id)
+    {
+        // A callback receives only the item external ID, not the user.
+        // The Jellyfin ChannelId remains exclusively reserved for the owner.
+        // Reject guessed category IDs outside this subscriber's root list.
+        if (!id.StartsWith("live:", StringComparison.Ordinal))
+            return null;
+        var parts = id.Split(':');
+        if (parts.Length != 3 ||
+            parts[1].Length is < 1 or > 64 || parts[2].Length is < 1 or > 64 ||
+            !parts[1].All(char.IsAsciiDigit) || !parts[2].All(char.IsAsciiDigit) ||
+            !snapshot.Streams.Any(x =>
+                string.Equals(x.ProviderId, parts[1], StringComparison.Ordinal)))
+            return null;
+        return new PilotStream(id, "TV ao vivo", parts[2]);
     }
 
     private static MediaSourceInfo Source(PilotSnapshot owner, PilotStream stream) => new()
