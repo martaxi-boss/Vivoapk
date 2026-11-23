@@ -467,3 +467,98 @@ def test_series_and_guide_upstream_responses_are_sanitized(public_resolver):
     }]
     assert "http" not in str(info) + str(guide)
     assert "secret" not in str(info) + str(guide)
+
+
+def test_live_preview_skips_account_information_without_streaming(public_resolver):
+    """The first Mega OTT category can be 'Account Information', not TV."""
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params["action"]
+        category_id = request.url.params.get("category_id")
+        requests.append((action, category_id))
+        assert request.url.path == "/player_api.php"
+        if action == "get_live_categories":
+            return httpx.Response(200, json=[
+                {"category_id": "1", "category_name": "Account Information"},
+                {"category_id": "2", "category_name": "Portugal"},
+            ])
+        assert action == "get_live_streams" and category_id == "2"
+        return httpx.Response(200, json=[
+            {"stream_id": 5, "name": "Account Information", "category_id": "2"},
+            {"stream_id": 6, "name": "Canal Português", "category_id": "2"},
+        ])
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    categories, items = adapter.preview_live(
+        dns_link="http://stream.example.com", username="demo",
+        password="test-only-password",
+    )
+    assert categories == [{"id": "2", "name": "Portugal"}]
+    assert [item["title"] for item in items] == ["Canal Português"]
+    assert requests == [("get_live_categories", None), ("get_live_streams", "2")]
+    assert "test-only-password" not in str(categories) + str(items)
+
+
+def test_live_preview_ignores_nonplayable_first_category(public_resolver):
+    """When the info label is a channel, advance to the next TV category."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params["action"]
+        category_id = request.url.params.get("category_id")
+        calls.append((action, category_id))
+        if action == "get_live_categories":
+            return httpx.Response(200, json=[
+                {"category_id": "1", "category_name": "Geral"},
+                {"category_id": "2", "category_name": "Desporto"},
+            ])
+        return httpx.Response(200, json=(
+            [{"stream_id": 10, "name": "Account Information", "category_id": "1"}]
+            if category_id == "1"
+            else [{"stream_id": 11, "name": "Desporto TV", "category_id": "2"}]
+        ))
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    categories, items = adapter.preview_live(
+        dns_link="http://stream.example.com", username="demo", password="test-only-password",
+    )
+    assert categories == [{"id": "2", "name": "Desporto"}]
+    assert len(items) == 1 and items[0]["id"] == "11"
+    assert calls == [
+        ("get_live_categories", None), ("get_live_streams", "1"),
+        ("get_live_streams", "2"),
+    ]
+
+
+def test_live_preview_bounds_metadata_requests(public_resolver):
+    """An all-information lineup fails closed without querying every category."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params["action"]
+        calls.append(action)
+        if action == "get_live_categories":
+            return httpx.Response(200, json=[
+                {"category_id": str(i), "category_name": f"Categoria {i}"}
+                for i in range(1, 25)
+            ])
+        return httpx.Response(200, json=[
+            {"stream_id": 30, "name": "Account Information"}
+        ])
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    assert adapter.preview_live(
+        dns_link="http://stream.example.com", username="demo", password="test-only-password",
+    ) == ([], [])
+    assert calls == ["get_live_categories"] + ["get_live_streams"] * 6
+
