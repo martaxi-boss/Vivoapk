@@ -273,6 +273,20 @@ def main():
                 raise RuntimeError(
                     "Pilot leaked synthetic provider secret into Jellyfin persisted files")
         print("JELLYFIN_PILOT_NO_CREDENTIALS_PERSISTED=PASS")
+        # MediaSourceInfo must be generated only on the owner's explicit
+        # playback-info request, not during indexing or catalog browsing.
+        code, owner_media = request(
+            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_a,
+            {}, token=customer["AccessToken"])
+        if code != 200 or not isinstance(owner_media, dict) or not owner_media.get("MediaSources"):
+            raise RuntimeError("Pilot playback source not available to its owner")
+        for path in DATAROOT.rglob("*"):
+            if (path.is_symlink() or not path.is_file() or
+                    path.stat().st_size > 16 * 1024 * 1024):
+                continue
+            if b"synthetic-mega-password" in path.read_bytes():
+                raise RuntimeError("Playback info wrote provider password to Jellyfin storage")
+        print("JELLYFIN_PILOT_SOURCE_AT_PLAYBACK_ONLY=PASS")
         print("JELLYFIN_SYNTHETIC_MEGA_NATIVE_CHANNEL_VISIBLE=PASS")
         print("JELLYFIN_SYNTHETIC_MEGA_PILOT_ACCOUNT_ISOLATION=PASS")
 
