@@ -21,7 +21,7 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if len(parts) < 3 or parts[0] != b"POST":
             return
         route = parts[1]
-        if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status"):
+        if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status", b"/v1/catalog/preview"):
             return
         length = 0
         headers = {}
@@ -36,7 +36,20 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if not 0 < length < 4096:
             return
         request = json.loads(self.rfile.read(length))
-        if route == b"/_internal/entitlement/status":
+        if route == b"/v1/catalog/preview":
+            auth = headers.get(b"authorization", b"")
+            if auth not in (b"Bearer ci-session-a", b"Bearer ci-session-b"):
+                response_code = b"401 Unauthorized"
+                body = b'{"detail":"Unauthorized"}'
+            else:
+                name = "Canal CI Azul" if auth.endswith(b"-a") else "Canal CI Verde"
+                response_code = b"200 OK"
+                body = json.dumps({
+                    "kind": "live", "categories": [{"id": "10", "name": "Teste"}],
+                    "items": [{"id": "42", "title": name, "category_id": "10",
+                               "container_extension": None}]
+                }).encode()
+        elif route == b"/_internal/entitlement/status":
             if headers.get(b"x-vivoapk-monitor-key") != (
                 b"synthetic-private-monitor-key-1234567890"
             ):
@@ -56,7 +69,12 @@ class BackendHandler(socketserver.StreamRequestHandler):
                 and request.get("platform") == "android"
             )
             response_code = b"200 OK"
-            body = json.dumps({"code": "SUCCESS" if valid else "INVALID_CREDENTIALS"}).encode()
+            body = json.dumps({
+                "code": "SUCCESS" if valid else "INVALID_CREDENTIALS",
+                "session_token": ("ci-session-b" if request.get("username") ==
+                                  "synthetic-mega-user-b" else "ci-session-a") if valid else None,
+                "xtream_base_url": "http://provider.example.com" if valid else None,
+            }).encode()
         self.wfile.write(b"HTTP/1.1 " + response_code
                          + b"\r\nContent-Type: application/json\r\n"
                          + b"Content-Length: " + str(len(body)).encode()
@@ -180,7 +198,7 @@ def main():
 
         # CI TEST ONLY: enable the otherwise disabled auth plugin in disposable Jellyfin.
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
-                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True}, token=token)
+                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True, "PilotLiveChannels": True}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -204,6 +222,34 @@ def main():
         account_b = customer_b["User"]["Id"]
         if account_a.replace("-", "") == account_b.replace("-", ""):
             raise RuntimeError("Two synthetic customers share Jellyfin identity")
+
+        # A single test customer can see native pilot channels, never the
+        # second customer's media. The backend and stream URL are synthetic.
+        code, channels_a = request("GET", "/Channels?UserId=" + account_a,
+                                   token=customer["AccessToken"])
+        if code != 200 or not isinstance(channels_a, dict):
+            raise RuntimeError("Native pilot channel list unavailable")
+        pilot_a = [x for x in channels_a.get("Items", [])
+                   if x.get("Name") == "VivoAPK — TV de teste"]
+        if len(pilot_a) != 1:
+            raise RuntimeError("Owner cannot see own native preview TV channel")
+        code, channels_b = request("GET", "/Channels?UserId=" + account_b,
+                                   token=customer_b["AccessToken"])
+        if code != 200 or not isinstance(channels_b, dict):
+            raise RuntimeError("Second account channel list unavailable")
+        if any(x.get("Name") == "VivoAPK — TV de teste"
+               for x in channels_b.get("Items", [])):
+            raise RuntimeError("Cross-subscriber pilot channel exposed")
+        channel_id = pilot_a[0]["Id"]
+        code, pilot_items = request(
+            "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a,
+            token=customer["AccessToken"])
+        if code != 200 or not isinstance(pilot_items, dict) or not pilot_items.get("Items"):
+            raise RuntimeError("Pilot channel did not produce visible media items")
+        if pilot_items["Items"][0].get("Name") != "Canal CI Azul":
+            raise RuntimeError("Pilot channel content did not match owner")
+        print("JELLYFIN_SYNTHETIC_MEGA_NATIVE_CHANNEL_VISIBLE=PASS")
+        print("JELLYFIN_SYNTHETIC_MEGA_PILOT_ACCOUNT_ISOLATION=PASS")
 
         users = {
             "alpha": (account_a, customer["AccessToken"]),
