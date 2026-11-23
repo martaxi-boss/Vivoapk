@@ -25,6 +25,8 @@ do cliente no backend **já instalado** em
 
 ## Estado e limites atuais
 
+O teste com a aplicação servidora Jellyfin 12.4 real (descartável) passou em [GitHub Actions #45086626328](https://github.com/martaxi-boss/Vivoapk/actions/runs/45086626328): login de administrador preservado, criação automática de utilizador com credenciais Mega fictícias, rejeição de password errada. **Não é um teste com Mega OTT verdadeiro nem com a VPS de produção.**
+
 Este plugin **não apresenta** canais, filmes e séries no Jellyfin ainda.
 A obtenção de catálogo por utilizador e a revogação de sessões ativas quando
 a assinatura termina exigem uma segunda integração segura. Não é correto usar
