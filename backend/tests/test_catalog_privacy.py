@@ -64,14 +64,16 @@ class FakeCatalog:
 
     def list_categories(self, **kwargs):
         self.calls.append(kwargs)
-        category = "10" if kwargs["username"] == "sub-a" else "20"
+        category = ("20" if kwargs["kind"] == CatalogKind.SERIES else
+                    "10" if kwargs["username"] == "sub-a" else "20")
         return [{"id": category, "name": "Categoria particular"}]
 
     def list_category_items(self, **kwargs):
         self.calls.append(kwargs)
         suffix = "Azul" if kwargs["username"] == "sub-a" else "Verde"
         return [{
-            "id": "301" if kwargs["username"] == "sub-a" else "401",
+            "id": ("301" if kwargs["username"] == "sub-a" else "401")
+                  if kwargs["kind"] == CatalogKind.SERIES else "101",
             "title": "Canal " + suffix,
             "category_id": kwargs["category_id"],
             "container_extension": None,
@@ -419,25 +421,40 @@ def test_series_and_guide_are_scoped_to_logged_in_account(settings, session_fact
         "sub-b": ("401", "101", "synthetic-b"),
     }
     for name, (series_id, channel_id, password) in expected.items():
-        series = post(name, "/v1/catalog/series", {"series_id": series_id})
+        series = post(name, "/v1/catalog/series", {
+            "category_id": "20", "series_id": series_id})
         assert series.status_code == 200
         assert series.headers["Cache-Control"] == "no-store"
         assert series.json()["episodes"][0]["title"] == "Episódio 1"
         assert password not in series.text
-        epg = post(name, "/v1/catalog/epg", {"stream_id": channel_id, "limit": 2})
+        epg = post(name, "/v1/catalog/epg", {
+            "category_id": "10" if name == "sub-a" else "20",
+            "stream_id": channel_id, "limit": 2})
         assert epg.status_code == 200
         assert epg.json()["programmes"][0]["title"] == "Jornal"
         assert password not in epg.text
 
     # User A cannot ask the provider for a series present only in user B's list.
     before = len(catalogue.calls)
-    forbidden = post("sub-a", "/v1/catalog/series", {"series_id": "401"})
+    forbidden = post("sub-a", "/v1/catalog/series", {
+        "category_id": "20", "series_id": "401"})
     assert forbidden.status_code == 401
-    assert len(catalogue.calls) == before + 1  # only the account-scoped listing
-    assert post("sub-a", "/v1/catalog/epg", {"stream_id": "999"}).status_code == 401
-    assert post("sub-b", "/v1/catalog/series", {"series_id": "../../bad"}).status_code == 422
-    assert post("sub-b", "/v1/catalog/epg", {"stream_id": "101", "limit": 30}).status_code == 422
-    assert client.post("/v1/catalog/series", json={"series_id": "301"}).status_code == 401
+    assert len(catalogue.calls) == before + 2  # categories and scoped items only
+    assert post("sub-a", "/v1/catalog/epg", {
+        "category_id": "10", "stream_id": "999"}).status_code == 401
+    assert post("sub-b", "/v1/catalog/series", {
+        "category_id": "20", "series_id": "../../bad"}).status_code == 422
+    assert post("sub-b", "/v1/catalog/epg", {
+        "category_id": "20", "stream_id": "101", "limit": 30}).status_code == 422
+    assert client.post("/v1/catalog/series", json={
+        "category_id": "20", "series_id": "301"}).status_code == 401
+    # Both detail endpoints reject absent category IDs rather than trigger
+    # unbounded provider-global list requests.
+    assert post("sub-a", "/v1/catalog/series", {
+        "series_id": "301"}).status_code == 422
+    assert post("sub-a", "/v1/catalog/epg", {
+        "stream_id": "101"}).status_code == 422
+    assert not any("list" in str(call) for call in catalogue.calls[-10:])
 
 
 def test_series_and_guide_upstream_responses_are_sanitized(public_resolver):

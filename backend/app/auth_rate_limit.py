@@ -26,9 +26,12 @@ def charge_auth_attempt(
     username: str,
     *,
     now: datetime | None = None,
+    purpose: str = "login",
 ) -> None:
     """Limit both repeated identities and distributed username rotation."""
 
+    if purpose not in ("login", "catalog"):
+        raise ValueError("Unrecognized rate limit purpose")
     current = now or datetime.now(UTC)
     if current.tzinfo is None or current.utcoffset() is None:
         raise ValueError("rate limit time must be timezone aware")
@@ -41,7 +44,12 @@ def charge_auth_attempt(
         username.encode(),
         "sha256",
     ).hexdigest()
-    user_bucket = "u:" + user_hash
+    user_bucket = ("u:" if purpose == "login" else "c:u:") + user_hash
+    global_bucket = _GLOBAL if purpose == "login" else "c:global"
+    global_max = (settings.auth_rate_global if purpose == "login"
+                  else settings.catalog_rate_global)
+    user_max = (settings.auth_rate_per_username if purpose == "login"
+                else settings.catalog_rate_per_username)
 
     try:
         dialect = db.get_bind().dialect.name
@@ -51,19 +59,21 @@ def charge_auth_attempt(
             # A per-process in-memory fallback would silently bypass this protection.
             raise RuntimeError("Production authentication budget requires PostgreSQL")
 
-        shared = db.get(AuthRateWindow, _GLOBAL)
+        shared = db.get(AuthRateWindow, global_bucket)
         if shared is None:
-            shared = AuthRateWindow(bucket_key=_GLOBAL, window_number=window_number, attempts=0)
+            shared = AuthRateWindow(bucket_key=global_bucket, window_number=window_number, attempts=0)
             db.add(shared)
         elif shared.window_number != window_number:
-            # At most the previous window's bounded rows survive until rollover.
-            db.execute(delete(AuthRateWindow).where(AuthRateWindow.bucket_key != _GLOBAL))
+            # Reset ONLY this purpose's hashed buckets. Never clear a
+            # different admission budget when logging in or browsing.
+            prefix = "u:%" if purpose == "login" else "c:u:%"
+            db.execute(delete(AuthRateWindow).where(AuthRateWindow.bucket_key.like(prefix)))
             shared.window_number = window_number
             shared.attempts = 0
 
         # A saturated global budget must not allocate a row for each attacker-
         # supplied username. Otherwise the limiter itself permits table flooding.
-        blocked = shared.attempts >= settings.auth_rate_global
+        blocked = shared.attempts >= global_max
         if not blocked:
             individual = db.get(AuthRateWindow, user_bucket)
             if individual is None:
@@ -71,7 +81,7 @@ def charge_auth_attempt(
                     bucket_key=user_bucket, window_number=window_number, attempts=0
                 )
                 db.add(individual)
-            blocked = individual.attempts >= settings.auth_rate_per_username
+            blocked = individual.attempts >= user_max
             if not blocked:
                 shared.attempts += 1
                 individual.attempts += 1

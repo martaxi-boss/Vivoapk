@@ -131,3 +131,29 @@ def test_no_unsafe_sqlite_fallback_outside_tests(db, settings):
     with pytest.raises(HTTPException) as denied:
         charge_auth_attempt(db, deployed, "u")
     assert denied.value.status_code == 503
+
+
+def test_catalog_budget_is_separate_from_login_budget(db, settings):
+    limited = settings.model_copy(update={
+        "auth_rate_per_username": 1,
+        "auth_rate_global": 2,
+        "catalog_rate_per_username": 20,
+        "catalog_rate_global": 100,
+    })
+    now = datetime(2026, 10, 8, 12, 0, 3, tzinfo=UTC)
+    charge_auth_attempt(db, limited, "user-a", now=now)
+    with pytest.raises(HTTPException) as login_blocked:
+        charge_auth_attempt(db, limited, "user-a", now=now)
+    assert login_blocked.value.status_code == 429
+
+    for _ in range(12):
+        charge_auth_attempt(db, limited, "user-a", now=now, purpose="catalog")
+    rows = db.scalars(select(AuthRateWindow)).all()
+    assert any(row.bucket_key == "c:global" and row.attempts == 12 for row in rows)
+    assert any(row.bucket_key == "global" and row.attempts == 1 for row in rows)
+    # A catalog window rollover cannot reset a still-saturated login counter.
+    charge_auth_attempt(db, limited, "user-a",
+                        now=now + timedelta(minutes=1), purpose="catalog")
+    with pytest.raises(HTTPException) as still_login_limited:
+        charge_auth_attempt(db, limited, "user-a", now=now)
+    assert still_login_limited.value.status_code == 429

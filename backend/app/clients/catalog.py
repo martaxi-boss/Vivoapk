@@ -285,7 +285,7 @@ class XtreamCatalogClient:
         )
         items = _parse_items(raw, kind, id_field)
         return [entry for entry in items
-                if entry["category_id"] in (category_id, None)]
+                if entry["category_id"] == category_id]
 
     def preview_live(
         self, *, dns_link: str, username: str, password: str
