@@ -118,7 +118,11 @@ def atomically_copy(source, target):
     if temp.exists() or temp.is_symlink():
         raise Rejected("unsafe_temp_file")
     try:
+        current = target.stat() if target.is_file() else None
         shutil.copy2(source, temp)
+        if current is not None:
+            os.chown(temp, current.st_uid, current.st_gid)
+            os.chmod(temp, current.st_mode & 0o777)
         os.replace(temp, target)
     finally:
         if temp.exists():
@@ -166,85 +170,93 @@ def main():
     prior_admin = None
     save = backup_at(args.sha)
     try:
+        if args.mode == "rollback":
+            # Emergency rollback works even when the updated service is down.
+            if os.geteuid() != 0 or not re.fullmatch("[0-9a-f]{40}", args.sha):
+                raise Rejected("rollback_requires_root_and_sha")
+            marker = save / PILOT_MARKER
+            if marker.is_symlink() or not marker.is_file():
+                raise Rejected("backup_marker_missing")
+            prior = marker.read_text().strip()
+            if not re.fullmatch("[0-9a-f]{40}", prior):
+                raise Rejected("invalid_backup_marker")
+            if not (save / "plugin.dll").is_file() or not (save / "plugin-config.xml").is_file():
+                raise Rejected("backup_components_missing")
+            _restore(save, prior)
+            result["status"] = "rolled_back"
+            result["changed"] = True
+            print(json.dumps(result, sort_keys=True))
+            return 0
+
         old_sha, prior_admin = preflight(args.sha)
         result["original_revision"] = old_sha[:12]
         if args.mode == "preflight":
             result["status"] = "pass"
-        elif args.mode == "rollback":
-            if not (save / PILOT_MARKER).is_file() or (save / PILOT_MARKER).read_text().strip() != old_sha:
-                # Current SHA after deploy is not original, so get pinned original from marker.
-                if not (save / PILOT_MARKER).is_file():
-                    raise Rejected("backup_marker_missing")
-            prior = (save / PILOT_MARKER).read_text().strip()
-            if not re.fullmatch("[0-9a-f]{40}", prior):
-                raise Rejected("invalid_backup_marker")
-            _restore(save, prior)
-            result["status"] = "rolled_back"
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        if save.exists() or save.is_symlink():
+            raise Rejected("existing_backup_requires_review")
+        # One exact public source commit, no mutable floating branch.
+        run(["git", "-C", str(SOURCE), "fetch", "--no-tags", "--depth", "1", "origin", args.sha], timeout=110)
+        got = run(["git", "-C", str(SOURCE), "rev-parse", "FETCH_HEAD"])
+        if got != args.sha:
+            raise Rejected("fetched_sha_mismatch")
+        save.mkdir(parents=True, mode=0o700)
+        os.chmod(save, 0o700)
+        shutil.copy2(DLL, save / "plugin.dll")
+        shutil.copy2(CONF, save / "plugin-config.xml")
+        (save / PILOT_MARKER).write_text(old_sha)
+        os.chmod(save / PILOT_MARKER, 0o600)
+        try:
+            run(["git", "-C", str(SOURCE), "checkout", "--detach", args.sha], timeout=70)
+            project = SOURCE / "jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj"
+            cache = ROOT / "jellyfin-auth/build-cache"
+            cache.mkdir(parents=True, exist_ok=True)
+            home = cache / "dotnet-home"
+            nuget = cache / "nuget"
+            home.mkdir(parents=True, exist_ok=True)
+            nuget.mkdir(parents=True, exist_ok=True)
+            env = {**os.environ, "DOTNET_CLI_HOME": str(home), "NUGET_PACKAGES": str(nuget),
+                   "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1"}
+            run(["dotnet", "restore", str(project)], env=env, timeout=160)
+            run(["dotnet", "build", str(project), "-c", "Release", "--no-restore"], env=env, timeout=160)
+            compiled = project.parent / "bin/Release/net10.0/Jellyfin.Plugin.VivoapkMegaAuth.dll"
+            if not compiled.is_file() or compiled.stat().st_size < 6000:
+                raise Rejected("compiled_plugin_missing")
+            run(["systemctl", "stop", JELLY_SERVICE], timeout=45)
+            run(["systemctl", "stop", VIVO], timeout=45)
+            atomically_copy(compiled, DLL)
+            xml = ElementTree.parse(CONF)
+            root = xml.getroot()
+            flag = root.find("PilotLiveChannels")
+            if flag is None:
+                flag = ElementTree.SubElement(root, "PilotLiveChannels")
+            flag.text = "true"
+            temp = save / "new-config.xml"
+            xml.write(temp, encoding="utf-8", xml_declaration=True)
+            atomically_copy(temp, CONF)
+            run(["systemctl", "start", VIVO], timeout=55)
+            run(["systemctl", "start", JELLY_SERVICE], timeout=55)
+            for _ in range(60):
+                try:
+                    health(expected_preview=True)
+                    break
+                except Rejected:
+                    time.sleep(1)
+            else:
+                raise Rejected("pilot_postflight_timeout")
+            if admin_digest() != prior_admin:
+                raise Rejected("admin_changed_during_pilot")
+            result["status"] = "pilot_enabled"
             result["changed"] = True
-        else:
-            if save.exists() or save.is_symlink():
-                raise Rejected("existing_backup_requires_review")
-            # One exact public source commit, no mutable floating branch.
-            run(["git", "-C", str(SOURCE), "fetch", "--no-tags", "--depth", "1", "origin", args.sha], timeout=110)
-            got = run(["git", "-C", str(SOURCE), "rev-parse", "FETCH_HEAD"])
-            if got != args.sha:
-                raise Rejected("fetched_sha_mismatch")
-            save.mkdir(parents=True, mode=0o700)
-            os.chmod(save, 0o700)
-            shutil.copy2(DLL, save / "plugin.dll")
-            shutil.copy2(CONF, save / "plugin-config.xml")
-            (save / PILOT_MARKER).write_text(old_sha)
-            os.chmod(save / PILOT_MARKER, 0o600)
-            try:
-                run(["git", "-C", str(SOURCE), "checkout", "--detach", args.sha], timeout=70)
-                project = SOURCE / "jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj"
-                cache = ROOT / "jellyfin-auth/build-cache"
-                cache.mkdir(parents=True, exist_ok=True)
-                home = cache / "dotnet-home"
-                nuget = cache / "nuget"
-                home.mkdir(parents=True, exist_ok=True)
-                nuget.mkdir(parents=True, exist_ok=True)
-                env = {**os.environ, "DOTNET_CLI_HOME": str(home), "NUGET_PACKAGES": str(nuget),
-                       "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1"}
-                run(["dotnet", "restore", str(project)], env=env, timeout=160)
-                run(["dotnet", "build", str(project), "-c", "Release", "--no-restore"], env=env, timeout=160)
-                compiled = project.parent / "bin/Release/net10.0/Jellyfin.Plugin.VivoapkMegaAuth.dll"
-                if not compiled.is_file() or compiled.stat().st_size < 6000:
-                    raise Rejected("compiled_plugin_missing")
-                run(["systemctl", "stop", JELLY_SERVICE], timeout=45)
-                run(["systemctl", "stop", VIVO], timeout=45)
-                atomically_copy(compiled, DLL)
-                xml = ElementTree.parse(CONF)
-                root = xml.getroot()
-                flag = root.find("PilotLiveChannels")
-                if flag is None:
-                    flag = ElementTree.SubElement(root, "PilotLiveChannels")
-                flag.text = "true"
-                temp = save / "new-config.xml"
-                xml.write(temp, encoding="utf-8", xml_declaration=True)
-                atomically_copy(temp, CONF)
-                run(["systemctl", "start", VIVO], timeout=55)
-                run(["systemctl", "start", JELLY_SERVICE], timeout=55)
-                for _ in range(60):
-                    try:
-                        health(expected_preview=True)
-                        break
-                    except Rejected:
-                        time.sleep(1)
-                else:
-                    raise Rejected("pilot_postflight_timeout")
-                if admin_digest() != prior_admin:
-                    raise Rejected("admin_changed_during_pilot")
-                result["status"] = "pilot_enabled"
-                result["changed"] = True
-                result["pilot_user_cap"] = 1
-                result["stream_proxy_installed"] = False
-                result["pink_modified"] = False
-            except Exception:
-                _restore(save, old_sha)
-                result["status"] = "rolled_back_after_failure"
-                result["changed"] = False
-                result["reason"] = "pilot_activation_failed"
+            result["pilot_user_cap"] = 1
+            result["stream_proxy_installed"] = False
+            result["pink_modified"] = False
+        except Exception:
+            _restore(save, old_sha)
+            result["status"] = "rolled_back_after_failure"
+            result["changed"] = False
+            result["reason"] = "pilot_activation_failed"
     except (Rejected, OSError, subprocess.TimeoutExpired) as exc:
         result["status"] = "blocked"
         result["reason"] = str(exc) if isinstance(exc, Rejected) else type(exc).__name__
