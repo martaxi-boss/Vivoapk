@@ -4,6 +4,7 @@ A signed, short-lived VivoAPK session identifies exactly one subscription mappin
 Every catalogue request rechecks Mega OTT ownership, entitlement and Xtream status.
 Only sanitized display metadata is returned: never stream URLs or provider secrets.
 """
+from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
