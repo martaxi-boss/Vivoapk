@@ -18,14 +18,15 @@ do cliente no backend **já instalado** em
   restringida** sem nova palavra-passe local.
 - **Nunca sequestra identidades existentes**: `pink-admin` e contas de outros
   fornecedores não são modificadas.
-- **Desativado por omissão**: `PluginConfiguration.Enabled=false`, para não
-  alterar os logins de produção até os testes de instalação/rollback.
+- **Desativado por omissão na fonte**: `PluginConfiguration.Enabled=false`; a configuração privada de produção foi ativada após backup e inspeção do administrador, em [Ferrari #45090113991](https://github.com/martaxi-boss/VPS/actions/runs/45090113991).
 - Não grava credenciais Mega OTT em logs nem em ficheiros do Jellyfin.
 - Nenhum DNS Mega é introduzido pelo cliente ou incorporado na aplicação.
 
 ## Estado e limites atuais
 
 O teste com a aplicação servidora Jellyfin 12.4 real (descartável) passou em [GitHub Actions #45086626328](https://github.com/martaxi-boss/Vivoapk/actions/runs/45086626328): login de administrador preservado, criação automática de utilizador com credenciais Mega fictícias, rejeição de password errada. **Não é um teste com Mega OTT verdadeiro nem com a VPS de produção.**
+
+**Estado de implantação:** instalado no diretório oficial de plugins da VPS ([Ferrari #45090003933](https://github.com/martaxi-boss/VPS/actions/runs/45090003933)), ativo ([#45090113991](https://github.com/martaxi-boss/VPS/actions/runs/45090113991)) e verificado novamente ([#45090435057](https://github.com/martaxi-boss/VPS/actions/runs/45090435057)). Ambos os sockets respondem e os serviços PINK/VivoAPK/Jellyfin permanecem ativos. O registo de `pink-admin` foi preservado, mas o login administrativo com a password original não foi testado separadamente.
 
 Este plugin **não apresenta** canais, filmes e séries no Jellyfin ainda.
 A obtenção de catálogo por utilizador e a revogação de sessões ativas quando
@@ -43,9 +44,7 @@ Mega OTT podem falhar em clientes `https://` ou expor URLs diretas.
 CI: `.github/workflows/vivoapk-jellyfin-auth-ci.yml` prepara .NET SDK 10,
 compila contra `Jellyfin.Controller==12.4.0`, e executa testes sintéticos
 com `HttpMessageHandler` artificial sem usar a API Mega ou credenciais.
-O plugin não deve ser instalado no Jellyfin produtivo enquanto faltar
-uma revisão de segurança, backup, demonstração de login e o catálogo
-individual.
+O plugin foi instalado e ativado na VPS com backup e salvaguardas de rollback. **Isto não valida o serviço completo**: a autenticação positiva com cliente Mega OTT real, a segregação de catálogo e a reprodução continuam por testar.
 
 As referências públicas de API foram contrastadas com os plugins oficiais
 Jellyfin LDAP e o exemplo MIT Jellyfin/Authelia, sem copiar o código

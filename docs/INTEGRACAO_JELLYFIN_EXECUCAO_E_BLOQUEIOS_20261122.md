@@ -21,7 +21,7 @@ O DNS público DuckDNS pertence ao servidor Jellyfin e não se confunde com os U
 - Plugin Jellyfin 12.4 com `IAuthenticationProvider`, chamada `POST /v1/session/resolve` por socket Unix privado, autenticação delegada ao MegaOTT/Xtream.
 - O cliente só vê o login normal do Jellyfin. Quando autorizado, está preparada a criação de uma identidade Jellyfin não administrativa com password local aleatória, sem guardar password Mega como password Jellyfin.
 - Recusa substituir qualquer conta já existente gerida por outro autenticador, protegendo `pink-admin` e contas locais.
-- Plugin `Enabled=false` por defeito; **não instalado na produção Jellyfin**. A compilação dos assemblies Jellyfin 12.4 e os testes sintéticos passaram em [CI #45085448963](https://github.com/martaxi-boss/Vivoapk/actions/runs/45085448963).
+- Plugin `Enabled=false` por defeito na fonte, mas **instalado e ativado na produção Jellyfin em 23/11/2026** com backup privado. [Instalação #45090003933](https://github.com/martaxi-boss/VPS/actions/runs/45090003933), [ativação #45090113991](https://github.com/martaxi-boss/VPS/actions/runs/45090113991), [verificação independente #45090435057](https://github.com/martaxi-boss/VPS/actions/runs/45090435057). A compilação dos assemblies Jellyfin 12.4 e os testes sintéticos passaram em [CI #45085448963](https://github.com/martaxi-boss/Vivoapk/actions/runs/45085448963).
 - **Teste real em instância Jellyfin 12.4 descartável PASS**: [CI #45086626328](https://github.com/martaxi-boss/Vivoapk/actions/runs/45086626328). Confirmou: plugin listado e ativo no Jellyfin de teste, login do administrador, autenticação do cliente fictício através de Mega fictícia (Unix socket), criação automática da identidade, recusa de password errada e preservação do administrador após a autenticação. Um aviso `GUID_MATCH=FAIL` no relatório foi apenas diferença de representação do GUID com/sem hífen, verificada pelo identificador observado, normalização corrigida na revisão seguinte. Não envolveu contas verdadeiras nem instalações na VPS.
 
 ## Credencial API do PINK recuperada para o VivoAPK (23/11/2026)
@@ -63,7 +63,7 @@ da VPS; o procedimento está versionado em
 
 **Pendências distintas:** demonstrar descoberta e login de uma
 subscrição nova realmente ativa, validar o conteúdo do catálogo,
-instalar/testar a integração Jellyfin com proteção do administrador,
+validar login de subscrição real na integração Jellyfin já instalada,
 validar separação entre clientes e medir banda de reprodução.
 O sucesso da listagem por API não implica playlist automática no Jellyfin.
 
@@ -88,6 +88,6 @@ A reprodução do Jellyfin pode usar Direct Play, proxy, remux ou transcode. **N
 3. Login Jellyfin real com subscrição autorizada, sem expor conta nem domínio — exigir `PASS`.
 4. Catálogo Live/VOD/Séries/EPG dinâmico, isolado entre duas contas, com revogação — exigir `PASS`.
 5. Reprodução e consumo de banda da VPS medidos nos clientes suportados — exigir `PASS`.
-6. Backup/rollback do Jellyfin, PINK preservado; instalar/ativar apenas após gates de segurança.
+6. **Instalação/ativação técnica concluída:** backup e rollback preparados; plugin ativo, PINK preservado ([#45090003933](https://github.com/martaxi-boss/VPS/actions/runs/45090003933), [#45090113991](https://github.com/martaxi-boss/VPS/actions/runs/45090113991), [#45090435057](https://github.com/martaxi-boss/VPS/actions/runs/45090435057)). A conta administrativa está presente, mas o login positivo com a sua password original não foi testado.
 
 Nenhuma etapa com mock pode justificar declarar o sistema completo. O backend VivoAPK já instalado permanece isolado, e o PINK não deve ser desinstalado.
