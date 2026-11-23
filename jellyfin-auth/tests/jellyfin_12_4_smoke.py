@@ -25,7 +25,8 @@ class BackendHandler(socketserver.StreamRequestHandler):
         route = parts[1]
         if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status",
                           b"/v1/catalog/preview", b"/v1/catalog/list",
-                          b"/v1/catalog/categories", b"/v1/catalog/category-items"):
+                          b"/v1/catalog/categories", b"/v1/catalog/category-items",
+                          b"/v1/catalog/series"):
             return
         length = 0
         headers = {}
@@ -40,41 +41,74 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if not 0 < length < 4096:
             return
         request = json.loads(self.rfile.read(length))
-        if route in (b"/v1/catalog/categories", b"/v1/catalog/category-items"):
+        if route in (b"/v1/catalog/categories", b"/v1/catalog/category-items",
+                     b"/v1/catalog/series"):
             if route == b"/v1/catalog/category-items":
                 self.server.category_item_calls += 1
             auth = headers.get(b"authorization", b"")
             is_a = auth == b"Bearer ci-session-a"
             is_b = auth == b"Bearer ci-session-b"
             name = "Azul" if is_a else "Verde"
-            categories = ([{"id": "10", "name": "Portugal " + name},
-                           {"id": "11", "name": "Desporto " + name}]
-                          if is_a else
-                          [{"id": "20", "name": "Portugal " + name},
-                           {"id": "21", "name": "Desporto " + name}])
+            kind = request.get("kind", "series" if route == b"/v1/catalog/series" else "live")
+            if kind == "live":
+                ids = ("10", "11") if is_a else ("20", "21")
+                categories = [
+                    {"id": ids[0], "name": "Portugal " + name},
+                    {"id": ids[1], "name": "Desporto " + name},
+                ]
+            elif kind == "vod":
+                ids = ("110",) if is_a else ("120",)
+                categories = [{"id": ids[0], "name": "Filmes " + name}]
+            elif kind == "series":
+                ids = ("210",) if is_a else ("220",)
+                categories = [{"id": ids[0], "name": "Séries " + name}]
+            else:
+                ids, categories = (), []
             if not (is_a or is_b):
                 response_code = b"401 Unauthorized"
                 body = b'{"detail":"Unauthorized"}'
             elif route == b"/v1/catalog/categories":
                 response_code = b"200 OK"
                 body = json.dumps({
-                    "kind": "live", "categories": categories, "items": []
+                    "kind": kind, "categories": categories, "items": []
                 }).encode()
-            else:
-                category_id = request.get("category_id")
-                allowed = {c["id"] for c in categories}
-                if category_id not in allowed:
+            elif request.get("category_id") not in ids:
+                response_code = b"401 Unauthorized"
+                body = b'{"detail":"Unauthorized"}'
+            elif route == b"/v1/catalog/series":
+                if request.get("series_id") != "601":
                     response_code = b"401 Unauthorized"
                     body = b'{"detail":"Unauthorized"}'
                 else:
                     response_code = b"200 OK"
-                    expanded = [{"id": str(42+i),
-                                 "title": "Canal CI " + name + ("" if i == 0 else " " + str(i)),
-                                 "category_id": category_id, "container_extension": None}
-                                for i in range(6 if category_id in ("10", "20") else 1)]
                     body = json.dumps({
-                        "kind": "live", "categories": [], "items": expanded
+                        "series_id": "601", "title": "Série " + name,
+                        "seasons": [{"id": "1", "title": "Temporada 1"}],
+                        "episodes": [{"id": "701", "season_id": "1",
+                                      "title": "Episódio " + name,
+                                      "episode_number": "1",
+                                      "container_extension": "mp4"}],
                     }).encode()
+            else:
+                response_code = b"200 OK"
+                category_id = request["category_id"]
+                if kind == "live":
+                    expanded = [{
+                        "id": str(42+i),
+                        "title": "Canal CI " + name + ("" if i == 0 else " " + str(i)),
+                        "category_id": category_id, "container_extension": None}
+                        for i in range(6 if category_id in ("10", "20") else 1)]
+                elif kind == "vod":
+                    expanded = [{"id": "501", "title": "Filme " + name,
+                                 "category_id": category_id,
+                                 "container_extension": "mp4"}]
+                else:
+                    expanded = [{"id": "601", "title": "Série " + name,
+                                 "category_id": category_id,
+                                 "container_extension": None}]
+                body = json.dumps({
+                    "kind": kind, "categories": [], "items": expanded
+                }).encode()
         elif route in (b"/v1/catalog/preview", b"/v1/catalog/list"):
             auth = headers.get(b"authorization", b"")
             if auth not in (b"Bearer ci-session-a", b"Bearer ci-session-b"):
