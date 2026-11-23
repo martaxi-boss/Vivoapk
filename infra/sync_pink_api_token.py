@@ -66,7 +66,13 @@ def replace_token(blob: str, token: str) -> str:
     return "".join(lines)
 
 def checked_file(path: Path) -> str:
-    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+    if path.is_symlink() or not path.is_file():
+        raise Blocked("unsafe_secret_file_permissions")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    # PINK's original config is deliberately 0640 under a 0700 directory.
+    # VivoAPK's copied credentials are always strictly 0600.
+    allowed = 0o640 if path in (SOURCE, SOURCE_BASE) else 0o600
+    if mode != allowed or path.stat().st_uid != 0:
         raise Blocked("unsafe_secret_file_permissions")
     return path.read_text()
 
