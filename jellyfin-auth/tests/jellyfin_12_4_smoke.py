@@ -280,6 +280,24 @@ def main():
             {}, token=customer["AccessToken"])
         if code != 200 or not isinstance(owner_media, dict) or not owner_media.get("MediaSources"):
             raise RuntimeError("Pilot playback source not available to its owner")
+        # Port the original PINK APK's Xtream direct-stream paths, but never
+        # ask this VPS to fetch/remux/transcode the video. The two origin URLs
+        # are callback-only and must stay absent from durable Jellyfin storage.
+        media_sources = owner_media["MediaSources"]
+        if len(media_sources) != 2:
+            raise RuntimeError("Original PINK canonical/legacy live paths not exposed")
+        expected_paths = (
+            "/live/synthetic-mega-user/synthetic-mega-password/42.ts",
+            "/synthetic-mega-user/synthetic-mega-password/42",
+        )
+        for source, suffix in zip(media_sources, expected_paths, strict=True):
+            if not (source.get("Path") or "").endswith(suffix):
+                raise RuntimeError("PINK live path compatibility regression")
+            if (source.get("SupportsDirectPlay") is not True
+                    or source.get("SupportsDirectStream") is not False
+                    or source.get("SupportsTranscoding") is not False):
+                raise RuntimeError("Pilot tried to route media through Jellyfin VPS")
+        print("JELLYFIN_PINK_DIRECT_URLS_AND_NO_VPS_RELAY=PASS")
         for path in DATAROOT.rglob("*"):
             if (path.is_symlink() or not path.is_file() or
                     path.stat().st_size > 16 * 1024 * 1024):
