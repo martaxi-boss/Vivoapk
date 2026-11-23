@@ -166,6 +166,10 @@ def test_xtream_metadata_actions_do_not_expose_unsafe_fields(public_resolver):
     requests = []
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        # The real Mega/Xtream probe returned 200 on explicit close framing;
+        # this avoids reusing an upstream connection after chunked replies.
+        assert request.headers["connection"] == "close"
+        assert request.headers["accept-encoding"] == "identity"
         action = request.url.params.get("action")
         assert request.url.params.get("username") == "demo"
         assert request.url.params.get("password") == "test-only-password"
