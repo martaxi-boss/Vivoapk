@@ -577,7 +577,7 @@ def test_preview_prioritizes_portugal_geral_even_after_hundreds(public_resolver)
                 {"category_id": "1", "category_name": "PPV | UFC [EVENT ONLY]"},
                 *[
                     {"category_id": str(n), "category_name": "EVENTO " + str(n)}
-                    for n in range(2, 100)
+                    for n in range(2, 220) if n != 97
                 ],
                 {"category_id": "97", "category_name": "EU | PORTUGAL GERAL"},
             ])
