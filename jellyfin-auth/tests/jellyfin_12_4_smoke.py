@@ -644,7 +644,8 @@ def main():
         if not renewed:
             raise RuntimeError("Renewed Mega subscription did not reactivate same Jellyfin identity")
         code, logged_back = request("POST", "/Users/AuthenticateByName", {
-            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"})
+            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"},
+            client_name="Jellyfin for Tizen")
         if code != 200 or logged_back["User"]["Id"] != account_b:
             raise RuntimeError("Renewed user cannot sign in with original Mega credentials")
         print("JELLYFIN_SYNTHETIC_MEGA_RENEWAL_SAME_IDENTITY=PASS")
