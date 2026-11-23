@@ -174,15 +174,21 @@ class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         name = Path(self.path).name
-        target = self.server.media_root / (
-            "fixture.m3u8" if name == "42.m3u8" else name)
-        if name not in ("42.m3u8", "part000.ts", "part001.ts", "part002.ts") or not target.is_file():
+        if ((self.path.startswith("/movie/") and name == "501.mp4")
+                or (self.path.startswith("/series/") and name == "701.mp4")):
+            target = self.server.media_root / "fixture.mp4"
+        else:
+            target = self.server.media_root / (
+                "fixture.m3u8" if name == "42.m3u8" else name)
+        if (name not in ("42.m3u8", "part000.ts", "part001.ts", "part002.ts",
+                         "501.mp4", "701.mp4") or not target.is_file()):
             self.send_error(404)
             return
         payload = target.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", "application/vnd.apple.mpegurl"
-                         if name.endswith(".m3u8") else "video/mp2t")
+        self.send_header("Content-Type",
+                         "application/vnd.apple.mpegurl" if name.endswith(".m3u8")
+                         else "video/mp4" if name.endswith(".mp4") else "video/mp2t")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -205,7 +211,7 @@ def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
     if uri.startswith("/Startup/"):
         headers.pop("Authorization", None)
     if token:
-        headers["Authorization"] = 'MediaBrowser Client="VivoAPK-CI", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'
+        headers["Authorization"] = 'MediaBrowser Client="' + client_name + '", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'
         headers["X-Emby-Token"] = token
     conn.request(method, uri, body=json.dumps(data) if data is not None else None, headers=headers)
     response = conn.getresponse()
@@ -270,6 +276,14 @@ def main():
         "-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
         "-hls_segment_filename", str(synthetic_media / "part%03d.ts"),
         str(synthetic_media / "fixture.m3u8"),
+    ], check=True, timeout=30)
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=550:sample_rate=48000",
+        "-t", "2", "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-movflags", "+faststart",
+        str(synthetic_media / "fixture.mp4"),
     ], check=True, timeout=30)
     provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SyntheticHlsHandler)
     provider.media_root = synthetic_media
@@ -456,11 +470,13 @@ def main():
             raise RuntimeError("Pilot channel did not produce visible media items")
         if CATEGORY_MODE:
             root_folders_a = pilot_items["Items"]
-            if len(root_folders_a) != 1 or root_folders_a[0].get("Name") != "TV ao vivo":
-                raise RuntimeError("Native Live TV root folder not exposed for A")
+            if {x.get("Name") for x in root_folders_a} != {
+                    "TV ao vivo", "Filmes", "Séries"}:
+                raise RuntimeError("Native multimedia roots not exposed for A")
             code, pilot_items = request(
                 "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
-                + "&FolderId=" + root_folders_a[0]["Id"],
+                + "&FolderId=" + next(x["Id"] for x in root_folders_a
+                                      if x.get("Name") == "TV ao vivo"),
                 token=customer["AccessToken"])
             if code != 200 or not (pilot_items or {}).get("Items"):
                 raise RuntimeError("Live TV root did not expose authorized categories for A")
@@ -494,11 +510,13 @@ def main():
             raise RuntimeError("Second account cannot browse own channels")
         if CATEGORY_MODE:
             root_folders_b = pilot_items_b["Items"]
-            if len(root_folders_b) != 1 or root_folders_b[0].get("Name") != "TV ao vivo":
-                raise RuntimeError("Native Live TV root folder not exposed for B")
+            if {x.get("Name") for x in root_folders_b} != {
+                    "TV ao vivo", "Filmes", "Séries"}:
+                raise RuntimeError("Native multimedia roots not exposed for B")
             code, pilot_items_b = request(
                 "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b
-                + "&FolderId=" + root_folders_b[0]["Id"],
+                + "&FolderId=" + next(x["Id"] for x in root_folders_b
+                                      if x.get("Name") == "TV ao vivo"),
                 token=customer_b["AccessToken"])
             if code != 200 or not (pilot_items_b or {}).get("Items"):
                 raise RuntimeError("Live TV root did not expose authorized categories for B")
