@@ -145,7 +145,7 @@ def test_two_subscriptions_are_isolated_by_signed_mapping_identity(settings, ses
     assert b.json()["items"][0]["title"] == "Canal Verde"
     assert "origin-1" not in a.text and "secret-a" not in a.text
     assert "origin-2" not in b.text and "secret-b" not in b.text
-    assert mega.calls == [901, 902]
+    assert mega.calls == [901, 902, 901, 902]
     assert [i["username"] for i in catalogue.calls] == ["sub-a", "sub-b"]
 
     # The caller cannot override the signed identity with a body-level username.
@@ -167,7 +167,7 @@ def test_two_subscriptions_are_isolated_by_signed_mapping_identity(settings, ses
         "wrong-32-byte-key-wrong-32-byte-key", algorithm="HS256",
     )
     assert request(old).status_code == request(fake).status_code == 401
-    assert mega.calls == [901, 902]
+    assert mega.calls == [901, 902, 901, 902]
 
     # Revoked, expired or unresolvable upstream entitlements fail closed.
     accounts[901].username = "other-account"
