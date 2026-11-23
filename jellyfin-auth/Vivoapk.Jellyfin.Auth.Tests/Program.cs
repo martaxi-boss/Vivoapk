@@ -57,6 +57,23 @@ using (var handler = new SyntheticEntitlementHandler("EXPIRED", monitorKey))
         throw new InvalidOperationException("Monitor sent request without a private key.");
     passed++;
 }
+// Native Jellyfin Channel image is a real PNG, not a missing-image placeholder.
+var previewChannel = new VivoapkLivePreviewChannel();
+foreach (var type in new[] { MediaBrowser.Model.Entities.ImageType.Primary,
+                              MediaBrowser.Model.Entities.ImageType.Thumb })
+{
+    var image = await previewChannel.GetChannelImage(type, CancellationToken.None);
+    if (!image.HasImage || image.Stream is null ||
+        image.Format != MediaBrowser.Model.Drawing.ImageFormat.Png)
+        throw new InvalidOperationException("Native pilot channel cover is missing.");
+    using var stream = image.Stream;
+    var signature = new byte[8];
+    stream.ReadExactly(signature);
+    if (!signature.SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })
+        || stream.Length < 100)
+        throw new InvalidOperationException("Pilot cover is not a valid PNG.");
+    passed++;
+}
 Console.WriteLine($"VivoAPK Jellyfin auth and monitor synthetic checks: {passed}/{passed} PASS");
 
 internal sealed class SyntheticHandler(string body, HttpStatusCode status) : HttpMessageHandler

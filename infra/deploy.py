@@ -210,6 +210,7 @@ def install(sha, auth, raw, count, tv):
             f"UMask=0007\nWorkingDirectory={SOURCE}/backend\n"
             f"EnvironmentFile={RUNTIME}\n"
             f"ExecStart={VENV}/bin/uvicorn app.main:app --uds {SOCKET} --workers 1\n"
+            f"ExecStartPost={VENV}/bin/python {SOURCE}/infra/secure_runtime_socket.py\n"
             f"Restart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\n"
             f"ProtectHome=true\nProtectSystem=strict\nProtectKernelTunables=true\n"
             f"ProtectControlGroups=true\nReadWritePaths={RUN_DIR}\n"

@@ -33,6 +33,8 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('f"ExecStart={VENV}/bin/uvicorn app.main:app --uds {SOCKET}', source)
         self.assertNotIn("--host 0.0.0.0", source)
         self.assertIn("ProtectSystem=strict", source)
+        self.assertIn("ExecStartPost={VENV}/bin/python {SOURCE}/infra/secure_runtime_socket.py", source)
+        self.assertTrue((ROOT / "secure_runtime_socket.py").is_file())
 
     def test_env_quote_denies_newlines(self):
         for value in ("value\nnew", "value\rnew", "value\x00new"):

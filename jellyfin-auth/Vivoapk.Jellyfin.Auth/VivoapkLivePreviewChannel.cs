@@ -27,7 +27,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public string Name => ChannelName;
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-hls-v1";
+    public string DataVersion => "pilot-hls-v2-artwork";
+    // Embedded local preview artwork only. NOT the official logo of any station.
+    // Never download upstream logos, query external image URLs or store credentials.
+    private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
     public string HomePageUrl => string.Empty;
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
 
@@ -167,6 +170,17 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public Task<DynamicImageResponse> GetChannelImage(
         ImageType type, CancellationToken cancellationToken)
-        => Task.FromResult(new DynamicImageResponse { HasImage = false });
-    public IEnumerable<ImageType> GetSupportedChannelImages() => Array.Empty<ImageType>();
+    {
+        if (type is not (ImageType.Primary or ImageType.Thumb))
+            return Task.FromResult(new DynamicImageResponse { HasImage = false });
+        return Task.FromResult(new DynamicImageResponse
+        {
+            HasImage = true,
+            Stream = new MemoryStream(Convert.FromBase64String(ChannelCoverPngBase64), writable: false),
+            Format = MediaBrowser.Model.Drawing.ImageFormat.Png
+        });
+    }
+
+    public IEnumerable<ImageType> GetSupportedChannelImages()
+        => new[] { ImageType.Primary, ImageType.Thumb };
 }
