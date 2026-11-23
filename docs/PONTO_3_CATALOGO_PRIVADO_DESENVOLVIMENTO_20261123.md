@@ -100,3 +100,18 @@ A [preservação read-only #45092203903](https://github.com/martaxi-boss/VPS/act
 3. Preencher a biblioteca correta apenas com metadados autorizados (canais, filmes, temporadas, episódios e EPG), sem indexação partilhada.
 4. Provar que a reprodução é direta no Android/iOS/Samsung/LG, sem pass-through de vídeo pela VPS; limitar e medir consumo.
 5. Só depois ativar a funcionalidade na VPS com backup, rollback e teste da password administrativa original.
+
+## Fase C — temporadas/episódios e EPG curto (backend apenas)
+
+- Adicionados `POST /v1/catalog/series` e `POST /v1/catalog/epg`, ambos apenas no backend privado Unix, protegidos pelo mesmo JWT curto `vivoapk`; requests com campos extra e IDs malformados são recusados.
+- Antes de consultar o detalhe, o backend volta a exigir mapeamento e assinatura válidos, recupera a credencial por via privada, verifica Xtream e confirma que o identificador de série/canal **consta da listagem daquela subscrição**. Um ID de outra conta não serve como autorização.
+- `series` interpreta `get_series_info` e devolve somente temporadas, identificadores de episódios, títulos, números e extensões permitidas. `epg` usa `get_short_epg` com limite máximo de 20 e devolve título/horários básicos. Sem URLs de streaming, passwords, DNS, `direct_source` ou imagens de terceiros.
+- Para resposta de fornecedor, permanece limite de 8 MiB aplicado durante a leitura HTTP via `PinnedHTTPTransport`, com recusa de redirecionamentos e de resolução para IP privado.
+- Testes sintéticos verificam dois clientes, IDs de outra subscrição negados, parâmetros errados e exclusão dos campos sensíveis; o resultado da CI deve ser consultado antes de anunciar PASS.
+- Isto ainda **não é apresentação no Jellyfin**. Falta a ligação do plugin ao backend, o catálogo nativo e a reprodução/EPG visíveis na app.
+
+### Prova da criação automática no Jellyfin descartável
+
+O fluxo integral com `ProvisionPrivateLibraries=true` apenas em teste passou em [CI #45092669249](https://github.com/martaxi-boss/Vivoapk/actions/runs/45092669249). Confirmou contas fictícias, criação automática das bibliotecas privadas por GUID, permissões, login repetido sem duplicação, listagem isolada, acesso por ID estrangeiro negado, revogação de utilizador desativado e administrador intacto. A opção é `false` por omissão e não existe no binário atualmente instalado na VPS.
+
+**Sem ativação em produção:** PINK, VPN, Jellyfin, VivoAPK e as credenciais guardadas no cofre privado permanecem intocados neste desenvolvimento.
