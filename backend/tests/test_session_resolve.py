@@ -221,6 +221,34 @@ def test_local_authoritative_expiry_short_circuits_xtream(
     assert fake.calls == []
 
 
+def test_existing_expired_mapping_can_be_renewed_without_new_password(
+    db,
+    settings,
+) -> None:
+    past = datetime.now(UTC) - timedelta(days=2)
+    mapping = SubscriptionMapping(
+        mega_subscription_id=530, username="renewed-customer",
+        dns_link="http://old.example.com", expiring_at=past,
+        last_synced_at=past,
+    )
+    db.add(mapping)
+    db.commit()
+    provider = FakeMega(
+        username="renewed-customer", subscription_id=530,
+        dns_link="http://renewed.example.com",
+    )
+    xtream = FakeXtream(SimpleNamespace(code="SUCCESS", account_expires_at=None))
+    result = SessionResolver(
+        db, xtream, settings, mega_client_factory=lambda: provider
+    ).resolve(username="renewed-customer", password="synthetic-original-password")
+
+    assert result.code == ResolveCode.SUCCESS
+    assert result.xtream_base_url == "http://renewed.example.com"
+    assert provider.find_calls == [] and provider.get_calls == [530]
+    assert db.get(SubscriptionMapping, mapping.id).expiring_at > datetime.now(UTC)
+    assert xtream.calls[0]["password"] == "synthetic-original-password"
+
+
 def test_explicit_disabled_passes_through(
     db,
     future_mapping,
