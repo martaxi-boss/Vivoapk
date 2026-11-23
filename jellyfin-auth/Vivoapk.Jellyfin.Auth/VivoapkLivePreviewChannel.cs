@@ -8,6 +8,7 @@ using MediaBrowser.Model.Channels;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using Microsoft.AspNetCore.Http;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
@@ -20,21 +21,24 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 /// </summary>
 public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCallback, IHasCacheKey
 {
-    public const int MaxChannels = 2; // test-only experiment; no production rollout
-      private readonly int _slot;
+    public const int MaxChannels = 64; // bounded, stable one-to-one Jellyfin ChannelIds
+    private readonly int _slot;
+    private readonly IHttpContextAccessor? _httpContextAccessor;
     private readonly MegaResolverClient _resolver = new();
-    public VivoapkLivePreviewChannel(int slot)
+    public VivoapkLivePreviewChannel(int slot, IHttpContextAccessor? httpContextAccessor = null)
     {
         if (slot is < 0 or >= MaxChannels)
             throw new ArgumentOutOfRangeException(nameof(slot));
         _slot = slot;
+        _httpContextAccessor = httpContextAccessor;
     }
     public static string ChannelNameFor(int slot) => $"VivoAPK — TV de teste {slot + 1}";
     private sealed record PilotStream(string ExternalId, string Title, string ProviderId);
     private sealed record PilotSnapshot(
         Guid Owner, DateTime Expires, string Origin, string Username,
         string Password, List<PilotStream> Streams,
-        bool CategoryNavigation, string Platform, string? SessionToken)
+        bool CategoryNavigation, string Platform, string? SessionToken,
+        List<PilotStream> MovieCategories, List<PilotStream> SeriesCategories)
     {
         public string? CurrentToken { get; set; } = SessionToken;
         // No global index of 28,841 channels in Jellyfin RAM:
@@ -45,7 +49,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public string Name => ChannelNameFor(_slot);
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-hls-v8-lazy-category-root";
+    public string DataVersion => "vivoapk-native-catalog-root-v10";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -54,10 +58,18 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     internal static string? Stage(Guid owner, IReadOnlyList<MegaPreviewEntry> channels,
         string? origin, string username, string password, bool fullLive = false,
-        bool categoryNavigation = false, string? sessionToken = null, string platform = "android")
+        bool categoryNavigation = false, string? sessionToken = null, string platform = "android",
+        IReadOnlyList<MegaPreviewEntry>? movieCategories = null,
+        IReadOnlyList<MegaPreviewEntry>? seriesCategories = null)
     {
-        if (owner == Guid.Empty || channels.Count < 1 ||
+        if (owner == Guid.Empty ||
+            (!categoryNavigation && channels.Count < 1) ||
+            (categoryNavigation && channels.Count == 0 &&
+                (movieCategories is null || movieCategories.Count == 0) &&
+                (seriesCategories is null || seriesCategories.Count == 0)) ||
             channels.Count > (categoryNavigation ? 2000 : fullLive ? 20000 : 5) ||
+            movieCategories is { Count: > 2000 } ||
+            seriesCategories is { Count: > 2000 } ||
             string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(username) ||
             string.IsNullOrWhiteSpace(password) ||
             !Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
@@ -106,10 +118,30 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 // No credential-bearing URLs in the channel item index.
                 // Construct a direct HLS source only on authorized playback.
                 streams.Add(new PilotStream(
-                    categoryNavigation ? "cat:" + channel.Id : Guid.NewGuid().ToString("N"),
+                    categoryNavigation ? "cat:live:" + channel.Id : Guid.NewGuid().ToString("N"),
                     channel.Title, channel.Id));
             }
-            if (streams.Count == 0)
+            static List<PilotStream> CategoryEntries(
+                IReadOnlyList<MegaPreviewEntry>? values, string categoryKind)
+            {
+                var result = new List<PilotStream>();
+                if (values is null)
+                    return result;
+                foreach (var value in values)
+                {
+                    if (value.Id.Length is < 1 or > 64 ||
+                        !value.Id.All(char.IsAsciiDigit) ||
+                        value.Title.Length is < 1 or > 250)
+                        continue;
+                    result.Add(new PilotStream(
+                        "cat:" + categoryKind + ":" + value.Id,
+                        value.Title, value.Id));
+                }
+                return result;
+            }
+            var movies = CategoryEntries(movieCategories, "vod");
+            var series = CategoryEntries(seriesCategories, "series");
+            if (streams.Count + movies.Count + series.Count == 0)
                 return null;
             if (newReservation)
             {
@@ -133,7 +165,8 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             }
             Pilots[assignedSlot] = new PilotSnapshot(
                 owner, DateTime.UtcNow.AddMinutes(30), origin, username, password,
-                streams, categoryNavigation, platform, sessionToken);
+                streams, categoryNavigation, platform, sessionToken,
+                movies, series);
             return ChannelNameFor(assignedSlot);
         }
     }
@@ -164,7 +197,9 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     public InternalChannelFeatures GetChannelFeatures() => new()
     {
         MediaTypes = new List<ChannelMediaType> { ChannelMediaType.Video },
-        ContentTypes = new List<ChannelMediaContentType> { ChannelMediaContentType.Clip },
+        ContentTypes = new List<ChannelMediaContentType> {
+            ChannelMediaContentType.Clip, ChannelMediaContentType.Movie,
+            ChannelMediaContentType.Episode },
         SupportsSortOrderToggle = false,
         DefaultSortFields = new List<ChannelItemSortField> { ChannelItemSortField.Name },
         AutoRefreshLevels = 1
@@ -194,23 +229,36 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             // This first-level folder deliberately prevents Jellyfin's
             // GetLatestChannelItems automatic one-level refresh from eagerly
             // downloading every provider category's streams.
-            list = new List<ChannelItemInfo>
+            list = new List<ChannelItemInfo>();
+            foreach (var (id, name, entries) in new[]
             {
-                new()
+                ("vivo:live-root", "TV ao vivo", snapshot.Streams),
+                ("vivo:vod-root", "Filmes", snapshot.MovieCategories),
+                ("vivo:series-root", "Séries", snapshot.SeriesCategories)
+            })
+            {
+                if (entries.Count == 0)
+                    continue;
+                list.Add(new ChannelItemInfo
                 {
-                    Id = "vivo:live-root", Name = "TV ao vivo",
+                    Id = id, Name = name,
                     Type = ChannelItemType.Folder,
                     FolderType = ChannelFolderType.Container,
                     MediaType = ChannelMediaType.Video
-                }
-            };
+                });
+            }
         }
-        else if (string.Equals(query.FolderId, "vivo:live-root", StringComparison.Ordinal))
+        else if (query.FolderId is "vivo:live-root" or "vivo:vod-root" or "vivo:series-root")
         {
-            list = snapshot.Streams.Select(category => new ChannelItemInfo
+            var entries = query.FolderId switch
             {
-                Id = category.ExternalId,
-                Name = category.Title,
+                "vivo:vod-root" => snapshot.MovieCategories,
+                "vivo:series-root" => snapshot.SeriesCategories,
+                _ => snapshot.Streams
+            };
+            list = entries.Select(category => new ChannelItemInfo
+            {
+                Id = category.ExternalId, Name = category.Title,
                 Type = ChannelItemType.Folder,
                 FolderType = ChannelFolderType.Container,
                 MediaType = ChannelMediaType.Video
