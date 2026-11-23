@@ -146,6 +146,16 @@ class CatalogService:
         )
         return CatalogListResponse(kind=kind, categories=categories, items=items)
 
+    def live_preview(self, *, token: str, platform: ClientPlatform) -> CatalogListResponse:
+        origin, username, password = self._authorize(token=token, platform=platform)
+        catalogue = self._catalog_client_factory()
+        categories, items = catalogue.preview_live(
+            dns_link=origin, username=username, password=password,
+        )
+        return CatalogListResponse(
+            kind=CatalogKind.LIVE, categories=categories, items=items,
+        )
+
     def series_detail(
         self, *, token: str, platform: ClientPlatform, series_id: str
     ) -> SeriesDetailResponse:
