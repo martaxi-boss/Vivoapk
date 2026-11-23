@@ -1,7 +1,7 @@
 """Private, credential-free subscription entitlement check for Jellyfin scheduled tasks.
 
 Only an explicit provider expiry / disabled status revokes access. Transient errors
-are UNKNOWN and must never cause the Jellyfin administrator or other customers to
+are UNAVAILABLE and must never cause the Jellyfin administrator or other customers to
 be disabled. No provider credentials are returned or persisted here.
 """
 from collections.abc import Callable
@@ -76,7 +76,13 @@ class EntitlementService:
         if not password:
             return EntitlementState.UNAVAILABLE
         try:
-            dns = select_provider_dns(\n                SimpleNamespace(\n                    dns_link=subscription.dns_link,\n                    dns_link_samsung_lg=subscription.dns_link_for_samsung_lg,\n                ),\n                ClientPlatform.ANDROID,\n            )
+            dns = select_provider_dns(
+                SimpleNamespace(
+                    dns_link=subscription.dns_link,
+                    dns_link_samsung_lg=subscription.dns_link_for_samsung_lg,
+                ),
+                ClientPlatform.ANDROID,
+            )
         except ProviderDNSUnavailable:
             return EntitlementState.UNAVAILABLE
 
