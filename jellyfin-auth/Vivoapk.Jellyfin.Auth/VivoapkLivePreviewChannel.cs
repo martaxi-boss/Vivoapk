@@ -60,33 +60,33 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
         lock (Gate)
         {
-            // Per-identity previews are never overwritten by another login.
-            // Keep the pilot memory bounded and remove expired snapshots.
+            // The channel database is global. A user's indexed items must
+            // NEVER become visible to another person after snapshot expiry or
+            // a Jellyfin restart. Persist ONLY the stable owner GUID binding.
+            var plugin = Plugin.Instance;
+            if (plugin is null)
+                return null;
+            var savedOwners = plugin.Configuration.ChannelSlotOwners;
+            if (savedOwners is null || (savedOwners.Length != 0 &&
+                                         savedOwners.Length != MaxChannels))
+                return null;
+            var reservations = new string[MaxChannels];
+            Array.Copy(savedOwners, reservations, savedOwners.Length);
+            var ownerKey = owner.ToString("N");
+            var assignedSlot = Array.FindIndex(reservations,
+                candidate => string.Equals(candidate, ownerKey, StringComparison.OrdinalIgnoreCase));
+            var newReservation = assignedSlot == -1;
+            if (newReservation)
+                assignedSlot = Array.FindIndex(reservations, string.IsNullOrEmpty);
+            if (assignedSlot == -1)
+                return null;
             var now = DateTime.UtcNow;
             foreach (var expired in Pilots.Where(kv => kv.Value.Expires <= now)
                          .Select(kv => kv.Key).ToArray())
                 Pilots.Remove(expired);
-            int assignedSlot = -1;
-            foreach (var pair in Pilots)
-            {
-                if (pair.Value.Owner == owner)
-                {
-                    assignedSlot = pair.Key;
-                    break;
-                }
-            }
-            if (assignedSlot == -1)
-            {
-                for (int i = 0; i < MaxChannels; i++)
-                {
-                    if (!Pilots.ContainsKey(i))
-                    {
-                        assignedSlot = i;
-                        break;
-                    }
-                }
-            }
-            if (assignedSlot == -1)
+            // Reject inconsistent in-RAM state instead of changing subscriber owner.
+            if (Pilots.TryGetValue(assignedSlot, out var occupied) &&
+                occupied.Owner != owner)
                 return null;
             var streams = new List<PilotStream>();
             foreach (var channel in channels)
@@ -102,6 +102,26 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             }
             if (streams.Count == 0)
                 return null;
+            if (newReservation)
+            {
+                // No media URL or password ever enters the XML config file.
+                reservations[assignedSlot] = ownerKey;
+                plugin.Configuration.ChannelSlotOwners = reservations;
+                try
+                {
+                    plugin.SaveConfiguration();
+                }
+                catch (IOException)
+                {
+                    plugin.Configuration.ChannelSlotOwners = savedOwners;
+                    return null;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    plugin.Configuration.ChannelSlotOwners = savedOwners;
+                    return null;
+                }
+            }
             Pilots[assignedSlot] = new PilotSnapshot(
                 owner, DateTime.UtcNow.AddMinutes(30), origin, username, password, streams);
             return ChannelNameFor(assignedSlot);

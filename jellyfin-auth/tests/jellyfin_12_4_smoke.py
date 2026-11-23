@@ -297,6 +297,19 @@ def main():
         account_b = customer_b["User"]["Id"]
         if account_a.replace("-", "") == account_b.replace("-", ""):
             raise RuntimeError("Two synthetic customers share Jellyfin identity")
+        # The channel-to-owner binding is written by the plugin itself, and
+        # contains only GUIDs — no provider password or direct-play URL.
+        from xml.etree import ElementTree
+        cfg = DATAROOT / "data/plugins/configurations/Jellyfin.Plugin.VivoapkMegaAuth.xml"
+        if not cfg.is_file():
+            raise RuntimeError("Private channel reservation XML not persisted")
+        config = ElementTree.parse(cfg).getroot()
+        reserved = config.find("ChannelSlotOwners")
+        owners = [x.text.replace("-", "").lower() for x in reserved] if reserved is not None else []
+        if len(owners) != 2 or set(owners) != {account_a.replace("-", "").lower(),
+                                                account_b.replace("-", "").lower()}:
+            raise RuntimeError("Jellyfin channel slots not durably reserved for owners")
+        print("JELLYFIN_SYNTHETIC_CHANNEL_SLOT_OWNERS_PERSISTED=PASS")
 
         for customer_id in (account_a, account_b):
             code, profile = request("GET", "/Users/" + customer_id, token=token)
