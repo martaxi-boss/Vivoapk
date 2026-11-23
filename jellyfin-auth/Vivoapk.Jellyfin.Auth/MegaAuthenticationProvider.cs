@@ -3,6 +3,7 @@ using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Common;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Cryptography;
@@ -18,16 +19,19 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
 {
     private readonly IApplicationHost _appHost;
     private readonly ICryptoProvider _cryptoProvider;
+    private readonly IApplicationPaths _appPaths;
     private readonly ILogger<MegaAuthenticationProvider> _logger;
     private readonly MegaResolverClient _resolver = new();
 
     public MegaAuthenticationProvider(
         IApplicationHost appHost,
         ICryptoProvider cryptoProvider,
+        IApplicationPaths appPaths,
         ILogger<MegaAuthenticationProvider> logger)
     {
         _appHost = appHost;
         _cryptoProvider = cryptoProvider;
+        _appPaths = appPaths;
         _logger = logger;
     }
 
@@ -71,6 +75,15 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             await users.UpdateUserAsync(user).ConfigureAwait(false);
             // Do not log usernames, upstream URLs, or authentication material.
             _logger.LogInformation("Created restricted VivoAPK Jellyfin identity.");
+        }
+
+        // Optional private library creation is gated independently from Mega authentication.
+        // A failed provision fails this login closed; other users and libraries are not changed.
+        if (Plugin.Instance?.Configuration.ProvisionPrivateLibraries == true)
+        {
+            await VivoapkPrivateLibraryProvisioner.EnsureAsync(
+                user, users, _appHost.Resolve<ILibraryManager>(), _appPaths
+            ).ConfigureAwait(false);
         }
 
         return new ProviderAuthenticationResult { Username = canonicalUsername };
