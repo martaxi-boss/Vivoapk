@@ -16,10 +16,10 @@ from app.logging_config import configure_logging
 from app.schemas import (
     CatalogListRequest,
     CatalogListResponse,
-    EpgRequest,
-    EpgResponse,
     EntitlementCheckRequest,
     EntitlementCheckResponse,
+    EpgRequest,
+    EpgResponse,
     ResolveRequest,
     ResolveResponse,
     SeriesDetailRequest,
