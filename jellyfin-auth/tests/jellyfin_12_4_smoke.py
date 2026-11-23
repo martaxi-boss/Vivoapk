@@ -138,8 +138,9 @@ def main():
             raise RuntimeError(f"VivoAPK plugin not loaded uniquely; visible plugins: {visible}")
         actual_id = str(plugin_items[0].get("Id", plugin_items[0].get("id", ""))).lower()
         print("JELLYFIN_12_4_PLUGIN_LOADED=PASS")
-        print("JELLYFIN_PLUGIN_GUID_MATCH=" + ("PASS" if actual_id == PLUGIN_ID else "FAIL"))
-        if actual_id != PLUGIN_ID:
+        guid_matches = actual_id.replace("-", "") == PLUGIN_ID.replace("-", "")
+        print("JELLYFIN_PLUGIN_GUID_MATCH=" + ("PASS" if guid_matches else "FAIL"))
+        if not guid_matches:
             print("JELLYFIN_PLUGIN_OBSERVED_GUID=" + actual_id)
         print("JELLYFIN_LOCAL_ADMIN_PRESERVED=PASS")
 
