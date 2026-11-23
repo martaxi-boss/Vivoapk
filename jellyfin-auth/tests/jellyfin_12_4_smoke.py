@@ -250,7 +250,8 @@ def main():
                 raise RuntimeError("User-scoped library listing failed")
             return data.get("Items", [])
 
-        account_a_token = users["alpha"][1]
+        # Jellyfin revokes earlier tokens when the same test device logs in again.
+        account_a_token = again["AccessToken"]
         account_b_token = users["beta"][1]
         alpha_id = beta_id = None
         for _ in range(45):
