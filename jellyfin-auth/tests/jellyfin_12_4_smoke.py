@@ -290,6 +290,17 @@ def main():
             "/live/synthetic-mega-user/synthetic-mega-password/42.ts",
             "/synthetic-mega-user/synthetic-mega-password/42",
         )
+        # Diagnostic is strictly metadata-only: never log URLs or credentials.
+        print("JELLYFIN_PILOT_PLAYBACK_FLAGS=" + json.dumps([
+            {key: source.get(key) for key in (
+                "Protocol", "Container", "SupportsDirectPlay",
+                "SupportsDirectStream", "SupportsTranscoding",
+                "TranscodingUrl", "IsRemote"
+            ) if key != "TranscodingUrl"} | {
+                "HasTranscodingUrl": bool(source.get("TranscodingUrl"))
+            }
+            for source in media_sources
+        ], sort_keys=True), flush=True)
         for source, suffix in zip(media_sources, expected_paths, strict=True):
             if not (source.get("Path") or "").endswith(suffix):
                 raise RuntimeError("PINK live path compatibility regression")
