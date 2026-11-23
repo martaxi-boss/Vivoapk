@@ -114,6 +114,24 @@ def request(method, uri, data=None, token=None):
         parsed = None
     return code, parsed
 
+def request_png(uri, *, token):
+    """Read only local disposable Jellyfin PNG bytes, never a provider URL."""
+    conn = Connection(DATAROOT / "run/jellyfin.sock")
+    headers = {
+        "Accept": "image/png",
+        "Authorization": ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
+                          'DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'),
+        "X-Emby-Token": token,
+    }
+    conn.request("GET", uri, headers=headers)
+    response = conn.getresponse()
+    content_type = response.getheader("Content-Type") or ""
+    payload = response.read(65536)
+    status = response.status
+    conn.close()
+    return status, content_type, payload
+
+
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / "vivo-jellyfin-12.4-smoke"
@@ -263,6 +281,14 @@ def main():
                for x in channels_b.get("Items", [])):
             raise RuntimeError("Cross-subscriber pilot channel exposed")
         channel_id = pilot_a[0]["Id"]
+        for image_type in ("Primary", "Thumb"):
+            image_code, mime, art = request_png(
+                "/Items/" + channel_id + "/Images/" + image_type,
+                token=customer["AccessToken"])
+            if (image_code != 200 or not mime.startswith("image/png")
+                    or not art.startswith(b"\\x89PNG\\r\\n\\x1a\\n")):
+                raise RuntimeError("Native pilot cover unavailable in real Jellyfin")
+        print("JELLYFIN_NATIVE_PILOT_PRIMARY_THUMB_PNG=PASS")
         code, pilot_items = request(
             "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a,
             token=customer["AccessToken"])
