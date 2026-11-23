@@ -14,8 +14,8 @@ from app.config import Settings, get_settings
 from app.db import build_session_factory, get_db
 from app.logging_config import configure_logging
 from app.schemas import (
-    CatalogListRequest,
     CatalogCategoryItemsRequest,
+    CatalogListRequest,
     CatalogListResponse,
     EntitlementCheckRequest,
     EntitlementCheckResponse,
