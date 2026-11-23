@@ -181,6 +181,12 @@ def main():
         if code != 200 or not isinstance(admin, dict) or not admin.get("AccessToken"):
             raise RuntimeError("Administrator login not working")
         token = admin["AccessToken"]
+        media_policy_fields = ("EnablePlaybackRemuxing",
+                               "EnableVideoPlaybackTranscoding",
+                               "EnableAudioPlaybackTranscoding",
+                               "ForceRemoteSourceTranscoding")
+        admin_media_policy_before = {key: admin["User"].get("Policy", {}).get(key)
+                                     for key in media_policy_fields}
         code, plugins = request("GET", "/Plugins", token=token)
         if code != 200 or not isinstance(plugins, list):
             raise RuntimeError(f"Plugin inventory failed: HTTP {code}; response type {type(plugins).__name__}; admin={bool(admin.get('User', {}).get('Policy', {}).get('IsAdministrator'))}")
@@ -222,6 +228,22 @@ def main():
         account_b = customer_b["User"]["Id"]
         if account_a.replace("-", "") == account_b.replace("-", ""):
             raise RuntimeError("Two synthetic customers share Jellyfin identity")
+
+        for customer_id in (account_a, account_b):
+            code, profile = request("GET", "/Users/" + customer_id, token=token)
+            if code != 200 or not isinstance(profile, dict):
+                raise RuntimeError("Cannot read VivoAPK subscriber policy")
+            if any(profile.get("Policy", {}).get(k) is not False
+                   for k in media_policy_fields):
+                raise RuntimeError("Mega user still permits media forwarding via VPS")
+        code, admin_after = request("GET", "/Users/" + admin["User"]["Id"],
+                                    token=token)
+        if code != 200 or any(
+            admin_after.get("Policy", {}).get(k) != old_value
+            for k, old_value in admin_media_policy_before.items()
+        ):
+            raise RuntimeError("Mega plugin altered Jellyfin admin media policy")
+        print("JELLYFIN_MEGA_DIRECT_ONLY_USER_POLICY_AND_ADMIN=PASS")
 
         # A single test customer can see native pilot channels, never the
         # second customer's media. The backend and stream URL are synthetic.
@@ -280,6 +302,16 @@ def main():
             {}, token=customer["AccessToken"])
         if code != 200 or not isinstance(owner_media, dict) or not owner_media.get("MediaSources"):
             raise RuntimeError("Pilot playback source not available to its owner")
+        media_sources = owner_media["MediaSources"]
+        if len(media_sources) != 2 or any(
+            source.get("SupportsDirectPlay") is not True
+            or source.get("SupportsDirectStream") is not False
+            or source.get("SupportsTranscoding") is not False
+            or bool(source.get("TranscodingUrl"))
+            for source in media_sources
+        ):
+            raise RuntimeError("Jellyfin still offers media forwarding for live pilot")
+        print("JELLYFIN_DIRECT_ONLY_PLAYBACKINFO=PASS")
         for path in DATAROOT.rglob("*"):
             if (path.is_symlink() or not path.is_file() or
                     path.stat().st_size > 16 * 1024 * 1024):
