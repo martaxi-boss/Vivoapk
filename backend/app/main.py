@@ -14,6 +14,10 @@ from app.logging_config import configure_logging
 from app.schemas import (
     CatalogListRequest,
     CatalogListResponse,
+    EpgRequest,
+    EpgResponse,
+    SeriesDetailRequest,
+    SeriesDetailResponse,
     ResolveRequest,
     ResolveResponse,
 )
@@ -84,6 +88,74 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 xtream_client_factory=request.app.state.xtream_client_factory,
                 catalog_client_factory=request.app.state.catalog_client_factory,
             ).list(token=token, kind=payload.kind, platform=payload.platform)
+        except CatalogDenied:
+            raise HTTPException(
+                status_code=401, detail="Unauthorized",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        except CatalogUnavailable:
+            raise HTTPException(
+                status_code=503, detail="Catalogue temporarily unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+
+
+    @app.post("/v1/catalog/series", response_model=SeriesDetailResponse)
+    def read_series_detail(
+        payload: SeriesDetailRequest, response: Response, request: Request,
+        authorization: str | None = Header(default=None),
+        session: Session = Depends(get_db),
+    ) -> SeriesDetailResponse:
+        response.headers["Cache-Control"] = "no-store"
+        if (authorization is None or not authorization.startswith("Bearer ")
+                or len(authorization) > 4120):
+            raise HTTPException(
+                status_code=401, detail="Unauthorized",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            return CatalogService(
+                session, runtime_settings,
+                mega_client_factory=request.app.state.mega_client_factory,
+                xtream_client_factory=request.app.state.xtream_client_factory,
+                catalog_client_factory=request.app.state.catalog_client_factory,
+            ).series_detail(
+                token=authorization[7:], platform=payload.platform, series_id=payload.series_id
+            )
+        except CatalogDenied:
+            raise HTTPException(
+                status_code=401, detail="Unauthorized",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+        except CatalogUnavailable:
+            raise HTTPException(
+                status_code=503, detail="Catalogue temporarily unavailable",
+                headers={"Cache-Control": "no-store"},
+            ) from None
+
+    @app.post("/v1/catalog/epg", response_model=EpgResponse)
+    def read_epg(
+        payload: EpgRequest, response: Response, request: Request,
+        authorization: str | None = Header(default=None),
+        session: Session = Depends(get_db),
+    ) -> EpgResponse:
+        response.headers["Cache-Control"] = "no-store"
+        if (authorization is None or not authorization.startswith("Bearer ")
+                or len(authorization) > 4120):
+            raise HTTPException(
+                status_code=401, detail="Unauthorized",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            return CatalogService(
+                session, runtime_settings,
+                mega_client_factory=request.app.state.mega_client_factory,
+                xtream_client_factory=request.app.state.xtream_client_factory,
+                catalog_client_factory=request.app.state.catalog_client_factory,
+            ).short_epg(
+                token=authorization[7:], platform=payload.platform,
+                stream_id=payload.stream_id, limit=payload.limit
+            )
         except CatalogDenied:
             raise HTTPException(
                 status_code=401, detail="Unauthorized",
