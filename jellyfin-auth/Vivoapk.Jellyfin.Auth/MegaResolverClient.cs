@@ -11,7 +11,14 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 public enum EntitlementState { Active, Expired, Disabled, Unavailable }
 
 internal sealed record MegaResolvedSession(string? SessionToken, string? Origin);
-internal sealed record MegaPreviewEntry(string Id, string Title);
+internal sealed record MegaPreviewEntry(string Id, string Title, string? Extension = null);
+internal sealed record MegaSeasonEntry(string Id, string Title);
+internal sealed record MegaEpisodeEntry(
+    string Id, string SeasonId, string Title, string? EpisodeNumber, string? Extension);
+internal sealed record MegaSeriesInfo(
+    string SeriesId, string? Title,
+    IReadOnlyList<MegaSeasonEntry> Seasons,
+    IReadOnlyList<MegaEpisodeEntry> Episodes);
 
 public sealed class MegaResolverClient
 {
@@ -205,19 +212,21 @@ public sealed class MegaResolverClient
     // not a legitimate empty category; never log upstream tokens or URLs.
     internal Task<IReadOnlyList<MegaPreviewEntry>?> CategoriesAsync(
         string? token, CancellationToken cancellationToken = default,
-        string platform = "android")
-        => FetchCategoryMetadataAsync(token, null, platform, cancellationToken);
+        string platform = "android", string kind = "live")
+        => FetchCategoryMetadataAsync(token, null, platform, kind, cancellationToken);
 
     internal Task<IReadOnlyList<MegaPreviewEntry>?> CategoryItemsAsync(
         string? token, string categoryId, CancellationToken cancellationToken = default,
-        string platform = "android")
-        => FetchCategoryMetadataAsync(token, categoryId, platform, cancellationToken);
+        string platform = "android", string kind = "live")
+        => FetchCategoryMetadataAsync(token, categoryId, platform, kind, cancellationToken);
 
     private async Task<IReadOnlyList<MegaPreviewEntry>?> FetchCategoryMetadataAsync(
-        string? token, string? categoryId, string platform, CancellationToken cancellationToken)
+        string? token, string? categoryId, string platform, string kindRequested,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(token) || token.Length > 4096 ||
             !IsSupportedPlatform(platform) ||
+            kindRequested is not ("live" or "vod" or "series") ||
             (categoryId is not null && (categoryId.Length is < 1 or > 64 ||
                                         !categoryId.All(char.IsAsciiDigit))))
             return null;
@@ -226,8 +235,8 @@ public sealed class MegaResolverClient
             var path = categoryId is null
                 ? "v1/catalog/categories" : "v1/catalog/category-items";
             object payload = categoryId is null
-                ? new { kind = "live", platform }
-                : new { kind = "live", platform, category_id = categoryId };
+                ? new { kind = kindRequested, platform }
+                : new { kind = kindRequested, platform, category_id = categoryId };
             using var request = new HttpRequestMessage(HttpMethod.Post, path)
             {
                 Content = new StringContent(
@@ -260,7 +269,7 @@ public sealed class MegaResolverClient
             var countLimit = categoryId is null ? 2000 : MaxCatalogItems;
             if (root.ValueKind != JsonValueKind.Object ||
                 !root.TryGetProperty("kind", out var kind) ||
-                kind.ValueKind != JsonValueKind.String || kind.GetString() != "live" ||
+                kind.ValueKind != JsonValueKind.String || kind.GetString() != kindRequested ||
                 !root.TryGetProperty(field, out var rows) ||
                 rows.ValueKind != JsonValueKind.Array ||
                 rows.GetArrayLength() > countLimit)
@@ -287,9 +296,134 @@ public sealed class MegaResolverClient
                     category.ValueKind == JsonValueKind.String &&
                     !string.Equals(category.GetString(), categoryId, StringComparison.Ordinal))
                     continue;
-                items.Add(new MegaPreviewEntry(id, title));
+                string? extension = null;
+                if (categoryId is not null && row.TryGetProperty(
+                        "container_extension", out var container)
+                    && container.ValueKind == JsonValueKind.String)
+                {
+                    var rawExtension = container.GetString() ?? string.Empty;
+                    if (rawExtension.Length is >= 1 and <= 12 &&
+                        rawExtension.All(char.IsAsciiLetterOrDigit))
+                        extension = rawExtension.ToLowerInvariant();
+                }
+                items.Add(new MegaPreviewEntry(id, title, extension));
             }
             return items;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException
+                                 or JsonException or IOException)
+        {
+            return null;
+        }
+    }
+
+
+    internal async Task<MegaSeriesInfo?> SeriesDetailAsync(
+        string? token, string categoryId, string seriesId,
+        string platform = "android", CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(token) || token.Length > 4096 ||
+            !IsSupportedPlatform(platform) ||
+            categoryId.Length is < 1 or > 64 || !categoryId.All(char.IsAsciiDigit) ||
+            seriesId.Length is < 1 or > 64 || !seriesId.All(char.IsAsciiDigit))
+            return null;
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post, "v1/catalog/series")
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new { category_id = categoryId,
+                        series_id = seriesId, platform }),
+                    Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            using var response = await _client.SendAsync(request,
+                HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return null;
+            await using var input = await response.Content.ReadAsStreamAsync(
+                cancellationToken).ConfigureAwait(false);
+            using var output = new MemoryStream();
+            var buffer = new byte[8192];
+            while (true)
+            {
+                var n = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (n == 0)
+                    break;
+                if (output.Length + n > MaxCatalogResponseBytes)
+                    return null;
+                output.Write(buffer, 0, n);
+            }
+            output.Position = 0;
+            using var doc = JsonDocument.Parse(output);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("series_id", out var actual) ||
+                actual.ValueKind != JsonValueKind.String ||
+                !string.Equals(actual.GetString(), seriesId, StringComparison.Ordinal) ||
+                !root.TryGetProperty("seasons", out var seasons) ||
+                seasons.ValueKind != JsonValueKind.Array ||
+                seasons.GetArrayLength() > 1000 ||
+                !root.TryGetProperty("episodes", out var episodes) ||
+                episodes.ValueKind != JsonValueKind.Array ||
+                episodes.GetArrayLength() > MaxCatalogItems)
+                return null;
+            var seasonRows = new List<MegaSeasonEntry>();
+            var episodeRows = new List<MegaEpisodeEntry>();
+            foreach (var row in seasons.EnumerateArray())
+            {
+                if (row.ValueKind != JsonValueKind.Object ||
+                    !row.TryGetProperty("id", out var id) ||
+                    !row.TryGetProperty("title", out var title) ||
+                    id.ValueKind != JsonValueKind.String ||
+                    title.ValueKind != JsonValueKind.String)
+                    continue;
+                var name = title.GetString() ?? string.Empty;
+                var seasonId = id.GetString() ?? string.Empty;
+                if (seasonId.Length is < 1 or > 64 || !seasonId.All(char.IsAsciiDigit) ||
+                    name.Length is < 1 or > 250)
+                    continue;
+                seasonRows.Add(new MegaSeasonEntry(seasonId, name));
+            }
+            foreach (var row in episodes.EnumerateArray())
+            {
+                if (row.ValueKind != JsonValueKind.Object ||
+                    !row.TryGetProperty("id", out var id) ||
+                    !row.TryGetProperty("season_id", out var season) ||
+                    !row.TryGetProperty("title", out var title) ||
+                    id.ValueKind != JsonValueKind.String ||
+                    season.ValueKind != JsonValueKind.String ||
+                    title.ValueKind != JsonValueKind.String)
+                    continue;
+                var idString = id.GetString() ?? string.Empty;
+                var seasonString = season.GetString() ?? string.Empty;
+                var episodeTitle = title.GetString() ?? string.Empty;
+                if (idString.Length is < 1 or > 64 ||
+                    !idString.All(char.IsAsciiDigit) ||
+                    seasonString.Length is < 1 or > 64 ||
+                    !seasonString.All(char.IsAsciiDigit) ||
+                    episodeTitle.Length is < 1 or > 250)
+                    continue;
+                string? ext = null;
+                if (row.TryGetProperty("container_extension", out var extension) &&
+                    extension.ValueKind == JsonValueKind.String)
+                {
+                    var raw = extension.GetString() ?? string.Empty;
+                    if (raw.Length is >= 1 and <= 12 && raw.All(char.IsAsciiLetterOrDigit))
+                        ext = raw.ToLowerInvariant();
+                }
+                var epNum = row.TryGetProperty("episode_number", out var ep)
+                    && ep.ValueKind == JsonValueKind.String ? ep.GetString() : null;
+                episodeRows.Add(new MegaEpisodeEntry(
+                    idString, seasonString, episodeTitle, epNum, ext));
+            }
+            var nameValue = root.TryGetProperty("title", out var seriesTitle)
+                && seriesTitle.ValueKind == JsonValueKind.String
+                ? seriesTitle.GetString() : null;
+            return new MegaSeriesInfo(seriesId, nameValue, seasonRows, episodeRows);
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException
                                  or JsonException or IOException)
