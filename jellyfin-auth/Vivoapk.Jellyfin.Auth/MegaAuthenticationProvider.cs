@@ -98,7 +98,7 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
                 var library = _appHost.Resolve<ILibraryManager>();
                 var channelId = library.GetNewItemId(
                     "Channel " + VivoapkLivePreviewChannel.ChannelName,
-                    typeof(Jellyfin.Database.Implementations.Entities.Channel));
+                    typeof(MediaBrowser.Controller.Channels.Channel));
                 user.SetPermission(PermissionKind.EnableAllChannels, false);
                 user.SetPreference(PreferenceKind.EnabledChannels, new[] { channelId });
                 await users.UpdateUserAsync(user).ConfigureAwait(false);
