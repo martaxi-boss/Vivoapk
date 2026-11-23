@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     mega_ott_api_base: str = "https://megaott.net/api"
     mega_ott_api_token: SecretStr | None = None
     session_ttl_seconds: int = Field(default=300, ge=30, le=300)
+    # Secret configured privately on the backend; no hardcoded default.
+    entitlement_monitor_key: SecretStr | None = None
     auth_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
     auth_rate_per_username: int = Field(default=10, ge=1, le=100)
     auth_rate_global: int = Field(default=120, ge=10, le=10000)
