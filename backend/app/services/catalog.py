@@ -18,7 +18,13 @@ from app.clients.mega import MegaClientError, MegaOTTClient
 from app.clients.xtream import XtreamClient, XtreamError
 from app.config import Settings
 from app.models import SubscriptionMapping
-from app.schemas import CatalogKind, CatalogListResponse, ClientPlatform
+from app.schemas import (
+    CatalogKind,
+    CatalogListResponse,
+    ClientPlatform,
+    EpgResponse,
+    SeriesDetailResponse,
+)
 from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
 
 _SUB = re.compile(r"^mapping:([1-9][0-9]{0,18})$")
@@ -73,7 +79,7 @@ class CatalogService:
         self._xtream_client_factory = xtream_client_factory
         self._catalog_client_factory = catalog_client_factory
 
-    def list(self, *, token: str, kind: CatalogKind, platform: ClientPlatform) -> CatalogListResponse:
+    def _authorize(self, *, token: str, platform: ClientPlatform) -> tuple[str, str, str]:
         mapping_id = mapping_id_for_token(token, self._settings)
         mapping = self._db.get(SubscriptionMapping, mapping_id)
         if mapping is None or _expired(mapping.expiring_at):
@@ -130,8 +136,44 @@ class CatalogService:
         if status.code != "SUCCESS" or _expired(status.account_expires_at):
             raise CatalogDenied("Subscription unavailable")
 
+        return origin, mapping.username, password
+
+    def list(self, *, token: str, kind: CatalogKind, platform: ClientPlatform) -> CatalogListResponse:
+        origin, username, password = self._authorize(token=token, platform=platform)
         catalogue = self._catalog_client_factory()
         categories, items = catalogue.list(
-            dns_link=origin, username=mapping.username, password=password, kind=kind
+            dns_link=origin, username=username, password=password, kind=kind
         )
         return CatalogListResponse(kind=kind, categories=categories, items=items)
+
+    def series_detail(
+        self, *, token: str, platform: ClientPlatform, series_id: str
+    ) -> SeriesDetailResponse:
+        origin, username, password = self._authorize(token=token, platform=platform)
+        catalogue = self._catalog_client_factory()
+        _, items = catalogue.list(
+            dns_link=origin, username=username, password=password, kind=CatalogKind.SERIES
+        )
+        if not any(entry["id"] == series_id for entry in items):
+            raise CatalogDenied("Series not available for this subscription")
+        payload = catalogue.series_detail(
+            dns_link=origin, username=username, password=password, series_id=series_id
+        )
+        return SeriesDetailResponse.model_validate(payload)
+
+    def short_epg(
+        self, *, token: str, platform: ClientPlatform, stream_id: str, limit: int
+    ) -> EpgResponse:
+        origin, username, password = self._authorize(token=token, platform=platform)
+        catalogue = self._catalog_client_factory()
+        _, items = catalogue.list(
+            dns_link=origin, username=username, password=password, kind=CatalogKind.LIVE
+        )
+        if not any(entry["id"] == stream_id for entry in items):
+            raise CatalogDenied("Channel not available for this subscription")
+        payload = catalogue.short_epg(
+            dns_link=origin, username=username, password=password,
+            stream_id=stream_id, limit=limit
+        )
+        return EpgResponse.model_validate(payload)
+
