@@ -562,3 +562,82 @@ def test_live_preview_bounds_metadata_requests(public_resolver):
     ) == ([], [])
     assert calls == ["get_live_categories"] + ["get_live_streams"] * 6
 
+
+
+def test_preview_prioritizes_portugal_geral_even_after_hundreds(public_resolver):
+    """Live Portuguese TV is selected ahead of UFC PPV without broad scraping."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params["action"]
+        category_id = request.url.params.get("category_id")
+        calls.append((action, category_id))
+        if action == "get_live_categories":
+            return httpx.Response(200, json=[
+                {"category_id": "1", "category_name": "PPV | UFC [EVENT ONLY]"},
+                *[
+                    {"category_id": str(n), "category_name": "EVENTO " + str(n)}
+                    for n in range(2, 100)
+                ],
+                {"category_id": "97", "category_name": "EU | PORTUGAL GERAL"},
+            ])
+        assert action == "get_live_streams"
+        assert category_id == "97"
+        return httpx.Response(200, json=[
+            {"stream_id": 301, "name": "✦●✦ PORTUGAL HD ✦●✦", "category_id": "97"},
+            {"stream_id": 302, "name": "PT| TVI HD", "category_id": "97"},
+            {"stream_id": 303, "name": "PT| RTP 1 HD", "category_id": "97"},
+            {"stream_id": 304, "name": "PT| SIC HD", "category_id": "97"},
+            {"stream_id": 305, "name": "PPV UFC EVENT ONLY", "category_id": "97"},
+            {"stream_id": 306, "name": "PT| RTP 2 HD", "category_id": "97"},
+            {"stream_id": 307, "name": "PT| RTP 3 HD", "category_id": "97"},
+            {"stream_id": 308, "name": "PT| CANAL LOCAL", "category_id": "97"},
+        ])
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    categories, items = adapter.preview_live(
+        dns_link="http://stream.example.com", username="demo",
+        password="test-only-password",
+    )
+    assert categories == [{"id": "97", "name": "EU | PORTUGAL GERAL"}]
+    assert [item["title"] for item in items] == [
+        "PT| RTP 1 HD", "PT| RTP 2 HD", "PT| SIC HD",
+        "PT| TVI HD", "PT| RTP 3 HD",
+    ]
+    assert calls == [("get_live_categories", None), ("get_live_streams", "97")]
+    assert "test-only-password" not in str(categories) + str(items)
+
+
+def test_preview_never_substitutes_ufc_events_for_portuguese_channels(public_resolver):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params["action"]
+        category_id = request.url.params.get("category_id")
+        calls.append((action, category_id))
+        if action == "get_live_categories":
+            return httpx.Response(200, json=[
+                {"category_id": "1", "category_name": "PPV | UFC"},
+                {"category_id": "97", "category_name": "EU | PORTUGAL GERAL"},
+            ])
+        if category_id == "97":
+            return httpx.Response(200, json=[
+                {"stream_id": 2, "name": "PT| RTP 1 HD", "category_id": "97"},
+            ])
+        raise AssertionError("UFC category must not be queried")
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    categories, items = adapter.preview_live(
+        dns_link="http://stream.example.com", username="demo",
+        password="test-only-password",
+    )
+    assert categories[0]["name"] == "EU | PORTUGAL GERAL"
+    assert items[0]["title"] == "PT| RTP 1 HD"
+    assert calls == [("get_live_categories", None), ("get_live_streams", "97")]
+
