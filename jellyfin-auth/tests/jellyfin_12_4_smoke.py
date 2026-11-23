@@ -316,7 +316,9 @@ def main():
                 "HlsPath": str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8"),
             } for source in media_sources],
         }, sort_keys=True), flush=True)
-        if len(media_sources) != 2 or any(
+        # A native m3u8 source is represented as ONE media source.
+        # The former MPEG-TS variant produced two Jellyfin alternatives.
+        if len(media_sources) != 1 or any(
             source.get("SupportsDirectPlay") is not True
             or source.get("SupportsDirectStream") is not False
             or source.get("SupportsTranscoding") is not False
