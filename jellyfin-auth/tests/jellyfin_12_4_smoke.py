@@ -191,9 +191,13 @@ def main():
             matches = [x for x in folder_info if x.get("Name") == name]
             if len(matches) != 1 or not matches[0].get("ItemId"):
                 raise RuntimeError("Account did not get its own automatic native library")
-            media_dir = DATAROOT / "vivoapk-private-libraries" / opaque_id
-            if matches[0].get("Locations") != [str(media_dir)]:
-                raise RuntimeError("Provisioned location does not match the account-scoped directory")
+            locations = matches[0].get("Locations") or []
+            if len(locations) != 1:
+                raise RuntimeError("Provisioned library must have exactly one media location")
+            media_dir = Path(locations[0]).resolve()
+            if (not media_dir.is_relative_to(DATAROOT.resolve()) or
+                    media_dir.parts[-2:] != ("vivoapk-private-libraries", opaque_id)):
+                raise RuntimeError("Provisioned location escapes the private account directory")
             ids[owner] = matches[0]["ItemId"]
             code, profile = request("GET", "/Users/" + user_id, token=token)
             if code != 200 or not isinstance(profile, dict) or "Policy" not in profile:
