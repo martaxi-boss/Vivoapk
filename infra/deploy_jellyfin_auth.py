@@ -107,6 +107,9 @@ def sha_ok(sha):
 def release_dir(sha):
     return ROOT_RELEASES / sha[:16]
 
+def checkout_dir(sha):
+    return ROOT / "jellyfin-auth/checkouts" / sha[:16]
+
 def backup_dir(sha):
     return ROOT_BACKUPS / sha[:16]
 
@@ -196,8 +199,9 @@ def stage(sha):
         fail("plugin_already_installed")
     if cmd(["git", "-C", str(SOURCE), "remote", "get-url", "origin"]) != SOURCE_REMOTE:
         fail("source_remote_mismatch")
-    if cmd(["git", "-C", str(SOURCE), "status", "--porcelain"]):
-        fail("vivo_source_worktree_not_clean")
+    # Backend checkout is left untouched: the plugin gets its own pinned Git worktree.
+    if checkout_dir(sha).exists() or checkout_dir(sha).is_symlink():
+        fail("plugin_source_checkout_already_exists")
     # Upstream is fetched by complete commit ID; no scripts from remote are executed.
     cmd(["git", "-C", str(SOURCE), "fetch", "--no-tags", "--depth", "1", "origin", sha], timeout=120)
     # The deployment history updates backend/README.md only; runtime source must match.
@@ -205,18 +209,19 @@ def stage(sha):
                            "HEAD",sha,"--","backend/"]).splitlines()
     if any(name != "backend/README.md" for name in changed_backend):
         fail("backend_runtime_changes_requires_separate_deployment")
-    if cmd(["git", "-C", str(SOURCE), "rev-parse", "HEAD"]) != sha:
-        cmd(["git", "-C", str(SOURCE), "checkout", "--detach", sha], timeout=50)
-    if cmd(["git", "-C", str(SOURCE), "rev-parse", "HEAD"]) != sha:
-        fail("source_revision_mismatch")
-    project = SOURCE / "jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj"
-    test = SOURCE / "jellyfin-auth/Vivoapk.Jellyfin.Auth.Tests/Vivoapk.Jellyfin.Auth.Tests.csproj"
-    manifest_path = SOURCE / "jellyfin-auth/Vivoapk.Jellyfin.Auth/meta.json"
+    checkout = checkout_dir(sha)
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    cmd(["git", "-C", str(SOURCE), "worktree", "add", "--detach", str(checkout), sha], timeout=65)
+    if cmd(["git", "-C", str(checkout), "rev-parse", "HEAD"]) != sha:
+        fail("plugin_checkout_revision_mismatch")
+    project = checkout / "jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj"
+    test = checkout / "jellyfin-auth/Vivoapk.Jellyfin.Auth.Tests/Vivoapk.Jellyfin.Auth.Tests.csproj"
+    manifest_path = checkout / "jellyfin-auth/Vivoapk.Jellyfin.Auth/meta.json"
     manifest = json.loads(manifest_path.read_text())
     if (manifest.get("guid") != PLUGIN_GUID or manifest.get("targetAbi") != "12.4.0.0"
             or manifest.get("name") != PLUGIN_NAME or manifest.get("version") != VERSION):
         fail("invalid_source_manifest")
-    if not (SOURCE / "jellyfin-auth/Vivoapk.Jellyfin.Auth/PluginConfiguration.cs").read_text().count("Enabled { get; set; } = false;"):
+    if not (checkout / "jellyfin-auth/Vivoapk.Jellyfin.Auth/PluginConfiguration.cs").read_text().count("Enabled { get; set; } = false;"):
         fail("plugin_must_default_disabled")
     cache = ROOT / "jellyfin-auth/build-cache"
     home = cache / "dotnet-home"
@@ -231,7 +236,7 @@ def stage(sha):
     cmd(["dotnet", "build", str(project), "-c", "Release", "--no-restore",
          "-p:ContinuousIntegrationBuild=true"], env=env, timeout=190)
     cmd(["dotnet", "run", "--project", str(test), "--configuration", "Release"], env=env, timeout=200)
-    built = SOURCE / "jellyfin-auth/Vivoapk.Jellyfin.Auth/bin/Release/net10.0" / DLL
+    built = checkout / "jellyfin-auth/Vivoapk.Jellyfin.Auth/bin/Release/net10.0" / DLL
     if not built.is_file() or built.stat().st_size < 5000:
         fail("compiled_plugin_missing")
     release = release_dir(sha)
@@ -295,7 +300,7 @@ def install(sha):
     release = release_dir(sha)
     if not (release / DLL).is_file() or not (release / "meta.json").is_file():
         fail("staged_release_missing")
-    if cmd(["git","-C",str(SOURCE),"rev-parse","HEAD"])!=sha:
+    if not checkout_dir(sha).is_dir() or cmd(["git","-C",str(checkout_dir(sha)),"rev-parse","HEAD"])!=sha:
         fail("compiled_release_source_mismatch")
     if (backup_dir(sha)).exists():
         fail("backup_already_present")
@@ -337,8 +342,8 @@ def install(sha):
 
 def activate(sha):
     ensure_health()
-    if cmd(["git","-C",str(SOURCE),"rev-parse","HEAD"])!=sha:
-        fail("source_revision_mismatch")
+    if not checkout_dir(sha).is_dir() or cmd(["git","-C",str(checkout_dir(sha)),"rev-parse","HEAD"])!=sha:
+        fail("plugin_checkout_revision_mismatch")
     if not plugin_snapshot():
         fail("plugin_missing")
     if not (backup_dir(sha)/"jellyfin-data-config.tar.gz").is_file():
