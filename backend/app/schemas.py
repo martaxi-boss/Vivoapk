@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class ClientPlatform(StrEnum):
@@ -70,3 +70,49 @@ class CatalogListResponse(BaseModel):
     kind: CatalogKind
     categories: list[CatalogCategory]
     items: list[CatalogItem]
+
+
+class SeriesDetailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    platform: ClientPlatform = ClientPlatform.ANDROID
+
+
+class EpisodeInfo(BaseModel):
+    id: str
+    season_id: str
+    title: str
+    episode_number: str | None = None
+    container_extension: str | None = None
+
+
+class SeasonInfo(BaseModel):
+    id: str
+    title: str
+
+
+class SeriesDetailResponse(BaseModel):
+    series_id: str
+    title: str | None = None
+    seasons: list[SeasonInfo]
+    episodes: list[EpisodeInfo]
+
+
+class EpgRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stream_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    limit: int = Field(default=10, ge=1, le=20)
+    platform: ClientPlatform = ClientPlatform.ANDROID
+
+
+class EpgProgramme(BaseModel):
+    title: str
+    start_timestamp: int | None = None
+    end_timestamp: int | None = None
+
+
+class EpgResponse(BaseModel):
+    stream_id: str
+    programmes: list[EpgProgramme]
