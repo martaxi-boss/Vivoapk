@@ -61,6 +61,13 @@ class FakeCatalog:
             [{"id": "101", "title": title, "category_id": "20", "container_extension": None}],
         )
 
+    def preview_live(self, **kwargs):
+        self.calls.append(kwargs)
+        suffix = "Azul" if kwargs["username"] == "sub-a" else "Verde"
+        return ([{"id": "10", "name": "Portugal"}],
+                [{"id": "88", "title": "Canal " + suffix,
+                  "category_id": "10", "container_extension": None}])
+
     def series_detail(self, **kwargs):
         self.calls.append(kwargs)
         return {"series_id": kwargs["series_id"], "title": "Série pessoal",
@@ -119,6 +126,17 @@ def test_two_subscriptions_are_isolated_by_signed_mapping_identity(settings, ses
             headers={"Authorization": "Bearer " + token},
             json=body or {"kind": "live", "platform": "android"},
         )
+
+    for token, title in ((token_a, "Canal Azul"), (token_b, "Canal Verde")):
+        preview = client.post(
+            "/v1/catalog/preview",
+            headers={"Authorization": "Bearer " + token},
+            json={"kind": "live", "platform": "android"},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["items"][0]["title"] == title
+        assert "secret-" not in preview.text and "origin-" not in preview.text
+        assert preview.headers["Cache-Control"] == "no-store"
 
     a, b = request(token_a), request(token_b)
     assert a.status_code == b.status_code == 200
