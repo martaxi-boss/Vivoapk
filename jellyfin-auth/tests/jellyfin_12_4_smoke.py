@@ -312,6 +312,16 @@ def main():
         ):
             raise RuntimeError("Jellyfin still offers media forwarding for live pilot")
         print("JELLYFIN_DIRECT_ONLY_PLAYBACKINFO=PASS")
+        # Jellyfin Android 2.7.3 routes remote HTTP direct-play sources
+        # through its HLS parser even if the path ends in MPEG-TS.
+        # A real Mega OTT HLS playlist must be provided instead.
+        if any(
+            not str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8")
+            or str(source.get("Container") or "").lower() != "m3u8"
+            for source in media_sources
+        ):
+            raise RuntimeError("Jellyfin pilot advertises non-HLS source to Android")
+        print("JELLYFIN_MEGA_HTTP_DIRECT_HLS_SOURCE=PASS")
         for path in DATAROOT.rglob("*"):
             if (path.is_symlink() or not path.is_file() or
                     path.stat().st_size > 16 * 1024 * 1024):
