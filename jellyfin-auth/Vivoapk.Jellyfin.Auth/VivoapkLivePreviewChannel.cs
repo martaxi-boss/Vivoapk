@@ -20,7 +20,7 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCallback, IHasCacheKey
 {
     public const string ChannelName = "VivoAPK — TV de teste";
-    private sealed record PilotStream(string ExternalId, string Title, string Url);
+    private sealed record PilotStream(string ExternalId, string Title, string Url, string LegacyUrl);
     private sealed record PilotSnapshot(Guid Owner, DateTime Expires, List<PilotStream> Streams);
     private static readonly object Gate = new();
     private static PilotSnapshot? _pilot;
@@ -60,8 +60,15 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     + Uri.EscapeDataString(username) + "/"
                     + Uri.EscapeDataString(password) + "/"
                     + Uri.EscapeDataString(channel.Id) + ".ts";
+                // Original PINK APK also supported a same-origin legacy live URL
+                // on a single 401/404. Keep it as a separate selectable source:
+                // the Jellyfin client, not the server, owns playback failures.
+                var legacy = origin.TrimEnd('/') + "/"
+                    + Uri.EscapeDataString(username) + "/"
+                    + Uri.EscapeDataString(password) + "/"
+                    + Uri.EscapeDataString(channel.Id);
                 streams.Add(new PilotStream(Guid.NewGuid().ToString("N"),
-                    channel.Title, source));
+                    channel.Title, source, legacy));
             }
             if (streams.Count == 0)
                 return false;
@@ -142,21 +149,27 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     x.ExternalId, id, StringComparison.Ordinal)) : null;
         }
         IEnumerable<MediaSourceInfo> sources = stream is null
-            ? Array.Empty<MediaSourceInfo>() : new[] { Source(stream) };
+            ? Array.Empty<MediaSourceInfo>()
+            : new[] { Source(stream, legacy: false), Source(stream, legacy: true) };
         return Task.FromResult(sources);
     }
 
-    private static MediaSourceInfo Source(PilotStream stream) => new()
+    private static MediaSourceInfo Source(PilotStream stream, bool legacy) => new()
     {
-        Name = stream.Title,
-        Path = stream.Url,
+        Id = stream.ExternalId + (legacy ? "-legacy" : "-live"),
+        Name = stream.Title + (legacy ? " (compatibilidade)" : ""),
+        Path = legacy ? stream.LegacyUrl : stream.Url,
         Protocol = MediaProtocol.Http,
         IsRemote = true,
         IsInfiniteStream = true,
         Container = "ts",
+        // Match the original PINK Android path: remote device fetches the
+        // media; Jellyfin never tries to remux/transcode on the isolated VPS.
+        // HTTP-in-HTTPS web clients may still reject playback. Do not claim
+        // that changing these flags makes Chrome or Smart TV support MPEG-TS.
         SupportsDirectPlay = true,
-        SupportsDirectStream = true,
-        SupportsTranscoding = true,
+        SupportsDirectStream = false,
+        SupportsTranscoding = false,
         SupportsProbing = false,
         RequiresOpening = false,
         RequiresClosing = false
