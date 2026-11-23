@@ -47,7 +47,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public string Name => ChannelNameFor(_slot);
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-hls-v7-private-category-folders";
+    public string DataVersion => "pilot-hls-v8-lazy-category-root";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -192,6 +192,22 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             }).ToList();
         }
         else if (string.IsNullOrEmpty(query.FolderId))
+        {
+            // This first-level folder deliberately prevents Jellyfin's
+            // GetLatestChannelItems automatic one-level refresh from eagerly
+            // downloading every provider category's streams.
+            list = new List<ChannelItemInfo>
+            {
+                new()
+                {
+                    Id = "vivo:live-root", Name = "TV ao vivo",
+                    Type = ChannelItemType.Folder,
+                    FolderType = ChannelFolderType.Container,
+                    MediaType = ChannelMediaType.Video
+                }
+            };
+        }
+        else if (string.Equals(query.FolderId, "vivo:live-root", StringComparison.Ordinal))
         {
             list = snapshot.Streams.Select(category => new ChannelItemInfo
             {

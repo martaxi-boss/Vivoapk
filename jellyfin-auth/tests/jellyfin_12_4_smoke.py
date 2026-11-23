@@ -404,6 +404,15 @@ def main():
         if code != 200 or not isinstance(pilot_items, dict) or not pilot_items.get("Items"):
             raise RuntimeError("Pilot channel did not produce visible media items")
         if CATEGORY_MODE:
+            root_folders_a = pilot_items["Items"]
+            if len(root_folders_a) != 1 or root_folders_a[0].get("Name") != "TV ao vivo":
+                raise RuntimeError("Native Live TV root folder not exposed for A")
+            code, pilot_items = request(
+                "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
+                + "&FolderId=" + root_folders_a[0]["Id"],
+                token=customer["AccessToken"])
+            if code != 200 or not (pilot_items or {}).get("Items"):
+                raise RuntimeError("Live TV root did not expose authorized categories for A")
             folders_a = pilot_items["Items"]
             if len(folders_a) != 2 or {x.get("Name") for x in folders_a} != {
                     "Portugal Azul", "Desporto Azul"}:
@@ -430,6 +439,15 @@ def main():
         if code != 200 or not isinstance(pilot_items_b, dict):
             raise RuntimeError("Second account cannot browse own channels")
         if CATEGORY_MODE:
+            root_folders_b = pilot_items_b["Items"]
+            if len(root_folders_b) != 1 or root_folders_b[0].get("Name") != "TV ao vivo":
+                raise RuntimeError("Native Live TV root folder not exposed for B")
+            code, pilot_items_b = request(
+                "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b
+                + "&FolderId=" + root_folders_b[0]["Id"],
+                token=customer_b["AccessToken"])
+            if code != 200 or not (pilot_items_b or {}).get("Items"):
+                raise RuntimeError("Live TV root did not expose authorized categories for B")
             folders_b = pilot_items_b["Items"]
             if len(folders_b) != 2 or {x.get("Name") for x in folders_b} != {
                     "Portugal Verde", "Desporto Verde"}:
@@ -567,10 +585,18 @@ def main():
         if code != 200 or not (recent_items_a or {}).get("Items"):
             raise RuntimeError("Subscriber A did not regain channel catalog after restart")
         if CATEGORY_MODE:
+            code, recent_categories_a = request(
+                "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_items_a["Items"] if x.get("Name") == "TV ao vivo"),
+                token=customer["AccessToken"])
+            if code != 200 or not (recent_categories_a or {}).get("Items"):
+                raise RuntimeError("Cannot recover A categories after restart")
             code, recent_items_a = request(
                 "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a
                 + "&FolderId=" + next(
-                    x["Id"] for x in recent_items_a["Items"] if x.get("Name") == "Portugal Azul"),
+                    x["Id"] for x in recent_categories_a["Items"]
+                    if x.get("Name") == "Portugal Azul"),
                 token=customer["AccessToken"])
             if code != 200 or not (recent_items_a or {}).get("Items"):
                 raise RuntimeError("Subscriber A category unavailable after restart")
@@ -581,10 +607,18 @@ def main():
         if code != 200 or not (recent_items_b or {}).get("Items"):
             raise RuntimeError("Subscriber B did not regain channel catalog after restart")
         if CATEGORY_MODE:
+            code, recent_categories_b = request(
+                "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_items_b["Items"] if x.get("Name") == "TV ao vivo"),
+                token=customer_b["AccessToken"])
+            if code != 200 or not (recent_categories_b or {}).get("Items"):
+                raise RuntimeError("Cannot recover B categories after restart")
             code, recent_items_b = request(
                 "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b
                 + "&FolderId=" + next(
-                    x["Id"] for x in recent_items_b["Items"] if x.get("Name") == "Portugal Verde"),
+                    x["Id"] for x in recent_categories_b["Items"]
+                    if x.get("Name") == "Portugal Verde"),
                 token=customer_b["AccessToken"])
             if code != 200 or not (recent_items_b or {}).get("Items"):
                 raise RuntimeError("Subscriber B category unavailable after restart")
