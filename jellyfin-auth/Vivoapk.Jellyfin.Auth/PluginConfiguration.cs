@@ -9,4 +9,7 @@ public sealed class PluginConfiguration : BasePluginConfiguration
 
     // Never create libraries in production until explicit opt-in and isolation validation.
     public bool ProvisionPrivateLibraries { get; set; } = false;
+
+    // Entitlement scanning is separate opt-in: never affect production accounts by default.
+    public bool MonitorEntitlements { get; set; } = false;
 }
