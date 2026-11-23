@@ -56,6 +56,16 @@ Sondas preliminares interrompidas por subscrições indisponíveis, opções de 
 
 ## Limite físico
 
-Não havia ligação remota disponível ao Android físico. Falta **abrir a RTP1 na aplicação oficial já instalada e observar imagem e som durante pelo menos 30 segundos**. Regressar à lista e abrir o canal permite testar os metadados atuais; não se propõe terminar e voltar a iniciar sessão como solução.
+O utilizador testou o Android físico às 15:57: a aplicação Jellyfin para Android 2.7.3 continua com **Source error**, e a reprodução permanece bloqueada. Já não está apenas pendente repetir um teste de imagem/som; está por identificar a exceção nativa que provoca a falha.
+
+A [correlação REA 45211518173](https://github.com/martaxi-boss/VPS/actions/runs/45211518173) identificou login bem-sucedido às 15:56:52, criação do item RTP1 às 15:56:54 e pedidos PlaybackInfo desse mesmo item às 15:57 com HTTP 200. Essa tentativa não usou um item anterior à autenticação.
+
+A [sonda inicial 45212513886](https://github.com/martaxi-boss/VPS/actions/runs/45212513886) observou HTTP 403 num cliente Java, mas esse resultado **não foi reproduzido** na [comparação controlada 45218593734](https://github.com/martaxi-boss/VPS/actions/runs/45218593734): Java obteve 302→200, manifesto válido e segmento MPEG-TS HTTP 200, quer no URL original quer no URL resolvido ou no endereço alternativo atribuído pelo fornecedor. Variações de Accept/Connection no cliente Python também passaram. Não se atribui a causa Android a esse 403 transitório. A subscrição estava ativa, com 0 ligações de um máximo de 2 no instante da sonda; isso não mede as ligações existentes na tentativa física anterior.
+
+A [verificação do ADB privado do catálogo Ferrari 45219406175](https://github.com/martaxi-boss/VPS/actions/runs/45219406175), executada pelo REA através da ponte GitHub Actions → SSH → VPS, encontrou **zero dispositivos autorizados**, com exit 0 e preservação do servidor ADB existente. A chamada direta REA list_adb_devices dera erro no [run 45219044558](https://github.com/martaxi-boss/VPS/actions/runs/45219044558); a confirmação pelo executável privado do mesmo catálogo evita confundir erro da ferramenta com ausência comprovada de dispositivos.
+
+Não houve nova alteração de código ou implantação após a captura do erro físico. O bloqueio atual exige o registo nativo do Jellyfin Android, nomeadamente a exceção após Caused by ou o ERROR_CODE do ExoPlayer. O código oficial v2.7.3 regista essa exceção no logcat ao tentar fallback; o aviso Source error mostrado no ecrã contém apenas a mensagem genérica. A exceção não consta dos registos do servidor obtidos pela VPS. Não publicar URLs, credenciais ou logcat integral sem filtragem.
+
+A investigação Ruflo **vivo-android-source-error-20261123-1600** fica pendente dessa evidência física; não está certificada como resolvida. Toda a execução de diagnóstico na VPS foi feita pela ponte original GitHub Actions/Ferrari/REA.
 
 O piloto existente conserva uma subscrição de cada vez e snapshot efémero de 30 minutos. Não há certificação de catálogo completo, outros canais, iOS ou Smart TV nesta correção.
