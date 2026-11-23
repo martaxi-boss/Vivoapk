@@ -41,8 +41,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         List<PilotStream> MovieCategories, List<PilotStream> SeriesCategories)
     {
         public string? CurrentToken { get; set; } = SessionToken;
-        // No global index of 28,841 channels in Jellyfin RAM:
-        // each media source can be resolved from its stable, category-scoped ID.
+        // Keep per-platform session tokens in RAM: TV apps may require a
+        // different authoritative Mega DNS than Android for the same account.
+        // Never serialize credentials or provider URLs to Jellyfin's index.
+        public Dictionary<string, (string Token, string Origin, DateTime Expires)> PlatformSessions
+            { get; } = new(StringComparer.Ordinal);
     }
     private static readonly object Gate = new();
     private static readonly Dictionary<int, PilotSnapshot> Pilots = new();
@@ -163,10 +166,14 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     return null;
                 }
             }
-            Pilots[assignedSlot] = new PilotSnapshot(
-                owner, DateTime.UtcNow.AddMinutes(30), origin, username, password,
+            var activeSnapshot = new PilotSnapshot(
+                owner, DateTime.UtcNow.AddHours(12), origin, username, password,
                 streams, categoryNavigation, platform, sessionToken,
                 movies, series);
+            if (!string.IsNullOrEmpty(sessionToken))
+                activeSnapshot.PlatformSessions[platform] = (
+                    sessionToken, origin, DateTime.UtcNow.AddMinutes(4));
+            Pilots[assignedSlot] = activeSnapshot;
             return ChannelNameFor(assignedSlot);
         }
     }
@@ -460,6 +467,60 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             }
         }
         return detail;
+    }
+
+    private string RequestPlatform(PilotSnapshot snapshot)
+    {
+        var headers = _httpContextAccessor?.HttpContext?.Request.Headers;
+        if (headers is null)
+            return snapshot.Platform;
+        var hinted = JellyfinClientPlatformDetector.FromHeaders(
+            string.Concat(headers["X-Emby-Authorization"].ToString(), " ",
+                headers["Authorization"].ToString()),
+            headers["User-Agent"].ToString());
+        return hinted;
+    }
+
+    private async Task<(string Token, string Origin)?> PlaybackSessionAsync(
+        PilotSnapshot snapshot, string platform, CancellationToken cancellationToken)
+    {
+        lock (Gate)
+        {
+            if (Pilots.TryGetValue(_slot, out var active) &&
+                ReferenceEquals(snapshot, active) &&
+                snapshot.PlatformSessions.TryGetValue(platform, out var known) &&
+                known.Expires > DateTime.UtcNow)
+                return (known.Token, known.Origin);
+        }
+        var verified = await _resolver.ResolveAsync(
+            snapshot.Username, snapshot.Password, cancellationToken, platform)
+            .ConfigureAwait(false);
+        if (verified?.SessionToken is null ||
+            !SafeSourceOrigin(verified.Origin))
+            return null;
+        lock (Gate)
+        {
+            if (!Pilots.TryGetValue(_slot, out var active) ||
+                !ReferenceEquals(snapshot, active) ||
+                snapshot.Expires <= DateTime.UtcNow)
+                return null;
+            snapshot.PlatformSessions[platform] = (
+                verified.SessionToken, verified.Origin!, DateTime.UtcNow.AddMinutes(4));
+        }
+        return (verified.SessionToken, verified.Origin!);
+    }
+
+    private static bool SafeSourceOrigin(string? value)
+    {
+        if (string.IsNullOrEmpty(value) ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https") ||
+            !string.IsNullOrEmpty(uri.UserInfo) ||
+            !string.IsNullOrEmpty(uri.Query) ||
+            !string.IsNullOrEmpty(uri.Fragment) ||
+            uri.AbsolutePath != "/")
+            return false;
+        return true;
     }
 
     private static ChannelItemResult EmptyResult() => new()
