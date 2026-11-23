@@ -310,8 +310,9 @@ def main():
             raise RuntimeError("Mega plugin altered Jellyfin admin media policy")
         print("JELLYFIN_MEGA_DIRECT_ONLY_USER_POLICY_AND_ADMIN=PASS")
 
-        # A single test customer can see native pilot channels, never the
-        # second customer's media. The backend and stream URL are synthetic.
+        # EXPERIMENT: stage two concurrent account catalogues and probe native
+        # Jellyfin ChannelManager/PlaybackInfo authorization across both.
+        # No production deployment or real Mega credentials.
         code, channels_a = request("GET", "/Channels?UserId=" + account_a,
                                    token=customer["AccessToken"])
         if code != 200 or not isinstance(channels_a, dict):
@@ -324,10 +325,13 @@ def main():
                                    token=customer_b["AccessToken"])
         if code != 200 or not isinstance(channels_b, dict):
             raise RuntimeError("Second account channel list unavailable")
-        if any(x.get("Name") == "VivoAPK — TV de teste"
-               for x in channels_b.get("Items", [])):
-            raise RuntimeError("Cross-subscriber pilot channel exposed")
+        pilot_b = [x for x in channels_b.get("Items", [])
+                   if x.get("Name") == "VivoAPK — TV de teste"]
+        if len(pilot_b) != 1:
+            raise RuntimeError("Second subscribed account cannot see own preview")
         channel_id = pilot_a[0]["Id"]
+        if channel_id != pilot_b[0]["Id"]:
+            raise RuntimeError("Native plugin exposed mismatched channel identifiers")
         for image_type in ("Primary", "Thumb"):
             image_code, mime, art = request_png(
                 "/Items/" + channel_id + "/Images/" + image_type,
@@ -343,19 +347,33 @@ def main():
             raise RuntimeError("Pilot channel did not produce visible media items")
         if pilot_items["Items"][0].get("Name") != "Canal CI Azul":
             raise RuntimeError("Pilot channel content did not match owner")
-        # Access by a known foreign channel item ID must also be denied,
-        # not just hidden from the second account's visible channel list.
         pilot_item_id = pilot_items["Items"][0]["Id"]
-        code, _ = request(
-            "GET", "/Users/" + account_b + "/Items/" + pilot_item_id,
+        code, pilot_items_b = request(
+            "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_b,
             token=customer_b["AccessToken"])
-        if code == 200:
-            raise RuntimeError("Pilot channel media accessible directly to foreign user")
-        code, _ = request(
-            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_b,
-            {}, token=customer_b["AccessToken"])
-        if code == 200:
-            raise RuntimeError("Foreign user can request pilot channel playback info")
+        if code != 200 or not isinstance(pilot_items_b, dict):
+            raise RuntimeError("Second account cannot browse own channels")
+        names_b = [item.get("Name") for item in pilot_items_b.get("Items", [])]
+        if names_b != ["Canal CI Verde"]:
+            raise RuntimeError("MULTITENANT_CATALOG_LEAK_OR_CACHE_CROSSOVER: "+str(names_b))
+        item_id_b = pilot_items_b["Items"][0]["Id"]
+        if pilot_item_id == item_id_b:
+            raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
+        for foreign_user, foreign_token, victim_item in (
+            (account_b, customer_b["AccessToken"], pilot_item_id),
+            (account_a, customer["AccessToken"], item_id_b),
+        ):
+            code, _ = request(
+                "GET", "/Users/" + foreign_user + "/Items/" + victim_item,
+                token=foreign_token)
+            if code == 200:
+                raise RuntimeError("MULTITENANT_ITEM_ID_BYPASS: foreign account opened item")
+            code, info = request(
+                "POST", "/Items/" + victim_item + "/PlaybackInfo?UserId=" + foreign_user,
+                {}, token=foreign_token)
+            if code == 200:
+                raise RuntimeError("MULTITENANT_PLAYBACKINFO_BYPASS: foreign account opened PlaybackInfo")
+        print("JELLYFIN_SYNTHETIC_TWO_ACTIVE_CHANNEL_ACCOUNTS_ISOLATED=PASS")
         print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
         # A channel browser must not persist a Mega provider password to
         # Jellyfin database, metadata, logs or configuration.
