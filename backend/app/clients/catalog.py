@@ -45,8 +45,10 @@ def _clean_id(value: Any) -> str | None:
 def _clean_title(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
+    if any(ord(c) < 32 for c in value):
+        return None
     text = value.strip()
-    if not text or len(text) > 250 or any(ord(c) < 32 for c in text):
+    if not text or len(text) > 250:
         return None
     return text
 
@@ -118,7 +120,7 @@ class XtreamCatalogClient:
             if response.status_code != 200 or len(response.content) > _MAX_JSON_BYTES:
                 raise CatalogUnavailable("Provider catalogue unavailable")
             return response.json()
-        except (httpx.RequestError, ValueError) as exc:
+        except (httpx.RequestError, ValueError):
             # Do not render upstream exceptions: their URLs may embed credentials.
             raise CatalogUnavailable("Provider catalogue unavailable") from None
 
