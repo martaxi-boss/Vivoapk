@@ -303,6 +303,19 @@ def main():
         if code != 200 or not isinstance(owner_media, dict) or not owner_media.get("MediaSources"):
             raise RuntimeError("Pilot playback source not available to its owner")
         media_sources = owner_media["MediaSources"]
+        # Metadata-only diagnostics; NEVER print source URLs or credentials.
+        print("JELLYFIN_HLS_MEDIA_FLAGS=" + json.dumps({
+            "count": len(media_sources),
+            "sources": [{
+                "Container": source.get("Container"),
+                "Protocol": source.get("Protocol"),
+                "DirectPlay": source.get("SupportsDirectPlay"),
+                "DirectStream": source.get("SupportsDirectStream"),
+                "Transcoding": source.get("SupportsTranscoding"),
+                "HasTranscodingUrl": bool(source.get("TranscodingUrl")),
+                "HlsPath": str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8"),
+            } for source in media_sources],
+        }, sort_keys=True), flush=True)
         if len(media_sources) != 2 or any(
             source.get("SupportsDirectPlay") is not True
             or source.get("SupportsDirectStream") is not False
