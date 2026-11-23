@@ -36,7 +36,7 @@ class CatalogUnavailable(RuntimeError):
 
 
 def _clean_id(value: Any) -> str | None:
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
+    if isinstance(value, bool) or not isinstance(value, str | int):
         return None
     text = str(value)
     return text if _ID.fullmatch(text) else None
