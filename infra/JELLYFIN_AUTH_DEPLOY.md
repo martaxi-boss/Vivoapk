@@ -11,8 +11,8 @@ Nunca colocar segredos na requisição GitHub.
 
 - **preflight:** verifica serviços ativos, sockets Unix isolados, permissões,
   existência de administrador no banco Jellyfin e no mínimo 5 GiB livres.
-- **stage:** valida o checkout, descarrega a revisão pinada, exige que a árvore
-  \`backend/\` seja idêntica à da revisão já em produção e compila o plugin
+- **stage:** preserva integralmente o checkout ativo do backend, descarrega
+  a revisão pinada para um worktree Git próprio em \`/srv/projects/Vivoapk/jellyfin-auth/checkouts/<SHA>\`, permite apenas alterações documentais em \`backend/README.md\` e compila o plugin
   C# para Jellyfin 12.4 com .NET 10. Usa apenas cache local
   \`/srv/projects/Vivoapk/jellyfin-auth/build-cache/\`; executa os testes
   sintéticos, cria release versionada dentro do VivoAPK. Não toca Jellyfin.
