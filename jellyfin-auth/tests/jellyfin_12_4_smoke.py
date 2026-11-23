@@ -300,10 +300,12 @@ def main():
         # The channel-to-owner binding is written by the plugin itself, and
         # contains only GUIDs — no provider password or direct-play URL.
         from xml.etree import ElementTree
-        cfg = DATAROOT / "data/plugins/configurations/Jellyfin.Plugin.VivoapkMegaAuth.xml"
-        if not cfg.is_file():
-            raise RuntimeError("Private channel reservation XML not persisted")
-        config = ElementTree.parse(cfg).getroot()
+        configs = [p for root in (DATAROOT, base / "config")
+                   for p in root.rglob("Jellyfin.Plugin.VivoapkMegaAuth.xml")
+                   if p.is_file()]
+        if len(configs) != 1:
+            raise RuntimeError("Private channel reservation XML not persisted uniquely")
+        config = ElementTree.parse(configs[0]).getroot()
         reserved = config.find("ChannelSlotOwners")
         owners = [x.text.replace("-", "").lower() for x in reserved] if reserved is not None else []
         if len(owners) != 2 or set(owners) != {account_a.replace("-", "").lower(),
