@@ -21,6 +21,10 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertEqual(module.RUNTIME.name, "backend-runtime.env")
         self.assertEqual(module.CSV.name, "subscriber-mappings.csv")
 
+    def test_retired_pink_not_required_for_new_install(self):
+        source = (ROOT / "deploy.py").read_text()
+        self.assertIn("retired_pink_service_unexpected", source)
+        self.assertNotIn('("jellyfin-pink.service", "pink-iptv-backend.service"', source)
     def test_no_access_to_pink_data_beyond_service_health(self):
         source = (ROOT / "deploy.py").read_text()
         self.assertNotIn('"/srv/projects/pink-iptv"', source)

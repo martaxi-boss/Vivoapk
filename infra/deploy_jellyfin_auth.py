@@ -41,7 +41,8 @@ CONF = JELLY / "data/plugins/configurations/Jellyfin.Plugin.VivoapkMegaAuth.xml"
 JELLY_SOCKET = JELLY / "run/jellyfin.sock"
 VIVO_SOCKET = ROOT / "run/backend.sock"
 SERVICE = "jellyfin-pink.service"
-OTHERS = ("pink-iptv-backend.service", "pink-vpn.service", "vivoapk-backend.service", "nginx.service", "postgresql.service")
+OTHERS = ("vivoapk-backend.service", "nginx.service", "postgresql.service")
+RETIRED = ("pink-iptv-backend.service", "pink-vpn.service")
 SOURCE_REMOTE = "https://github.com/martaxi-boss/Vivoapk.git"
 ADMIN_NAME = "pink-admin"
 DB = JELLY / "data/data/jellyfin.db"
@@ -87,6 +88,8 @@ def ensure_health():
     for s in (SERVICE,) + OTHERS:
         if not active(s):
             fail("required_service_inactive")
+    if any(active(s) for s in RETIRED):
+        fail("retired_pink_service_unexpected")
     if not socket_http_ok(JELLY_SOCKET, "/System/Info/Public"):
         fail("jellyfin_socket_unhealthy")
     if not socket_http_ok(VIVO_SOCKET, "/openapi.json"):

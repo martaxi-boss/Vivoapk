@@ -142,10 +142,11 @@ def preflight():
     for p in (AUTH, CSV):
         if stat.S_IMODE(p.stat().st_mode) != 0o600:
             reject("vault_secret_permissions_invalid")
-    for s in ("jellyfin-pink.service", "pink-iptv-backend.service", "pink-vpn.service",
-              "nginx.service", "postgresql.service"):
+    for s in ("jellyfin-pink.service", "nginx.service", "postgresql.service"):
         if not active(s):
             reject("protected_service_not_active")
+    if any(active(s) for s in ("pink-iptv-backend.service", "pink-vpn.service")):
+        reject("retired_pink_service_unexpected")
     if shutil.disk_usage("/srv/projects").free < 6 * 1024**3:
         reject("insufficient_disk")
     if pg("SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname='vivoapk_svc') THEN 'yes' ELSE 'no' END;\n") != "no":

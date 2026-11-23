@@ -1,8 +1,10 @@
-# Chave API Mega OTT — reutilização segura a partir do PINK
+# Chave API Mega OTT — migração histórica concluída (arquivo)
+
+**AVISO 23/11/2026:** o backend e a VPN antigos Pink já não estão instalados na VPS. O script de migração de token dependia da pasta antiga e foi retirado da árvore ativa. Foi preservado no [histórico Git anterior à remoção](https://github.com/martaxi-boss/Vivoapk/blob/578f0454f8a4ef2e6dbeefb11eb0089afe5dd5d0/infra/sync_pink_api_token.py). Não tentar voltar a executá-lo, nem recuperar a instalação Pink para esta finalidade. Este documento serve apenas como prova histórica.
 
 **Estado: aplicado com sucesso na VPS em 23/11/2026.**
 
-O procedimento versionado [`sync_pink_api_token.py`](sync_pink_api_token.py)
+O procedimento original `sync_pink_api_token.py` (retirado do código ativo)
 aproveita a credencial original **já em uso** pelo serviço PINK IPTV,
 sem pedir uma chave nova, sem imprimir valores nem alterar o PINK.
 
