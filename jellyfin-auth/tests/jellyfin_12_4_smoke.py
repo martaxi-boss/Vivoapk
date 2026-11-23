@@ -152,7 +152,7 @@ def main():
 
         # CI TEST ONLY: enable the otherwise disabled auth plugin in disposable Jellyfin.
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
-                          {"Enabled": True}, token=token)
+                          {"Enabled": True, "ProvisionPrivateLibraries": True}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -166,8 +166,8 @@ def main():
             raise RuntimeError("Invalid synthetic Mega password accepted")
         print("JELLYFIN_MEGA_INVALID_PASSWORD_DENIED=PASS")
 
-        # CI-only account isolation: real Jellyfin 12.4 with two local fixture libraries.
-        # Nothing is uploaded to or installed on the VPS.
+        # CI-only integration: successful Mega login itself creates the isolated
+        # Jellyfin libraries; there is no admin playlist/folder setup per account.
         code, customer_b = request("POST", "/Users/AuthenticateByName", {
             "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"})
         if code != 200 or not customer_b or not customer_b.get("AccessToken"):
@@ -176,10 +176,38 @@ def main():
         account_b = customer_b["User"]["Id"]
         if account_a.replace("-", "") == account_b.replace("-", ""):
             raise RuntimeError("Two synthetic customers share Jellyfin identity")
-        sources = {}
-        for owner in ("alpha", "beta"):
-            media_dir = base / "fixture-libraries" / owner
-            media_dir.mkdir(parents=True)
+
+        users = {
+            "alpha": (account_a, customer["AccessToken"]),
+            "beta": (account_b, customer_b["AccessToken"]),
+        }
+        code, folder_info = request("GET", "/Library/VirtualFolders", token=token)
+        if code != 200 or not isinstance(folder_info, list):
+            raise RuntimeError("Cannot inspect provisioned user libraries")
+        ids = {}
+        for owner, (user_id, _) in users.items():
+            opaque_id = user_id.replace("-", "").lower()
+            name = "VivoAPK-" + opaque_id
+            matches = [x for x in folder_info if x.get("Name") == name]
+            if len(matches) != 1 or not matches[0].get("ItemId"):
+                raise RuntimeError("Account did not get its own automatic native library")
+            media_dir = DATAROOT / "vivoapk-private-libraries" / opaque_id
+            if matches[0].get("Locations") != [str(media_dir)]:
+                raise RuntimeError("Provisioned location does not match the account-scoped directory")
+            ids[owner] = matches[0]["ItemId"]
+            code, profile = request("GET", "/Users/" + user_id, token=token)
+            if code != 200 or not isinstance(profile, dict) or "Policy" not in profile:
+                raise RuntimeError("Cannot read native provisioning policy")
+            policy = profile["Policy"]
+            if (policy.get("EnableAllFolders") is not False or
+                    policy.get("EnabledFolders") != [ids[owner]] or
+                    policy.get("EnableAllChannels") is not False or
+                    policy.get("EnablePublicSharing") is not False or
+                    policy.get("EnableContentDownloading") is not False):
+                raise RuntimeError("Auto-provisioning did not restrict native folder access")
+
+            # Only test fixtures; production deliberately starts with EMPTY libraries.
+            media_dir.mkdir(parents=True, exist_ok=True)
             media_file = media_dir / ("vivo_ci_" + owner + "_only.mp4")
             subprocess.run(
                 ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -187,44 +215,24 @@ def main():
                  "-an", "-c:v", "mpeg4", str(media_file)],
                 check=True, timeout=40,
             )
-            sources[owner] = media_dir
-            params = urlencode({
-                "name": "Vivo CI " + owner.capitalize(),
-                "collectionType": "movies",
-                "paths": str(media_dir),
-                "refreshLibrary": "true",
-            })
-            code, detail = request("POST", "/Library/VirtualFolders?" + params,
-                                   {"LibraryOptions": {"EnableRealtimeMonitor": False}},
-                                   token=token)
-            if code not in (200, 204):
-                raise RuntimeError("Cannot create fixture virtual library: " + str(code))
-        code, folder_info = request("GET", "/Library/VirtualFolders", token=token)
-        if code != 200 or not isinstance(folder_info, list):
-            raise RuntimeError("Cannot inspect fixture library IDs")
-        ids = {}
-        for owner in ("alpha", "beta"):
-            matches = [x for x in folder_info if x.get("Name") == "Vivo CI " + owner.capitalize()]
-            if len(matches) != 1 or not matches[0].get("ItemId"):
-                raise RuntimeError("Synthetic virtual library not registered")
-            ids[owner] = matches[0]["ItemId"]
         if ids["alpha"] == ids["beta"]:
-            raise RuntimeError("Library IDs unexpectedly identical")
-        for user_id, own_folder_id in ((account_a, ids["alpha"]), (account_b, ids["beta"])):
-            code, profile = request("GET", "/Users/" + user_id, token=token)
-            if code != 200 or not isinstance(profile, dict) or "Policy" not in profile:
-                raise RuntimeError("Cannot read synthetic user policy")
-            policy = profile["Policy"]
-            policy["EnableAllFolders"] = False
-            policy["EnabledFolders"] = [own_folder_id]
-            policy["EnableAllChannels"] = False
-            policy["EnabledChannels"] = []
-            policy["EnablePublicSharing"] = False
-            policy["EnableContentDownloading"] = False
-            code, _ = request("POST", "/Users/" + user_id + "/Policy", policy, token=token)
-            if code not in (200, 204):
-                raise RuntimeError("Cannot assign isolated library permissions")
+            raise RuntimeError("Native account libraries share an ID")
+        print("JELLYFIN_SYNTHETIC_AUTO_PROVISIONED_LIBRARIES=PASS")
         print("JELLYFIN_SYNTHETIC_USER_SCOPED_POLICIES=PASS")
+
+        before_count = len(folder_info)
+        code, again = request("POST", "/Users/AuthenticateByName", {
+            "Username": "synthetic-mega-user", "Pw": "synthetic-mega-password"})
+        if code != 200 or not again or again["User"]["Id"] != account_a:
+            raise RuntimeError("Reauthentication did not preserve the same identity")
+        code, folder_info = request("GET", "/Library/VirtualFolders", token=token)
+        if code != 200 or len(folder_info) != before_count:
+            raise RuntimeError("Repeated login produced extra Jellyfin libraries")
+        print("JELLYFIN_SYNTHETIC_RELOGIN_IDEMPOTENT=PASS")
+
+        code, _ = request("POST", "/Library/Refresh", None, token=token)
+        if code not in (200, 204):
+            raise RuntimeError("Test-only library scan failed to start")
 
         def list_movies(customer_token, user_id):
             code, data = request(
@@ -238,8 +246,8 @@ def main():
                 raise RuntimeError("User-scoped library listing failed")
             return data.get("Items", [])
 
-        account_a_token = customer["AccessToken"]
-        account_b_token = customer_b["AccessToken"]
+        account_a_token = users["alpha"][1]
+        account_b_token = users["beta"][1]
         alpha_id = beta_id = None
         for _ in range(45):
             items_a = list_movies(account_a_token, account_a)
@@ -258,7 +266,7 @@ def main():
         if any("vivo_ci_alpha" in x.get("Name", "").lower() for x in items_b):
             raise RuntimeError("Customer B can see customer A media")
         print("JELLYFIN_SYNTHETIC_TWO_LIBRARIES_ISOLATED_IN_LISTINGS=PASS")
-        # An item identifier is not a permission grant. Check direct media endpoints.
+
         for customer_token, forbidden_item in (
             (account_a_token, beta_id), (account_b_token, alpha_id)
         ):
