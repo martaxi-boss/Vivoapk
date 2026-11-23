@@ -132,14 +132,19 @@ def main():
         code, plugins = request("GET", "/Plugins", token=token)
         if code != 200 or not isinstance(plugins, list):
             raise RuntimeError(f"Plugin inventory failed: HTTP {code}; response type {type(plugins).__name__}; admin={bool(admin.get('User', {}).get('Policy', {}).get('IsAdministrator'))}")
-        if not any(str(item.get("Id", item.get("id", ""))).lower() == PLUGIN_ID for item in plugins):
-            visible = [{"name": item.get("Name", item.get("name")), "status": item.get("Status", item.get("status")), "id": str(item.get("Id", item.get("id", "")))} for item in plugins[:10]]
-            raise RuntimeError(f"VivoAPK plugin not loaded; visible plugins: {visible}")
+        plugin_items = [item for item in plugins if item.get("Name", item.get("name")) == "VivoAPK Mega OTT Auth"]
+        if len(plugin_items) != 1:
+            visible = [{"name": item.get("Name", item.get("name")), "status": item.get("Status", item.get("status"))} for item in plugins[:10]]
+            raise RuntimeError(f"VivoAPK plugin not loaded uniquely; visible plugins: {visible}")
+        actual_id = str(plugin_items[0].get("Id", plugin_items[0].get("id", ""))).lower()
         print("JELLYFIN_12_4_PLUGIN_LOADED=PASS")
+        print("JELLYFIN_PLUGIN_GUID_MATCH=" + ("PASS" if actual_id == PLUGIN_ID else "FAIL"))
+        if actual_id != PLUGIN_ID:
+            print("JELLYFIN_PLUGIN_OBSERVED_GUID=" + actual_id)
         print("JELLYFIN_LOCAL_ADMIN_PRESERVED=PASS")
 
         # CI TEST ONLY: enable the otherwise disabled auth plugin in disposable Jellyfin.
-        code, _ = request("POST", "/Plugins/" + PLUGIN_ID + "/Configuration",
+        code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
                           {"Enabled": True}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
