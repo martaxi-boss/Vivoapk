@@ -1,4 +1,6 @@
 """Vivoapk: Mega OTT login control plane, never an IPTV restreamer."""
+import hmac
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -16,12 +18,15 @@ from app.schemas import (
     CatalogListResponse,
     EpgRequest,
     EpgResponse,
+    EntitlementCheckRequest,
+    EntitlementCheckResponse,
     ResolveRequest,
     ResolveResponse,
     SeriesDetailRequest,
     SeriesDetailResponse,
 )
 from app.services.catalog import CatalogDenied, CatalogService
+from app.services.entitlement import EntitlementService
 from app.services.session import SessionResolver
 
 
@@ -66,6 +71,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             close = getattr(xtream_client, "close", None)
             if callable(close):
                 close()
+
+    @app.post("/_internal/entitlement/status", response_model=EntitlementCheckResponse)
+    def check_entitlement(
+        payload: EntitlementCheckRequest,
+        response: Response,
+        request: Request,
+        x_vivoapk_monitor_key: str | None = Header(default=None),
+        session: Session = Depends(get_db),
+    ) -> EntitlementCheckResponse:
+        response.headers["Cache-Control"] = "no-store"
+        configured = runtime_settings.entitlement_monitor_key
+        secret = configured.get_secret_value() if configured is not None else ""
+        # This endpoint MUST NOT be exposed merely because the backend socket
+        # is reachable through a reverse proxy. Only Jellyfin holds the key.
+        if (len(secret) < 32 or x_vivoapk_monitor_key is None
+                or len(x_vivoapk_monitor_key) > 1024
+                or not hmac.compare_digest(secret, x_vivoapk_monitor_key)):
+            raise HTTPException(
+                status_code=403, detail="Forbidden",
+                headers={"Cache-Control": "no-store"},
+            )
+        state = EntitlementService(
+            session,
+            mega_client_factory=request.app.state.mega_client_factory,
+            xtream_client_factory=request.app.state.xtream_client_factory,
+        ).check(payload.username)
+        return EntitlementCheckResponse(state=state)
 
     @app.post("/v1/catalog/list", response_model=CatalogListResponse)
     def list_catalogue(
