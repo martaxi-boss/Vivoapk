@@ -32,7 +32,32 @@ using (var handler = new SyntheticHandler("{\"code\":\"SUCCESS\"}", HttpStatusCo
         throw new InvalidOperationException("Empty username made upstream request.");
     passed++;
 }
-Console.WriteLine($"VivoAPK Jellyfin auth synthetic transport checks: {passed}/{passed} PASS");
+var monitorKey = "synthetic-private-monitor-key-1234567890";
+foreach (var (status, expected) in new[]
+{
+    ("ACTIVE", EntitlementState.Active),
+    ("EXPIRED", EntitlementState.Expired),
+    ("DISABLED", EntitlementState.Disabled),
+    ("UPSTREAM_UNKNOWN", EntitlementState.Unavailable)
+})
+{
+    using var handler = new SyntheticEntitlementHandler(status, monitorKey);
+    using var client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+    var resolver = new MegaResolverClient(client, () => monitorKey);
+    if (await resolver.CheckEntitlementAsync("synthetic-user") != expected || handler.Count != 1)
+        throw new InvalidOperationException("Synthetic entitlement monitor regression.");
+    passed++;
+}
+using (var handler = new SyntheticEntitlementHandler("EXPIRED", monitorKey))
+{
+    using var client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+    var resolver = new MegaResolverClient(client, () => null);
+    if (await resolver.CheckEntitlementAsync("synthetic-user") != EntitlementState.Unavailable
+        || handler.Count != 0)
+        throw new InvalidOperationException("Monitor sent request without a private key.");
+    passed++;
+}
+Console.WriteLine($"VivoAPK Jellyfin auth and monitor synthetic checks: {passed}/{passed} PASS");
 
 internal sealed class SyntheticHandler(string body, HttpStatusCode status) : HttpMessageHandler
 {
@@ -54,5 +79,29 @@ internal sealed class SyntheticHandler(string body, HttpStatusCode status) : Htt
             throw new InvalidOperationException("Incorrect automatic DNS/username/password request.");
 
         return new HttpResponseMessage(status) { Content = new StringContent(body) };
+    }
+}
+
+internal sealed class SyntheticEntitlementHandler(string state, string secret) : HttpMessageHandler
+{
+    public int Count { get; private set; }
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Count++;
+        if (request.Method != HttpMethod.Post ||
+            request.RequestUri?.AbsolutePath != "/_internal/entitlement/status" ||
+            !request.Headers.TryGetValues("X-Vivoapk-Monitor-Key", out var keys) ||
+            keys.Single() != secret)
+            throw new InvalidOperationException("Private monitor protocol mismatch.");
+        using var body = JsonDocument.Parse(
+            await request.Content!.ReadAsStringAsync(cancellationToken));
+        if (body.RootElement.GetProperty("username").GetString() != "synthetic-user")
+            throw new InvalidOperationException("Monitor identity mismatch.");
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(new { state }))
+        };
     }
 }
