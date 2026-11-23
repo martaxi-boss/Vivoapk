@@ -41,6 +41,8 @@ class BackendHandler(socketserver.StreamRequestHandler):
             return
         request = json.loads(self.rfile.read(length))
         if route in (b"/v1/catalog/categories", b"/v1/catalog/category-items"):
+            if route == b"/v1/catalog/category-items":
+                self.server.category_item_calls += 1
             auth = headers.get(b"authorization", b"")
             is_a = auth == b"Bearer ci-session-a"
             is_b = auth == b"Bearer ci-session-b"
@@ -222,6 +224,7 @@ def main():
     monitor_key_path.write_text("synthetic-private-monitor-key-1234567890")
     monitor_key_path.chmod(0o600)
     mock = BackendServer(str(MOCK), BackendHandler)
+    mock.category_item_calls = 0
     synthetic_media = base / "synthetic-provider"
     synthetic_media.mkdir()
     subprocess.run([
@@ -390,6 +393,19 @@ def main():
         channel_id = pilot_a[0]["Id"]
         if channel_id == pilot_b[0]["Id"]:
             raise RuntimeError("Two subscribers still share the same internal ChannelId")
+        if CATEGORY_MODE:
+            if mock.category_item_calls != 0:
+                raise RuntimeError("Provider category streams loaded during login")
+            # Jellyfin's GetLatestChannelItems eagerly refreshes one folder
+            # level. Only our TV root and category metadata may be refreshed:
+            # it MUST NOT fetch all 453 underlying category item lists.
+            code, _ = request(
+                "GET", "/Channels/Items/Latest?UserId=" + account_a
+                + "&ChannelIds=" + channel_id,
+                token=customer["AccessToken"])
+            if code != 200 or mock.category_item_calls != 0:
+                raise RuntimeError("Jellyfin eagerly downloaded all category items")
+            print("JELLYFIN_SYNTHETIC_NO_EAGER_GLOBAL_CHANNEL_DOWNLOAD=PASS")
         for image_type in ("Primary", "Thumb"):
             image_code, mime, art = request_png(
                 "/Items/" + channel_id + "/Images/" + image_type,
@@ -428,6 +444,9 @@ def main():
                 token=customer["AccessToken"])
             if code != 200 or not isinstance(pilot_items, dict):
                 raise RuntimeError("Cannot browse native category folder A")
+            if mock.category_item_calls < 1:
+                raise RuntimeError("Opening a category did not call backend category-items")
+            print("JELLYFIN_SYNTHETIC_LAZY_FETCH_ONLY_ON_FOLDER_OPEN=PASS")
             print("JELLYFIN_SYNTHETIC_NATIVE_CATEGORY_FOLDERS_A=PASS")
         if (pilot_items["Items"][0].get("Name") != "Canal CI Azul"
                 or len(pilot_items["Items"]) != 6):
