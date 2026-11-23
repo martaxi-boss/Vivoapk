@@ -564,6 +564,36 @@ def test_live_preview_bounds_metadata_requests(public_resolver):
 
 
 
+def test_portugal_preview_uses_five_distinct_stations_not_duplicate_formats(public_resolver):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["action"] == "get_live_categories":
+            return httpx.Response(200, json=[
+                {"category_id": "97", "category_name": "EU | PORTUGAL GERAL"},
+            ])
+        assert request.url.params["category_id"] == "97"
+        return httpx.Response(200, json=[
+            {"stream_id": 1, "name": "PT| RTP 1 FHD", "category_id": "97"},
+            {"stream_id": 2, "name": "PT| RTP 1 HD", "category_id": "97"},
+            {"stream_id": 3, "name": "PT| RTP 2 FHD", "category_id": "97"},
+            {"stream_id": 4, "name": "PT| SIC FHD", "category_id": "97"},
+            {"stream_id": 5, "name": "PT| SIC HD", "category_id": "97"},
+            {"stream_id": 6, "name": "PT| TVI FHD", "category_id": "97"},
+            {"stream_id": 7, "name": "PT| RTP 3 FHD", "category_id": "97"},
+        ])
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    category, channels = adapter.preview_live(
+        dns_link="http://stream.example.com", username="demo",
+        password="synthetic-only-secret",
+    )
+    assert category == [{"id": "97", "name": "EU | PORTUGAL GERAL"}]
+    assert [item["id"] for item in channels] == ["1", "3", "4", "6", "7"]
+    assert "synthetic-only-secret" not in str(channels)
+
+
 def test_preview_prioritizes_portugal_geral_even_after_hundreds(public_resolver):
     """Live Portuguese TV is selected ahead of UFC PPV without broad scraping."""
     calls = []
