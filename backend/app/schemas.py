@@ -41,6 +41,23 @@ class ResolveResponse(BaseModel):
     account_expires_at: datetime | None = None
 
 
+class EntitlementState(StrEnum):
+    ACTIVE = "ACTIVE"
+    EXPIRED = "EXPIRED"
+    DISABLED = "DISABLED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class EntitlementCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=128)
+
+
+class EntitlementCheckResponse(BaseModel):
+    state: EntitlementState
+
+
 class CatalogKind(StrEnum):
     LIVE = "live"
     VOD = "vod"
