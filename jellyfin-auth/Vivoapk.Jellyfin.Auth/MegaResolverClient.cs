@@ -16,6 +16,8 @@ internal sealed record MegaPreviewEntry(string Id, string Title);
 public sealed class MegaResolverClient
 {
     private const int MaxResponseBytes = 8192;
+    private const int MaxCatalogResponseBytes = 8 * 1024 * 1024;
+    private const int MaxCatalogItems = 20000;
     public const string SocketPath = "/srv/projects/Vivoapk/run/backend.sock";
     private const string MonitorKeyPath = "/srv/projects/Vivoapk/run/entitlement-monitor.key";
     private readonly HttpClient _client;
@@ -198,15 +200,25 @@ public sealed class MegaResolverClient
         }
     }
 
-    internal async Task<IReadOnlyList<MegaPreviewEntry>> PreviewAsync(
-        string? token, CancellationToken cancellationToken = default,
-        string platform = "android")
+    internal Task<IReadOnlyList<MegaPreviewEntry>> PreviewAsync(
+        string? token, CancellationToken cancellationToken = default, string platform = "android")
+        => FetchLiveAsync(token, platform, full: false, cancellationToken);
+
+    internal Task<IReadOnlyList<MegaPreviewEntry>> FullLiveAsync(
+        string? token, CancellationToken cancellationToken = default, string platform = "android")
+        => FetchLiveAsync(token, platform, full: true, cancellationToken);
+
+    private async Task<IReadOnlyList<MegaPreviewEntry>> FetchLiveAsync(
+        string? token, string platform, bool full, CancellationToken cancellationToken)
     {
         if (string.IsNullOrEmpty(token) || token.Length > 4096 || !IsSupportedPlatform(platform))
             return Array.Empty<MegaPreviewEntry>();
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "v1/catalog/preview")
+            // The backend returns ONLY authorized stream IDs and display titles:
+            // it must not send media URLs, provider secrets or other clients' data.
+            var path = full ? "v1/catalog/list" : "v1/catalog/preview";
+            using var request = new HttpRequestMessage(HttpMethod.Post, path)
             {
                 Content = new StringContent(
                     JsonSerializer.Serialize(new { kind = "live", platform }),
@@ -223,22 +235,27 @@ public sealed class MegaResolverClient
             await using var input = await response.Content.ReadAsStreamAsync(
                 cancellationToken).ConfigureAwait(false);
             using var output = new MemoryStream();
-            var buf = new byte[1024];
+            var buf = new byte[8192];
+            var byteLimit = full ? MaxCatalogResponseBytes : MaxResponseBytes;
             while (true)
             {
                 var count = await input.ReadAsync(buf, cancellationToken).ConfigureAwait(false);
                 if (count == 0)
                     break;
-                if (output.Length + count > MaxResponseBytes)
+                if (output.Length + count > byteLimit)
                     return Array.Empty<MegaPreviewEntry>();
                 output.Write(buf, 0, count);
             }
             output.Position = 0;
             using var doc = JsonDocument.Parse(output);
-            if (!doc.RootElement.TryGetProperty("items", out var items)
-                || items.ValueKind != JsonValueKind.Array || items.GetArrayLength() > 5)
+            if (!doc.RootElement.TryGetProperty("kind", out var kind)
+                || kind.ValueKind != JsonValueKind.String || kind.GetString() != "live"
+                || !doc.RootElement.TryGetProperty("items", out var items)
+                || items.ValueKind != JsonValueKind.Array
+                || items.GetArrayLength() > (full ? MaxCatalogItems : 5))
                 return Array.Empty<MegaPreviewEntry>();
             var result = new List<MegaPreviewEntry>();
+            var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in items.EnumerateArray())
             {
                 if (!item.TryGetProperty("id", out var itemId)
@@ -249,7 +266,8 @@ public sealed class MegaResolverClient
                 var id = itemId.GetString() ?? string.Empty;
                 var name = title.GetString() ?? string.Empty;
                 if (id.Length is < 1 or > 64 || !id.All(char.IsAsciiDigit)
-                    || string.IsNullOrWhiteSpace(name) || name.Length > 250)
+                    || string.IsNullOrWhiteSpace(name) || name.Length > 250
+                    || !ids.Add(id))
                     continue;
                 result.Add(new MegaPreviewEntry(id, name));
             }
@@ -261,4 +279,5 @@ public sealed class MegaResolverClient
             return Array.Empty<MegaPreviewEntry>();
         }
     }
+
 }

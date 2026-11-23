@@ -22,7 +22,8 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if len(parts) < 3 or parts[0] != b"POST":
             return
         route = parts[1]
-        if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status", b"/v1/catalog/preview"):
+        if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status",
+                          b"/v1/catalog/preview", b"/v1/catalog/list"):
             return
         length = 0
         headers = {}
@@ -37,7 +38,7 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if not 0 < length < 4096:
             return
         request = json.loads(self.rfile.read(length))
-        if route == b"/v1/catalog/preview":
+        if route in (b"/v1/catalog/preview", b"/v1/catalog/list"):
             auth = headers.get(b"authorization", b"")
             if auth not in (b"Bearer ci-session-a", b"Bearer ci-session-b"):
                 response_code = b"401 Unauthorized"
@@ -45,10 +46,13 @@ class BackendHandler(socketserver.StreamRequestHandler):
             else:
                 name = "Canal CI Azul" if auth.endswith(b"-a") else "Canal CI Verde"
                 response_code = b"200 OK"
+                expanded = [{"id": str(42 + i),
+                             "title": name if i == 0 else name + " " + str(i),
+                             "category_id": "10", "container_extension": None}
+                            for i in range(6 if route == b"/v1/catalog/list" else 1)]
                 body = json.dumps({
                     "kind": "live", "categories": [{"id": "10", "name": "Teste"}],
-                    "items": [{"id": "42", "title": name, "category_id": "10",
-                               "container_extension": None}]
+                    "items": expanded
                 }).encode()
         elif route == b"/_internal/entitlement/status":
             if headers.get(b"x-vivoapk-monitor-key") != (
@@ -268,7 +272,7 @@ def main():
 
         # CI TEST ONLY: enable the otherwise disabled auth plugin in disposable Jellyfin.
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
-                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True, "PilotLiveChannels": True}, token=token)
+                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True, "PilotLiveChannels": True, "FullLiveCatalog": True}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -345,8 +349,9 @@ def main():
             token=customer["AccessToken"])
         if code != 200 or not isinstance(pilot_items, dict) or not pilot_items.get("Items"):
             raise RuntimeError("Pilot channel did not produce visible media items")
-        if pilot_items["Items"][0].get("Name") != "Canal CI Azul":
-            raise RuntimeError("Pilot channel content did not match owner")
+        if (pilot_items["Items"][0].get("Name") != "Canal CI Azul"
+                or len(pilot_items["Items"]) != 6):
+            raise RuntimeError("Full Live catalog did not return six isolated synthetic channels")
         pilot_item_id = pilot_items["Items"][0]["Id"]
         code, pilot_items_b = request(
             "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b,
@@ -354,8 +359,9 @@ def main():
         if code != 200 or not isinstance(pilot_items_b, dict):
             raise RuntimeError("Second account cannot browse own channels")
         names_b = [item.get("Name") for item in pilot_items_b.get("Items", [])]
-        if names_b != ["Canal CI Verde"]:
-            raise RuntimeError("MULTITENANT_CATALOG_LEAK_OR_CACHE_CROSSOVER: "+str(names_b))
+        if (len(names_b) != 6 or names_b[0] != "Canal CI Verde"
+                or "Canal CI Azul" in names_b):
+            raise RuntimeError("MULTITENANT_CATALOG_LEAK_OR_CACHE_CROSSOVER")
         item_id_b = pilot_items_b["Items"][0]["Id"]
         if pilot_item_id == item_id_b:
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
@@ -390,6 +396,7 @@ def main():
             if code == 200 and (response or {}).get("MediaSources"):
                 raise RuntimeError("MULTITENANT_USERID_SPOOFING_PLAYBACK: foreign source")
         print("JELLYFIN_SYNTHETIC_USERID_SPOOFING_DENIED=PASS")
+        print("JELLYFIN_SYNTHETIC_FULL_LIVE_6_CHANNELS_PER_ACCOUNT=PASS")
         print("JELLYFIN_SYNTHETIC_TWO_ACTIVE_CHANNEL_ACCOUNTS_ISOLATED=PASS")
         print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
         # A channel browser must not persist a Mega provider password to

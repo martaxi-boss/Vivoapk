@@ -128,13 +128,18 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             ).ConfigureAwait(false);
         }
 
-        // Experimental, one-user-at-a-time preview. Never stores a credential
-        // in Jellyfin files or database and never enables a shared Live TV tuner.
+        // Experimental per-subscriber channel: metadata from the private backend,
+        // direct provider source only when the owner explicitly requests playback.
+        // Never creates a shared Live TV tuner or stores media passwords on disk.
         if (Plugin.Instance?.Configuration.PilotLiveChannels == true)
         {
-            var preview = await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
+            var fullLive = Plugin.Instance.Configuration.FullLiveCatalog;
+            var preview = fullLive
+                ? await _resolver.FullLiveAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
+                : await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
             var subscriberChannel = VivoapkLivePreviewChannel.Stage(
-                user.Id, preview, verified.Origin, canonicalUsername, password);
+                user.Id, preview, verified.Origin, canonicalUsername, password,
+                fullLive: fullLive);
             if (subscriberChannel is not null)
             {
                 var library = _appHost.Resolve<ILibraryManager>();

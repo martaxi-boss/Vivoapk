@@ -15,4 +15,8 @@ public sealed class PluginConfiguration : BasePluginConfiguration
 
     // Experimental in-memory TV preview. Always off on production installs.
     public bool PilotLiveChannels { get; set; } = false;
+
+    // Separate, opt-in experimental full Live list. No VOD/series/EPG or
+    // production multiuser certification is implied by enabling this flag.
+    public bool FullLiveCatalog { get; set; } = false;
 }

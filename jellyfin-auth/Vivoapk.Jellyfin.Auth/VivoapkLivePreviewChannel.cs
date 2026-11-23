@@ -29,14 +29,16 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         _slot = slot;
     }
     public static string ChannelNameFor(int slot) => $"VivoAPK — TV de teste {slot + 1}";
-    private sealed record PilotStream(string ExternalId, string Title, string Url);
-    private sealed record PilotSnapshot(Guid Owner, DateTime Expires, List<PilotStream> Streams);
+    private sealed record PilotStream(string ExternalId, string Title, string ProviderId);
+    private sealed record PilotSnapshot(
+        Guid Owner, DateTime Expires, string Origin, string Username,
+        string Password, List<PilotStream> Streams);
     private static readonly object Gate = new();
     private static readonly Dictionary<int, PilotSnapshot> Pilots = new();
 
     public string Name => ChannelNameFor(_slot);
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-hls-v5-slot-isolation";
+    public string DataVersion => "pilot-hls-v6-full-live-optin";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -44,9 +46,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
 
     internal static string? Stage(Guid owner, IReadOnlyList<MegaPreviewEntry> channels,
-        string? origin, string username, string password)
+        string? origin, string username, string password, bool fullLive = false)
     {
-        if (owner == Guid.Empty || channels.Count is < 1 or > 5 ||
+        if (owner == Guid.Empty || channels.Count < 1 ||
+            channels.Count > (fullLive ? 20000 : 5) ||
             string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(username) ||
             string.IsNullOrWhiteSpace(password) ||
             !Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
@@ -92,19 +95,15 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     !channel.Id.All(char.IsAsciiDigit) ||
                     channel.Title.Length is < 1 or > 250)
                     continue;
-                // Android Jellyfin 2.7.3 forces HTTP direct play to HLS.
-                // The authorized Mega OTT RTP1 .m3u8 was verified as a real
-                // HLS manifest via a direct upstream 302 then HTTP 200.
-                var source = origin.TrimEnd('/') + "/live/"
-                    + Uri.EscapeDataString(username) + "/"
-                    + Uri.EscapeDataString(password) + "/"
-                    + Uri.EscapeDataString(channel.Id) + ".m3u8";
+                // No credential-bearing URLs in the channel item index.
+                // Construct a direct HLS source only on authorized playback.
                 streams.Add(new PilotStream(Guid.NewGuid().ToString("N"),
-                    channel.Title, source));
+                    channel.Title, channel.Id));
             }
             if (streams.Count == 0)
                 return null;
-            Pilots[assignedSlot] = new PilotSnapshot(owner, DateTime.UtcNow.AddMinutes(30), streams);
+            Pilots[assignedSlot] = new PilotSnapshot(
+                owner, DateTime.UtcNow.AddMinutes(30), origin, username, password, streams);
             return ChannelNameFor(assignedSlot);
         }
     }
@@ -172,25 +171,31 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     public Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
         string id, CancellationToken cancellationToken)
     {
-        PilotStream? stream;
+        PilotStream? stream = null;
+        PilotSnapshot? active = null;
         lock (Gate)
         {
-            stream = Plugin.Instance?.Configuration.PilotLiveChannels == true &&
+            if (Plugin.Instance?.Configuration.PilotLiveChannels == true &&
                 Pilots.TryGetValue(_slot, out var snapshot) &&
-                snapshot.Expires > DateTime.UtcNow
-                ? snapshot.Streams.FirstOrDefault(x =>
-                    string.Equals(x.ExternalId, id, StringComparison.Ordinal))
-                : null;
+                snapshot.Expires > DateTime.UtcNow)
+            {
+                active = snapshot;
+                stream = snapshot.Streams.FirstOrDefault(x =>
+                    string.Equals(x.ExternalId, id, StringComparison.Ordinal));
+            }
         }
-        IEnumerable<MediaSourceInfo> sources = stream is null
-            ? Array.Empty<MediaSourceInfo>() : new[] { Source(stream) };
+        IEnumerable<MediaSourceInfo> sources = stream is null || active is null
+            ? Array.Empty<MediaSourceInfo>() : new[] { Source(active, stream) };
         return Task.FromResult(sources);
     }
 
-    private static MediaSourceInfo Source(PilotStream stream) => new()
+    private static MediaSourceInfo Source(PilotSnapshot owner, PilotStream stream) => new()
     {
         Name = stream.Title,
-        Path = stream.Url,
+        Path = owner.Origin.TrimEnd('/') + "/live/"
+            + Uri.EscapeDataString(owner.Username) + "/"
+            + Uri.EscapeDataString(owner.Password) + "/"
+            + Uri.EscapeDataString(stream.ProviderId) + ".m3u8",
         Protocol = MediaProtocol.Http,
         IsRemote = true,
         IsInfiniteStream = true,
