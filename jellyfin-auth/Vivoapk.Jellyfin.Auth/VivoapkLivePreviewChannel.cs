@@ -264,58 +264,110 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 MediaType = ChannelMediaType.Video
             }).ToList();
         }
-        else
+        else if (query.FolderId.StartsWith("cat:", StringComparison.Ordinal))
         {
-            // Folder IDs are whitelisted from this user's own authenticated
-            // category index, never taken at face value from query parameters.
-            var category = snapshot.Streams.FirstOrDefault(entry =>
+            var parts = query.FolderId.Split(':');
+            if (parts.Length != 3 || !Digits(parts[2]))
+                return EmptyResult();
+            var kind = parts[1];
+            var authorized = KindCategories(snapshot, kind);
+            var category = authorized?.FirstOrDefault(entry =>
                 string.Equals(entry.ExternalId, query.FolderId, StringComparison.Ordinal));
             if (category is null)
                 return EmptyResult();
-            var entries = await _resolver.CategoryItemsAsync(
-                snapshot.CurrentToken, category.ProviderId, cancellationToken,
-                snapshot.Platform).ConfigureAwait(false);
+            var entries = await FetchCategoryItemsAsync(
+                snapshot, category.ProviderId, kind, cancellationToken)
+                .ConfigureAwait(false);
             if (entries is null)
+                return EmptyResult();
+            list = new List<ChannelItemInfo>(entries.Count);
+            foreach (var entry in entries)
             {
-                // A short-lived JWT expires after five minutes. Re-resolve
-                // privately with this subscriber's RAM-only credentials.
-                var refreshed = await _resolver.ResolveAsync(
-                    snapshot.Username, snapshot.Password, cancellationToken,
-                    snapshot.Platform).ConfigureAwait(false);
-                if (refreshed?.SessionToken is null ||
-                    !string.Equals(refreshed.Origin?.TrimEnd('/'),
-                        snapshot.Origin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
-                    return EmptyResult();
-                entries = await _resolver.CategoryItemsAsync(
-                    refreshed.SessionToken, category.ProviderId, cancellationToken,
-                    snapshot.Platform).ConfigureAwait(false);
-                if (entries is null)
-                    return EmptyResult();
-                lock (Gate)
+                if (!Digits(entry.Id))
+                    continue;
+                if (kind == "series")
                 {
-                    if (Pilots.TryGetValue(_slot, out var active) &&
-                        ReferenceEquals(active, snapshot))
-                        snapshot.CurrentToken = refreshed.SessionToken;
+                    list.Add(new ChannelItemInfo
+                    {
+                        Id = "show:" + category.ProviderId + ":" + entry.Id,
+                        Name = entry.Title,
+                        Type = ChannelItemType.Folder,
+                        FolderType = ChannelFolderType.Series,
+                        MediaType = ChannelMediaType.Video
+                    });
+                }
+                else
+                {
+                    var ext = kind == "vod" ? ValidExtension(entry.Extension) : null;
+                    list.Add(new ChannelItemInfo
+                    {
+                        Id = kind == "live"
+                            ? "live:" + category.ProviderId + ":" + entry.Id
+                            : "vod:" + category.ProviderId + ":" + entry.Id
+                                + ":" + (ext ?? "unknown"),
+                        Name = entry.Title,
+                        Type = ChannelItemType.Media,
+                        MediaType = ChannelMediaType.Video,
+                        ContentType = kind == "live"
+                            ? ChannelMediaContentType.Clip : ChannelMediaContentType.Movie,
+                        IsLiveStream = kind == "live"
+                    });
                 }
             }
-            list = entries.Select(entry => new ChannelItemInfo
+        }
+        else if (query.FolderId.StartsWith("show:", StringComparison.Ordinal))
+        {
+            var parts = query.FolderId.Split(':');
+            if (parts.Length != 3 || !Digits(parts[1]) || !Digits(parts[2]) ||
+                !HasCategory(snapshot, "series", parts[1]))
+                return EmptyResult();
+            var detail = await FetchSeriesAsync(snapshot, parts[1], parts[2],
+                cancellationToken).ConfigureAwait(false);
+            if (detail is null)
+                return EmptyResult();
+            list = detail.Seasons.Select(season => new ChannelItemInfo
             {
-                // Each category streams only its items, with stable IDs.
-                // No media URLs or bulk in-RAM index are persisted.
-                Id = "live:" + category.ProviderId + ":" + entry.Id,
-                Name = entry.Title,
-                Type = ChannelItemType.Media,
+                Id = "season:" + parts[1] + ":" + parts[2] + ":" + season.Id,
+                Name = season.Title,
+                Type = ChannelItemType.Folder,
+                FolderType = ChannelFolderType.Season,
                 MediaType = ChannelMediaType.Video,
-                ContentType = ChannelMediaContentType.Clip,
-                IsLiveStream = true
+                SeriesName = detail.Title
             }).ToList();
-            lock (Gate)
-            {
-                if (!Pilots.TryGetValue(_slot, out var active) ||
-                    !ReferenceEquals(active, snapshot) ||
-                    snapshot.Expires <= DateTime.UtcNow)
-                    return EmptyResult();
-            }
+        }
+        else if (query.FolderId.StartsWith("season:", StringComparison.Ordinal))
+        {
+            var parts = query.FolderId.Split(':');
+            if (parts.Length != 4 || !Digits(parts[1]) || !Digits(parts[2]) ||
+                !Digits(parts[3]) || !HasCategory(snapshot, "series", parts[1]))
+                return EmptyResult();
+            var detail = await FetchSeriesAsync(snapshot, parts[1], parts[2],
+                cancellationToken).ConfigureAwait(false);
+            if (detail is null || !detail.Seasons.Any(x =>
+                    string.Equals(x.Id, parts[3], StringComparison.Ordinal)))
+                return EmptyResult();
+            list = detail.Episodes
+                .Where(episode => string.Equals(
+                    episode.SeasonId, parts[3], StringComparison.Ordinal))
+                .Select(episode => new ChannelItemInfo
+                {
+                    Id = "ep:" + parts[1] + ":" + parts[2] + ":" + episode.Id
+                        + ":" + (ValidExtension(episode.Extension) ?? "unknown"),
+                    Name = episode.Title,
+                    Type = ChannelItemType.Media,
+                    MediaType = ChannelMediaType.Video,
+                    ContentType = ChannelMediaContentType.Episode,
+                    IsLiveStream = false,
+                    SeriesName = detail.Title,
+                    IndexNumber = int.TryParse(episode.EpisodeNumber, out var epnum)
+                        ? epnum : null,
+                    ParentIndexNumber = int.TryParse(parts[3], out var season)
+                        ? season : null
+                }).ToList();
+        }
+        else
+        {
+            return EmptyResult();
         }
         var total = list.Count;
         if (query.StartIndex is > 0)
@@ -323,6 +375,91 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         if (query.Limit is > 0)
             list = list.Take(query.Limit.Value).ToList();
         return new ChannelItemResult { Items = list, TotalRecordCount = total };
+    }
+
+    private static bool Digits(string? value)
+        => !string.IsNullOrEmpty(value) && value.Length <= 64 &&
+            value.All(char.IsAsciiDigit);
+
+    private static string? ValidExtension(string? value)
+        => !string.IsNullOrEmpty(value) && value.Length <= 12 &&
+            value.All(char.IsAsciiLetterOrDigit)
+            ? value.ToLowerInvariant() : null;
+
+    private static List<PilotStream>? KindCategories(PilotSnapshot snapshot, string kind)
+        => kind switch
+        {
+            "live" => snapshot.Streams,
+            "vod" => snapshot.MovieCategories,
+            "series" => snapshot.SeriesCategories,
+            _ => null
+        };
+
+    private static bool HasCategory(PilotSnapshot snapshot, string kind, string categoryId)
+        => KindCategories(snapshot, kind)?.Any(x =>
+            string.Equals(x.ProviderId, categoryId, StringComparison.Ordinal)) == true;
+
+    private async Task<IReadOnlyList<MegaPreviewEntry>?> FetchCategoryItemsAsync(
+        PilotSnapshot snapshot, string categoryId, string kind,
+        CancellationToken cancellationToken)
+    {
+        var entries = await _resolver.CategoryItemsAsync(
+            snapshot.CurrentToken, categoryId, cancellationToken,
+            snapshot.Platform, kind).ConfigureAwait(false);
+        if (entries is not null)
+            return entries;
+        // Short-lived session JWT can expire while the Jellyfin UI is open.
+        // Renew using RAM-only credentials; backend rechecks Mega entitlement.
+        var refreshed = await _resolver.ResolveAsync(
+            snapshot.Username, snapshot.Password,
+            cancellationToken, snapshot.Platform).ConfigureAwait(false);
+        if (refreshed?.SessionToken is null ||
+            !string.Equals(refreshed.Origin?.TrimEnd('/'),
+                snapshot.Origin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+            return null;
+        entries = await _resolver.CategoryItemsAsync(
+            refreshed.SessionToken, categoryId, cancellationToken,
+            snapshot.Platform, kind).ConfigureAwait(false);
+        if (entries is null)
+            return null;
+        lock (Gate)
+        {
+            if (Pilots.TryGetValue(_slot, out var active) &&
+                ReferenceEquals(active, snapshot))
+                snapshot.CurrentToken = refreshed.SessionToken;
+        }
+        return entries;
+    }
+
+    private async Task<MegaSeriesInfo?> FetchSeriesAsync(
+        PilotSnapshot snapshot, string categoryId, string seriesId,
+        CancellationToken cancellationToken)
+    {
+        var detail = await _resolver.SeriesDetailAsync(
+            snapshot.CurrentToken, categoryId, seriesId,
+            snapshot.Platform, cancellationToken).ConfigureAwait(false);
+        if (detail is not null)
+            return detail;
+        var refreshed = await _resolver.ResolveAsync(
+            snapshot.Username, snapshot.Password,
+            cancellationToken, snapshot.Platform).ConfigureAwait(false);
+        if (refreshed?.SessionToken is null ||
+            !string.Equals(refreshed.Origin?.TrimEnd('/'),
+                snapshot.Origin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+            return null;
+        detail = await _resolver.SeriesDetailAsync(
+            refreshed.SessionToken, categoryId, seriesId,
+            snapshot.Platform, cancellationToken).ConfigureAwait(false);
+        if (detail is not null)
+        {
+            lock (Gate)
+            {
+                if (Pilots.TryGetValue(_slot, out var active) &&
+                    ReferenceEquals(active, snapshot))
+                    snapshot.CurrentToken = refreshed.SessionToken;
+            }
+        }
+        return detail;
     }
 
     private static ChannelItemResult EmptyResult() => new()
