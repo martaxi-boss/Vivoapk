@@ -50,7 +50,7 @@ do Jellyfin passam por indexação global em `ChannelManager`; um
 Não instalar um tuner Xtream partilhado ou um `IChannel` multicliente sem
 ensaio real de duas contas e verificação de IDs, acesso direto e revogação.
 
-As séries têm ainda de ter estações/episódios e o EPG integrado no
+As séries têm ainda de ter temporadas/episódios e o EPG integrado no
 Jellyfin. A reprodução `Direct Play` real precisa de teste em Android,
 iOS e TV; o Jellyfin pode encaminhar, remuxar ou transcodificar.
 Ocultar URLs do ecrã não os torna invisíveis no tráfego de rede do player.
