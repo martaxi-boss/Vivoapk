@@ -155,7 +155,12 @@ class XtreamCatalogClient:
         credentials = {"username": username, "password": password}
         with httpx.Client(
             transport=transport,
-            headers={"Accept": "application/json", "User-Agent": "Vivoapk/1.0"},
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+                "User-Agent": "Vivoapk/1.0",
+            },
             timeout=httpx.Timeout(12),
             follow_redirects=False,
             trust_env=False,
@@ -188,7 +193,12 @@ class XtreamCatalogClient:
         )
         with httpx.Client(
             transport=transport,
-            headers={"Accept": "application/json", "User-Agent": "Vivoapk/1.0"},
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+                "User-Agent": "Vivoapk/1.0",
+            },
             timeout=httpx.Timeout(12),
             follow_redirects=False,
             trust_env=False,
