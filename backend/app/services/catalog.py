@@ -146,6 +146,33 @@ class CatalogService:
         )
         return CatalogListResponse(kind=kind, categories=categories, items=items)
 
+    def categories(
+        self, *, token: str, kind: CatalogKind, platform: ClientPlatform
+    ) -> CatalogListResponse:
+        origin, username, password = self._authorize(token=token, platform=platform)
+        categories = self._catalog_client_factory().list_categories(
+            dns_link=origin, username=username, password=password, kind=kind,
+        )
+        return CatalogListResponse(kind=kind, categories=categories, items=[])
+
+    def category_items(
+        self, *, token: str, kind: CatalogKind,
+        category_id: str, platform: ClientPlatform
+    ) -> CatalogListResponse:
+        origin, username, password = self._authorize(token=token, platform=platform)
+        catalogue = self._catalog_client_factory()
+        categories = catalogue.list_categories(
+            dns_link=origin, username=username, password=password, kind=kind,
+        )
+        # Every category ID must be part of the CURRENT authorized subscription.
+        if not any(category["id"] == category_id for category in categories):
+            raise CatalogDenied("Category not authorized for subscription")
+        items = catalogue.list_category_items(
+            dns_link=origin, username=username, password=password,
+            kind=kind, category_id=category_id,
+        )
+        return CatalogListResponse(kind=kind, categories=[], items=items)
+
     def live_preview(self, *, token: str, platform: ClientPlatform) -> CatalogListResponse:
         origin, username, password = self._authorize(token=token, platform=platform)
         catalogue = self._catalog_client_factory()
