@@ -3,6 +3,8 @@
 No playback URLs, customer passwords, DNS origins or credentials leave this module.
 The existing pinned outbound transport prevents private-network and DNS-rebinding hops.
 """
+from __future__ import annotations
+
 import re
 from collections.abc import Callable
 from typing import Any
