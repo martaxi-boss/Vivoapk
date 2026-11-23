@@ -373,6 +373,23 @@ def main():
                 {}, token=foreign_token)
             if code == 200:
                 raise RuntimeError("MULTITENANT_PLAYBACKINFO_BYPASS: foreign account opened PlaybackInfo")
+        # Also reject a stolen or guessed victim UserId in API query parameters;
+        # being logged in as B must never grant A's channel or media.
+        for victim_user, victim_channel, victim_item, attacker_token in (
+            (account_a, channel_id, pilot_item_id, customer_b["AccessToken"]),
+            (account_b, pilot_b[0]["Id"], item_id_b, customer["AccessToken"]),
+        ):
+            code, response = request(
+                "GET", "/Channels/" + victim_channel + "/Items?UserId=" + victim_user,
+                token=attacker_token)
+            if code == 200 and (response or {}).get("Items"):
+                raise RuntimeError("MULTITENANT_USERID_SPOOFING_LEAK: foreign channel listing")
+            code, response = request(
+                "POST", "/Items/" + victim_item + "/PlaybackInfo?UserId=" + victim_user,
+                {}, token=attacker_token)
+            if code == 200 and (response or {}).get("MediaSources"):
+                raise RuntimeError("MULTITENANT_USERID_SPOOFING_PLAYBACK: foreign source")
+        print("JELLYFIN_SYNTHETIC_USERID_SPOOFING_DENIED=PASS")
         print("JELLYFIN_SYNTHETIC_TWO_ACTIVE_CHANNEL_ACCOUNTS_ISOLATED=PASS")
         print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
         # A channel browser must not persist a Mega provider password to
