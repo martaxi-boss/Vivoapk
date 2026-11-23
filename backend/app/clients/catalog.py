@@ -24,6 +24,20 @@ from app.url_safety import (
 
 _MAX_JSON_BYTES = 8 * 1024 * 1024
 _MAX_ITEMS = 20000
+_PREVIEW_MAX_CATEGORY_QUERIES = 6
+_PREVIEW_INFO_NAMES = frozenset({
+    "account information", "account info", "my account",
+    "subscription information", "subscription info",
+    "server information", "server info", "account status",
+})
+
+
+def _preview_is_information(name: str) -> bool:
+    # Only exclude exact pseudo-channel labels; real news channels named
+    # "Information TV" or "Info 24" must remain eligible.
+    return " ".join(re.findall(r"[a-z0-9]+", name.casefold())) in _PREVIEW_INFO_NAMES
+
+
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _EXTENSION = re.compile(r"^[A-Za-z0-9]{1,12}$")
 _ACTIONS = {
@@ -204,16 +218,24 @@ class XtreamCatalogClient:
             ))
             if not categories:
                 return [], []
-            # The first authorized category was validated against a REAL provider.
-            # Try only one category to avoid huge account-wide responses at login.
-            category = categories[0]
-            items = _parse_items(self._read(
-                client, target.origin, credentials, "get_live_streams",
-                extra={"category_id": category["id"]},
-            ), CatalogKind.LIVE, "stream_id")
-        return [category], [
-            item for item in items if item["category_id"] in (category["id"], None)
-        ][:5]
+            # Information and subscription-status entries are not playable TV.
+            # Probe a strictly bounded number of categories and select the
+            # first one containing real candidate channels. Never fetch media.
+            for category in categories[:_PREVIEW_MAX_CATEGORY_QUERIES]:
+                if _preview_is_information(category["name"]):
+                    continue
+                items = _parse_items(self._read(
+                    client, target.origin, credentials, "get_live_streams",
+                    extra={"category_id": category["id"]},
+                ), CatalogKind.LIVE, "stream_id")
+                playable_candidates = [
+                    item for item in items
+                    if item["category_id"] in (category["id"], None)
+                    and not _preview_is_information(item["title"])
+                ][:5]
+                if playable_candidates:
+                    return [category], playable_candidates
+        return [], []
 
     def _detail_request(
         self,
