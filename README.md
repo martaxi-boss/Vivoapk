@@ -1,5 +1,7 @@
 # Vivoapk — sistema independente Mega OTT / Jellyfin
 
+**Contrato de funcionamento dos clientes (fonte de verdade):** [BOOTSTRAP.md](BOOTSTRAP.md). Entrada apenas com `https://serveriptv.duckdns.org`, username/password Mega OTT; gestão exclusiva no painel Mega; integração Jellyfin sem painel de clientes, sem Pink IPTV e sem media na VPS. O estado implementado ainda pode não satisfazer esse contrato.
+
 ## Situação real e fonte de verdade — 23/11/2026
 
 **Código efetivamente instalado na VPS:** `578f0454f8a4ef2e6dbeefb11eb0089afe5dd5d0`. O ramo principal do GitHub foi alinhado por fast-forward com essa revisão em 23/11/2026; as alterações documentais posteriores não modificam o binário já instalado. [Auditoria e evidências](docs/AUDITORIA_FERRARI_REA_VIVOAPK_20261123.md).
