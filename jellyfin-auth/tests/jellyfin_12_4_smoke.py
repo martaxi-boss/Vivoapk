@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from urllib.parse import urlencode
+from urllib.request import urlopen
 
 PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
 MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
@@ -580,6 +581,104 @@ def main():
                 {}, token=attacker_token)
             if code == 200 and (response or {}).get("MediaSources"):
                 raise RuntimeError("MULTITENANT_USERID_SPOOFING_PLAYBACK: foreign source")
+        if CATEGORY_MODE:
+            def open_group(owner_id, owner_token, provider_channel, root_folders,
+                           root_name, category_name, client_name):
+                root_id = next(x["Id"] for x in root_folders
+                               if x.get("Name") == root_name)
+                status, categories = request(
+                    "GET", "/Channels/" + provider_channel + "/Items?UserId="
+                    + owner_id + "&FolderId=" + root_id,
+                    token=owner_token, client_name=client_name)
+                if status != 200 or not categories or not categories.get("Items"):
+                    raise RuntimeError("Multimedia category root not browseable")
+                folder_id = next(x["Id"] for x in categories["Items"]
+                                 if x.get("Name") == category_name)
+                status, entries = request(
+                    "GET", "/Channels/" + provider_channel + "/Items?UserId="
+                    + owner_id + "&FolderId=" + folder_id,
+                    token=owner_token, client_name=client_name)
+                if status != 200 or not entries or not entries.get("Items"):
+                    raise RuntimeError("Multimedia category items not browseable")
+                return entries["Items"]
+
+            multimedia = []
+            for who, owner, own_token, channel, roots, label, client_name in (
+                ("a", account_a, customer["AccessToken"], channel_id,
+                 root_folders_a, "Azul", "Jellyfin Android"),
+                ("b", account_b, customer_b["AccessToken"], pilot_b[0]["Id"],
+                 root_folders_b, "Verde", "Jellyfin for Tizen"),
+            ):
+                movies = open_group(
+                    owner, own_token, channel, roots,
+                    "Filmes", "Filmes " + label, client_name)
+                if len(movies) != 1 or movies[0].get("Name") != "Filme " + label:
+                    raise RuntimeError("Subscriber movie catalogue leaked or missing")
+                movie_id = movies[0]["Id"]
+                series = open_group(
+                    owner, own_token, channel, roots,
+                    "Séries", "Séries " + label, client_name)
+                if len(series) != 1 or series[0].get("Name") != "Série " + label:
+                    raise RuntimeError("Subscriber series catalogue leaked or missing")
+                show_id = series[0]["Id"]
+                status, seasons = request(
+                    "GET", "/Channels/" + channel + "/Items?UserId=" + owner
+                    + "&FolderId=" + show_id,
+                    token=own_token, client_name=client_name)
+                if status != 200 or len((seasons or {}).get("Items", [])) != 1:
+                    raise RuntimeError("Cannot browse authorized series seasons")
+                season_id = seasons["Items"][0]["Id"]
+                status, episodes = request(
+                    "GET", "/Channels/" + channel + "/Items?UserId=" + owner
+                    + "&FolderId=" + season_id,
+                    token=own_token, client_name=client_name)
+                if status != 200 or len((episodes or {}).get("Items", [])) != 1:
+                    raise RuntimeError("Cannot browse authorized series episodes")
+                episode_id = episodes["Items"][0]["Id"]
+                if episodes["Items"][0].get("Name") != "Episódio " + label:
+                    raise RuntimeError("Wrong subscriber episode metadata")
+                for video_id, expected_kind, ending in (
+                    (movie_id, "movie", "/501.mp4"),
+                    (episode_id, "series", "/701.mp4"),
+                ):
+                    status, info = request(
+                        "POST", "/Items/" + video_id + "/PlaybackInfo?UserId=" + owner,
+                        {}, token=own_token, client_name=client_name)
+                    sources = info.get("MediaSources", []) if isinstance(info, dict) else []
+                    if status != 200 or len(sources) != 1:
+                        raise RuntimeError("Private multimedia playback source not available")
+                    source = sources[0]
+                    provider_url = str(source.get("Path") or "")
+                    if ("/" + expected_kind + "/" not in provider_url or
+                            not provider_url.endswith(ending) or
+                            source.get("SupportsDirectPlay") is not True or
+                            source.get("SupportsTranscoding") is not False or
+                            bool(source.get("TranscodingUrl"))):
+                        raise RuntimeError("Invalid direct-only MP4 source for subscriber")
+                    # Download only synthetic test media direct from local provider,
+                    # NOT through Jellyfin and NEVER log credential-bearing URLs.
+                    with urlopen(provider_url, timeout=8) as stream:
+                        payload = stream.read(2 * 1024 * 1024)
+                    if b"ftyp" not in payload[:32] or len(payload) < 1000:
+                        raise RuntimeError("Synthetic direct MP4 media corrupt")
+                multimedia.append((who, movie_id, episode_id))
+            for _, movie_id, episode_id in multimedia:
+                other_id = account_b if _ == "a" else account_a
+                other_token = customer_b["AccessToken"] if _ == "a" else customer["AccessToken"]
+                for victim_id in (movie_id, episode_id):
+                    code, _ = request(
+                        "GET", "/Users/" + other_id + "/Items/" + victim_id,
+                        token=other_token)
+                    if code == 200:
+                        raise RuntimeError("MULTIMEDIA_CROSS_SUBSCRIBER_ITEM_BYPASS")
+                    code, leaked = request(
+                        "POST", "/Items/" + victim_id + "/PlaybackInfo?UserId=" + other_id,
+                        {}, token=other_token)
+                    if code == 200 and (leaked or {}).get("MediaSources"):
+                        raise RuntimeError("MULTIMEDIA_CROSS_SUBSCRIBER_SOURCE_BYPASS")
+            print("JELLYFIN_SYNTHETIC_MOVIE_SERIES_EPISODE_FOLDERS=PASS")
+            print("JELLYFIN_SYNTHETIC_DIRECT_MP4_FROM_PROVIDER=PASS")
+            print("JELLYFIN_SYNTHETIC_MULTIMEDIA_CROSS_USER_DENIED=PASS")
         print("JELLYFIN_SYNTHETIC_USERID_SPOOFING_DENIED=PASS")
         if CATEGORY_MODE:
             print("JELLYFIN_SYNTHETIC_LAZY_CATEGORY_6_CHANNELS_PER_ACCOUNT=PASS")
