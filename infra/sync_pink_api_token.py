@@ -16,6 +16,7 @@ import socket
 import stat
 import subprocess
 import sys
+import time
 
 PINK = Path("/srv/projects/pink-iptv/private/systemd-env")
 COFRE = Path("/root/project-secrets/VIVOAPK")
@@ -211,7 +212,13 @@ def main() -> int:
             write_atomic(RUNTIME,replace_token(runtime,token).encode())
             if cmd(["systemctl","restart",VIVO_SERVICE],timeout=30).returncode!=0:
                 raise Blocked("vivo_restart_failed")
-            if not is_active(VIVO_SERVICE) or not api_socket_ok():
+            healthy = False
+            for _ in range(30):
+                if is_active(VIVO_SERVICE) and api_socket_ok():
+                    healthy = True
+                    break
+                time.sleep(0.25)
+            if not healthy:
                 raise Blocked("vivo_health_failed")
             if runtime_token(VIVO_SERVICE)!=token:
                 raise Blocked("vivo_effective_key_not_aligned")
