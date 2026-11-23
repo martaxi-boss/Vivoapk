@@ -49,10 +49,30 @@ class FakeCatalog:
     def list(self, **kwargs):
         self.calls.append(kwargs)
         title = "Canal Azul" if kwargs["username"] == "sub-a" else "Canal Verde"
+        item_id = "301" if kwargs["username"] == "sub-a" else "401"
+        if kwargs["kind"] == CatalogKind.SERIES:
+            return (
+                [{"id": "20", "name": "Séries"}],
+                [{"id": item_id, "title": "Série " + title,
+                  "category_id": "20", "container_extension": None}],
+            )
         return (
             [{"id": "20", "name": "Portugal"}],
             [{"id": "101", "title": title, "category_id": "20", "container_extension": None}],
         )
+
+    def series_detail(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"series_id": kwargs["series_id"], "title": "Série pessoal",
+                "seasons": [{"id": "1", "title": "Temporada 1"}],
+                "episodes": [{"id": "90", "season_id": "1", "title": "Episódio 1",
+                              "episode_number": "1", "container_extension": "mp4"}]}
+
+    def short_epg(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"stream_id": kwargs["stream_id"],
+                "programmes": [{"title": "Jornal", "start_timestamp": 1800000000,
+                                "end_timestamp": 1800003600}]}
 
 
 def test_two_subscriptions_are_isolated_by_signed_mapping_identity(settings, session_factory):
@@ -311,3 +331,117 @@ def test_vod_and_series_metadata_are_strictly_whitelisted(public_resolver):
         "category_id": "4", "container_extension": None,
     }]
     assert "http" not in str(films) + str(series)
+
+
+
+def test_series_and_guide_are_scoped_to_logged_in_account(settings, session_factory):
+    future = datetime.now(UTC) + timedelta(days=14)
+    with session_factory() as db:
+        for idx, username in ((1, "sub-a"), (2, "sub-b")):
+            db.add(SubscriptionMapping(
+                mega_subscription_id=2000 + idx,
+                username=username, dns_link="http://provider.example.com",
+                dns_link_samsung_lg=None, expiring_at=future,
+                last_synced_at=datetime.now(UTC),
+            ))
+        db.commit()
+        ids = {name: db.query(SubscriptionMapping).filter_by(username=name).one().id
+               for name in ("sub-a", "sub-b")}
+
+    rows = {
+        2001: SimpleNamespace(
+            id=2001, username="sub-a", password=SecretStr("synthetic-a"),
+            expiring_at=future, dns_link="http://provider.example.com",
+            dns_link_for_samsung_lg=None,
+        ),
+        2002: SimpleNamespace(
+            id=2002, username="sub-b", password=SecretStr("synthetic-b"),
+            expiring_at=future, dns_link="http://provider.example.com",
+            dns_link_for_samsung_lg=None,
+        ),
+    }
+    mega, xtream, catalogue = FakeMega(rows), FakeXtream(), FakeCatalog()
+    app = create_app(settings)
+    app.state.session_factory = session_factory
+    app.state.mega_client_factory = lambda: mega
+    app.state.xtream_client_factory = lambda: xtream
+    app.state.catalog_client_factory = lambda: catalogue
+    client = TestClient(app)
+    tokens = {name: issue_session_token(ids[name], settings)[0]
+              for name in ("sub-a", "sub-b")}
+
+    def post(name, endpoint, payload):
+        return client.post(
+            endpoint, headers={"Authorization": "Bearer " + tokens[name]},
+            json=payload,
+        )
+
+    expected = {
+        "sub-a": ("301", "101", "synthetic-a"),
+        "sub-b": ("401", "101", "synthetic-b"),
+    }
+    for name, (series_id, channel_id, password) in expected.items():
+        series = post(name, "/v1/catalog/series", {"series_id": series_id})
+        assert series.status_code == 200
+        assert series.headers["Cache-Control"] == "no-store"
+        assert series.json()["episodes"][0]["title"] == "Episódio 1"
+        assert password not in series.text
+        epg = post(name, "/v1/catalog/epg", {"stream_id": channel_id, "limit": 2})
+        assert epg.status_code == 200
+        assert epg.json()["programmes"][0]["title"] == "Jornal"
+        assert password not in epg.text
+
+    # User A cannot ask the provider for a series present only in user B's list.
+    before = len(catalogue.calls)
+    forbidden = post("sub-a", "/v1/catalog/series", {"series_id": "401"})
+    assert forbidden.status_code == 401
+    assert len(catalogue.calls) == before + 1  # only the account-scoped listing
+    assert post("sub-a", "/v1/catalog/epg", {"stream_id": "999"}).status_code == 401
+    assert post("sub-b", "/v1/catalog/series", {"series_id": "../../bad"}).status_code == 422
+    assert post("sub-b", "/v1/catalog/epg", {"stream_id": "101", "limit": 30}).status_code == 422
+    assert client.post("/v1/catalog/series", json={"series_id": "301"}).status_code == 401
+
+
+def test_series_and_guide_upstream_responses_are_sanitized(public_resolver):
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params.get("action")
+        data = {
+            "get_series_info": {
+                "info": {"name": "Programa Exemplo", "movie_image": "http://unsafe/private"},
+                "seasons": [{"season_number": 1, "name": "Primeira temporada"}],
+                "episodes": {"1": [{
+                    "id": "901", "episode_num": 1, "title": "Piloto",
+                    "container_extension": "mp4",
+                    "movie_image": "http://unsafe/private",
+                    "direct_source": "http://not-forwarded/private",
+                }]},
+            },
+            "get_short_epg": {
+                "epg_listings": [{
+                    "title": "Notícias da noite", "start_timestamp": "1830000000",
+                    "stop_timestamp": "1830003600", "password": "secret",
+                    "direct_source": "http://not-forwarded/private",
+                }],
+            },
+        }
+        return httpx.Response(200, json=data[action])
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    args = {"dns_link": "http://public.example.com",
+            "username": "fixture", "password": "fixture-secret"}
+    info = adapter.series_detail(**args, series_id="123")
+    assert info["series_id"] == "123"
+    assert info["seasons"] == [{"id": "1", "title": "Primeira temporada"}]
+    assert info["episodes"] == [{
+        "id": "901", "season_id": "1", "episode_number": "1",
+        "title": "Piloto", "container_extension": "mp4",
+    }]
+    guide = adapter.short_epg(**args, stream_id="12", limit=5)
+    assert guide["programmes"] == [{
+        "title": "Notícias da noite",
+        "start_timestamp": 1830000000, "end_timestamp": 1830003600,
+    }]
+    assert "http" not in str(info) + str(guide)
+    assert "secret" not in str(info) + str(guide)
