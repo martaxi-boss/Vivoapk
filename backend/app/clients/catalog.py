@@ -170,6 +170,49 @@ class XtreamCatalogClient:
         return _parse_categories(categories), _parse_items(items, kind, id_field)
 
 
+    def preview_live(
+        self, *, dns_link: str, username: str, password: str
+    ) -> tuple[list[dict[str, str]], list[dict[str, str | None]]]:
+        """Fetch a bounded single-category live TV preview, never the full lineup."""
+        if not username or not password:
+            raise CatalogUnavailable("Incomplete catalogue authorization")
+        try:
+            target = resolve_dns_link_target(dns_link, resolver=self._resolver)
+        except (UnsafeOutboundURL, ValueError, RuntimeError):
+            raise CatalogUnavailable("Provider destination denied") from None
+        transport = (
+            self._transport_factory(target) if self._transport_factory is not None
+            else PinnedHTTPTransport(target, max_response_bytes=_MAX_JSON_BYTES)
+        )
+        credentials = {"username": username, "password": password}
+        with httpx.Client(
+            transport=transport,
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+                "User-Agent": "Vivoapk/1.0",
+            },
+            timeout=httpx.Timeout(12),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            categories = _parse_categories(self._read(
+                client, target.origin, credentials, "get_live_categories",
+            ))
+            if not categories:
+                return [], []
+            # The first authorized category was validated against a REAL provider.
+            # Try only one category to avoid huge account-wide responses at login.
+            category = categories[0]
+            items = _parse_items(self._read(
+                client, target.origin, credentials, "get_live_streams",
+                extra={"category_id": category["id"]},
+            ), CatalogKind.LIVE, "stream_id")
+        return [category], [
+            item for item in items if item["category_id"] in (category["id"], None)
+        ][:5]
+
     def _detail_request(
         self,
         *,
