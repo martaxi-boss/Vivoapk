@@ -20,6 +20,9 @@ public sealed class PluginConfiguration : BasePluginConfiguration
     // production multiuser certification is implied by enabling this flag.
     public bool FullLiveCatalog { get; set; } = false;
 
+    // Opt-in only. Categories appear as native Jellyfin folders; no global IPTV list.
+    public bool CategoryNavigation { get; set; } = false;
+
     // Owner GUIDs only (never passwords or DNS): reserving a Jellyfin ChannelId
     // prevents old indexed media items from being reassigned to a different
     // subscriber after the in-RAM snapshot expires or the server restarts.

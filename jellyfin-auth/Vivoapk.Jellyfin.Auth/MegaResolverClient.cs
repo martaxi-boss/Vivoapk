@@ -200,6 +200,104 @@ public sealed class MegaResolverClient
         }
     }
 
+
+    // Private category endpoints return metadata only. Null = denied/unavailable,
+    // not a legitimate empty category; never log upstream tokens or URLs.
+    internal Task<IReadOnlyList<MegaPreviewEntry>?> CategoriesAsync(
+        string? token, CancellationToken cancellationToken = default,
+        string platform = "android")
+        => FetchCategoryMetadataAsync(token, null, platform, cancellationToken);
+
+    internal Task<IReadOnlyList<MegaPreviewEntry>?> CategoryItemsAsync(
+        string? token, string categoryId, CancellationToken cancellationToken = default,
+        string platform = "android")
+        => FetchCategoryMetadataAsync(token, categoryId, platform, cancellationToken);
+
+    private async Task<IReadOnlyList<MegaPreviewEntry>?> FetchCategoryMetadataAsync(
+        string? token, string? categoryId, string platform, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(token) || token.Length > 4096 ||
+            !IsSupportedPlatform(platform) ||
+            (categoryId is not null && (categoryId.Length is < 1 or > 64 ||
+                                        !categoryId.All(char.IsAsciiDigit))))
+            return null;
+        try
+        {
+            var path = categoryId is null
+                ? "v1/catalog/categories" : "v1/catalog/category-items";
+            object payload = categoryId is null
+                ? new { kind = "live", platform }
+                : new { kind = "live", platform, category_id = categoryId };
+            using var request = new HttpRequestMessage(HttpMethod.Post, path)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            using var response = await _client.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken
+            ).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return null;
+            await using var input = await response.Content.ReadAsStreamAsync(
+                cancellationToken).ConfigureAwait(false);
+            using var output = new MemoryStream();
+            var buffer = new byte[8192];
+            while (true)
+            {
+                var count = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (count == 0)
+                    break;
+                if (output.Length + count > MaxCatalogResponseBytes)
+                    return null;
+                output.Write(buffer, 0, count);
+            }
+            output.Position = 0;
+            using var doc = JsonDocument.Parse(output);
+            var root = doc.RootElement;
+            var field = categoryId is null ? "categories" : "items";
+            var countLimit = categoryId is null ? 2000 : MaxCatalogItems;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("kind", out var kind) ||
+                kind.ValueKind != JsonValueKind.String || kind.GetString() != "live" ||
+                !root.TryGetProperty(field, out var rows) ||
+                rows.ValueKind != JsonValueKind.Array ||
+                rows.GetArrayLength() > countLimit)
+                return null;
+            var items = new List<MegaPreviewEntry>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var row in rows.EnumerateArray())
+            {
+                var label = categoryId is null ? "name" : "title";
+                if (row.ValueKind != JsonValueKind.Object ||
+                    !row.TryGetProperty("id", out var idJson) ||
+                    !row.TryGetProperty(label, out var titleJson) ||
+                    idJson.ValueKind != JsonValueKind.String ||
+                    titleJson.ValueKind != JsonValueKind.String)
+                    continue;
+                var id = idJson.GetString() ?? string.Empty;
+                var title = titleJson.GetString() ?? string.Empty;
+                if (id.Length is < 1 or > 64 || !id.All(char.IsAsciiDigit) ||
+                    string.IsNullOrWhiteSpace(title) || title.Length > 250 ||
+                    !seen.Add(id))
+                    continue;
+                if (categoryId is not null &&
+                    row.TryGetProperty("category_id", out var category) &&
+                    category.ValueKind == JsonValueKind.String &&
+                    !string.Equals(category.GetString(), categoryId, StringComparison.Ordinal))
+                    continue;
+                items.Add(new MegaPreviewEntry(id, title));
+            }
+            return items;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException
+                                 or JsonException or IOException)
+        {
+            return null;
+        }
+    }
+
     internal Task<IReadOnlyList<MegaPreviewEntry>> PreviewAsync(
         string? token, CancellationToken cancellationToken = default, string platform = "android")
         => FetchLiveAsync(token, platform, full: false, cancellationToken);

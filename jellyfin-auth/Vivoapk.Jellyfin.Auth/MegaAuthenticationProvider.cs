@@ -133,13 +133,18 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
         // Never creates a shared Live TV tuner or stores media passwords on disk.
         if (Plugin.Instance?.Configuration.PilotLiveChannels == true)
         {
-            var fullLive = Plugin.Instance.Configuration.FullLiveCatalog;
-            var preview = fullLive
-                ? await _resolver.FullLiveAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
-                : await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
-            var subscriberChannel = VivoapkLivePreviewChannel.Stage(
-                user.Id, preview, verified.Origin, canonicalUsername, password,
-                fullLive: fullLive);
+            var categoryNavigation = Plugin.Instance.Configuration.CategoryNavigation;
+            var fullLive = !categoryNavigation && Plugin.Instance.Configuration.FullLiveCatalog;
+            var preview = categoryNavigation
+                ? await _resolver.CategoriesAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
+                : fullLive
+                    ? await _resolver.FullLiveAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
+                    : await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
+            var subscriberChannel = preview is null ? null :
+                VivoapkLivePreviewChannel.Stage(
+                    user.Id, preview, verified.Origin, canonicalUsername, password,
+                    fullLive: fullLive, categoryNavigation: categoryNavigation,
+                    sessionToken: verified.SessionToken, platform: platform);
             if (subscriberChannel is not null)
             {
                 var library = _appHost.Resolve<ILibraryManager>();

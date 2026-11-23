@@ -21,7 +21,9 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCallback, IHasCacheKey
 {
     public const int MaxChannels = 2; // test-only experiment; no production rollout
+    private const int MaxIndexedCategoryMedia = 20000;
     private readonly int _slot;
+    private readonly MegaResolverClient _resolver = new();
     public VivoapkLivePreviewChannel(int slot)
     {
         if (slot is < 0 or >= MaxChannels)
@@ -32,13 +34,20 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     private sealed record PilotStream(string ExternalId, string Title, string ProviderId);
     private sealed record PilotSnapshot(
         Guid Owner, DateTime Expires, string Origin, string Username,
-        string Password, List<PilotStream> Streams);
+        string Password, List<PilotStream> Streams,
+        bool CategoryNavigation, string Platform, string? SessionToken)
+    {
+        public string? CurrentToken { get; set; } = SessionToken;
+        // Ephemeral per-subscriber data, never included in the item database.
+        public Dictionary<string, PilotStream> LoadedStreams { get; } =
+            new(StringComparer.Ordinal);
+    }
     private static readonly object Gate = new();
     private static readonly Dictionary<int, PilotSnapshot> Pilots = new();
 
     public string Name => ChannelNameFor(_slot);
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-hls-v6-full-live-optin";
+    public string DataVersion => "pilot-hls-v7-private-category-folders";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -46,10 +55,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
 
     internal static string? Stage(Guid owner, IReadOnlyList<MegaPreviewEntry> channels,
-        string? origin, string username, string password, bool fullLive = false)
+        string? origin, string username, string password, bool fullLive = false,
+        bool categoryNavigation = false, string? sessionToken = null, string platform = "android")
     {
         if (owner == Guid.Empty || channels.Count < 1 ||
-            channels.Count > (fullLive ? 20000 : 5) ||
+            channels.Count > (categoryNavigation ? 2000 : fullLive ? 20000 : 5) ||
             string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(username) ||
             string.IsNullOrWhiteSpace(password) ||
             !Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
@@ -97,7 +107,8 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     continue;
                 // No credential-bearing URLs in the channel item index.
                 // Construct a direct HLS source only on authorized playback.
-                streams.Add(new PilotStream(Guid.NewGuid().ToString("N"),
+                streams.Add(new PilotStream(
+                    categoryNavigation ? "cat:" + channel.Id : Guid.NewGuid().ToString("N"),
                     channel.Title, channel.Id));
             }
             if (streams.Count == 0)
@@ -123,7 +134,8 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 }
             }
             Pilots[assignedSlot] = new PilotSnapshot(
-                owner, DateTime.UtcNow.AddMinutes(30), origin, username, password, streams);
+                owner, DateTime.UtcNow.AddMinutes(30), origin, username, password,
+                streams, categoryNavigation, platform, sessionToken);
             return ChannelNameFor(assignedSlot);
         }
     }
@@ -160,33 +172,118 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         AutoRefreshLevels = 1
     };
 
-    public Task<ChannelItemResult> GetChannelItems(
+    public async Task<ChannelItemResult> GetChannelItems(
         InternalChannelItemQuery query, CancellationToken cancellationToken)
     {
         var snapshot = ForUser(query.UserId, _slot);
         if (snapshot is null)
-            return Task.FromResult(new ChannelItemResult
-            {
-                Items = new List<ChannelItemInfo>(), TotalRecordCount = 0
-            });
-        var list = snapshot.Streams.Select(stream => new ChannelItemInfo
+            return EmptyResult();
+        List<ChannelItemInfo> list;
+        if (!snapshot.CategoryNavigation)
         {
-            Id = stream.ExternalId,
-            Name = stream.Title,
-            Type = ChannelItemType.Media,
-            MediaType = ChannelMediaType.Video,
-            ContentType = ChannelMediaContentType.Clip,
-            IsLiveStream = true
-            // Never attach credential-bearing MediaSources to indexed items.
-            // IRequiresMediaInfoCallback supplies the source only at playback.
-        }).ToList();
+            list = snapshot.Streams.Select(stream => new ChannelItemInfo
+            {
+                Id = stream.ExternalId,
+                Name = stream.Title,
+                Type = ChannelItemType.Media,
+                MediaType = ChannelMediaType.Video,
+                ContentType = ChannelMediaContentType.Clip,
+                IsLiveStream = true
+            }).ToList();
+        }
+        else if (string.IsNullOrEmpty(query.FolderId))
+        {
+            list = snapshot.Streams.Select(category => new ChannelItemInfo
+            {
+                Id = category.ExternalId,
+                Name = category.Title,
+                Type = ChannelItemType.Folder,
+                FolderType = ChannelFolderType.Container,
+                MediaType = ChannelMediaType.Video
+            }).ToList();
+        }
+        else
+        {
+            // Folder IDs are whitelisted from this user's own authenticated
+            // category index, never taken at face value from query parameters.
+            var category = snapshot.Streams.FirstOrDefault(entry =>
+                string.Equals(entry.ExternalId, query.FolderId, StringComparison.Ordinal));
+            if (category is null)
+                return EmptyResult();
+            var entries = await _resolver.CategoryItemsAsync(
+                snapshot.CurrentToken, category.ProviderId, cancellationToken,
+                snapshot.Platform).ConfigureAwait(false);
+            if (entries is null)
+            {
+                // A short-lived JWT expires after five minutes. Re-resolve
+                // privately with this subscriber's RAM-only credentials.
+                var refreshed = await _resolver.ResolveAsync(
+                    snapshot.Username, snapshot.Password, cancellationToken,
+                    snapshot.Platform).ConfigureAwait(false);
+                if (refreshed?.SessionToken is null ||
+                    !string.Equals(refreshed.Origin?.TrimEnd('/'),
+                        snapshot.Origin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+                    return EmptyResult();
+                entries = await _resolver.CategoryItemsAsync(
+                    refreshed.SessionToken, category.ProviderId, cancellationToken,
+                    snapshot.Platform).ConfigureAwait(false);
+                if (entries is null)
+                    return EmptyResult();
+                lock (Gate)
+                {
+                    if (Pilots.TryGetValue(_slot, out var active) &&
+                        ReferenceEquals(active, snapshot))
+                        snapshot.CurrentToken = refreshed.SessionToken;
+                }
+            }
+            var staged = new List<PilotStream>(entries.Count);
+            list = new List<ChannelItemInfo>(entries.Count);
+            foreach (var entry in entries)
+            {
+                // Category-scoped item IDs avoid reparenting a channel
+                // indexed in two different provider categories.
+                var externalId = "live:" + category.ProviderId + ":" + entry.Id;
+                staged.Add(new PilotStream(externalId, entry.Title, entry.Id));
+                list.Add(new ChannelItemInfo
+                {
+                    Id = externalId,
+                    Name = entry.Title,
+                    Type = ChannelItemType.Media,
+                    MediaType = ChannelMediaType.Video,
+                    ContentType = ChannelMediaContentType.Clip,
+                    IsLiveStream = true
+                });
+            }
+            lock (Gate)
+            {
+                if (!Pilots.TryGetValue(_slot, out var active) ||
+                    !ReferenceEquals(active, snapshot) ||
+                    snapshot.Expires <= DateTime.UtcNow)
+                    return EmptyResult();
+                var prefix = "live:" + category.ProviderId + ":";
+                var previous = snapshot.LoadedStreams.Keys.Where(key =>
+                    key.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+                var projected = snapshot.LoadedStreams.Count - previous.Length + staged.Count;
+                if (projected > MaxIndexedCategoryMedia)
+                    return EmptyResult();
+                foreach (var key in previous)
+                    snapshot.LoadedStreams.Remove(key);
+                foreach (var item in staged)
+                    snapshot.LoadedStreams[item.ExternalId] = item;
+            }
+        }
         var total = list.Count;
         if (query.StartIndex is > 0)
             list = list.Skip(query.StartIndex.Value).ToList();
         if (query.Limit is > 0)
             list = list.Take(query.Limit.Value).ToList();
-        return Task.FromResult(new ChannelItemResult { Items = list, TotalRecordCount = total });
+        return new ChannelItemResult { Items = list, TotalRecordCount = total };
     }
+
+    private static ChannelItemResult EmptyResult() => new()
+    {
+        Items = new List<ChannelItemInfo>(), TotalRecordCount = 0
+    };
 
     public Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
         string id, CancellationToken cancellationToken)
@@ -200,8 +297,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 snapshot.Expires > DateTime.UtcNow)
             {
                 active = snapshot;
-                stream = snapshot.Streams.FirstOrDefault(x =>
-                    string.Equals(x.ExternalId, id, StringComparison.Ordinal));
+                stream = snapshot.CategoryNavigation
+                    ? snapshot.LoadedStreams.GetValueOrDefault(id)
+                    : snapshot.Streams.FirstOrDefault(x =>
+                        string.Equals(x.ExternalId, id, StringComparison.Ordinal));
             }
         }
         IEnumerable<MediaSourceInfo> sources = stream is null || active is null
