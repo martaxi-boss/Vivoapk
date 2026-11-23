@@ -303,7 +303,9 @@ def main():
         if code != 200 or not isinstance(owner_media, dict) or not owner_media.get("MediaSources"):
             raise RuntimeError("Pilot playback source not available to its owner")
         media_sources = owner_media["MediaSources"]
-        if len(media_sources) != 2 or any(
+        if len(media_sources) != 1:
+            raise RuntimeError("Single-origin pilot returned unexpected media source count")
+        if any(
             source.get("SupportsDirectPlay") is not True
             or source.get("SupportsDirectStream") is not False
             or source.get("SupportsTranscoding") is not False
