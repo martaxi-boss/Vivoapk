@@ -217,3 +217,97 @@ def test_catalogue_rejects_oversized_metadata(public_resolver):
         pass
     else:
         raise AssertionError("Oversized JSON was accepted")
+
+
+def test_smart_tv_uses_only_authoritative_dedicated_dns(settings, session_factory):
+    future = datetime.now(UTC) + timedelta(days=7)
+    with session_factory() as db:
+        mapping = SubscriptionMapping(
+            mega_subscription_id=1001, username="tv-a",
+            dns_link="http://general.example.com",
+            dns_link_samsung_lg="http://native.example.com",
+            expiring_at=future, last_synced_at=datetime.now(UTC),
+        )
+        db.add(mapping)
+        db.commit()
+        mapping_id = mapping.id
+
+    provider = SimpleNamespace(
+        id=1001, username="tv-a", password=SecretStr("synthetic"),
+        expiring_at=future, dns_link="http://general.example.com",
+        dns_link_for_samsung_lg="http://native.example.com",
+    )
+    mega, xtream, catalogue = FakeMega({1001: provider}), FakeXtream(), FakeCatalog()
+    app = create_app(settings)
+    app.state.session_factory = session_factory
+    app.state.mega_client_factory = lambda: mega
+    app.state.xtream_client_factory = lambda: xtream
+    app.state.catalog_client_factory = lambda: catalogue
+    client = TestClient(app)
+    token, _ = issue_session_token(mapping_id, settings)
+    for platform, expected in (
+        ("tizen", "http://native.example.com"),
+        ("webos", "http://native.example.com"),
+        ("android", "http://general.example.com"),
+    ):
+        response = client.post(
+            "/v1/catalog/list",
+            headers={"Authorization": "Bearer " + token},
+            json={"kind": "live", "platform": platform},
+        )
+        assert response.status_code == 200
+        assert catalogue.calls[-1]["dns_link"] == expected
+        assert xtream.calls[-1]["dns_link"] == expected
+
+    provider.dns_link_for_samsung_lg = None
+    result = client.post(
+        "/v1/catalog/list",
+        headers={"Authorization": "Bearer " + token},
+        json={"kind": "live", "platform": "webos"},
+    )
+    assert result.status_code == 503
+    assert len(catalogue.calls) == 3
+
+
+def test_vod_and_series_metadata_are_strictly_whitelisted(public_resolver):
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params.get("action")
+        rows = {
+            "get_vod_categories": [{"category_id": 3, "category_name": "Cinema"}],
+            "get_vod_streams": [
+                {"stream_id": 55, "name": "Filme exemplo",
+                 "category_id": 3, "container_extension": "mp4",
+                 "direct_source": "http://private.example/movie"},
+                {"stream_id": 56, "name": "Filme com extensão inválida",
+                 "container_extension": "../../hidden"},
+            ],
+            "get_series_categories": [{"category_id": "4", "category_name": "Séries"}],
+            "get_series": [
+                {"series_id": 77, "name": "Série exemplo",
+                 "category_id": 4, "cover": "https://private.example/cover"},
+            ],
+        }
+        return httpx.Response(200, json=rows[action])
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    _, films = adapter.list(
+        dns_link="https://public.example.com", username="a", password="b",
+        kind=CatalogKind.VOD,
+    )
+    assert films[0] == {
+        "id": "55", "title": "Filme exemplo",
+        "category_id": "3", "container_extension": "mp4",
+    }
+    assert films[1]["container_extension"] is None
+    _, series = adapter.list(
+        dns_link="https://public.example.com", username="a", password="b",
+        kind=CatalogKind.SERIES,
+    )
+    assert series == [{
+        "id": "77", "title": "Série exemplo",
+        "category_id": "4", "container_extension": None,
+    }]
+    assert "http" not in str(films) + str(series)
