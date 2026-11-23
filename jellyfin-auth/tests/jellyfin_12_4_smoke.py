@@ -363,6 +363,47 @@ def main():
         ):
             raise RuntimeError("Jellyfin pilot advertises non-HLS source to Android")
         print("JELLYFIN_MEGA_HTTP_DIRECT_HLS_SOURCE=PASS")
+        # Match the native Android client: it advertises media containers and
+        # codecs, not the playlist filename extension. An empty request body
+        # bypasses this negotiation and cannot detect an unusable source.
+        android_profile = {
+            "Name": "Jellyfin Android native H264 AAC",
+            "MaxStreamingBitrate": 120000000,
+            "MaxStaticBitrate": 120000000,
+            "DirectPlayProfiles": [{
+                "Type": "Video", "Container": "mpegts",
+                "VideoCodec": "h264,hevc,mpeg2video",
+                "AudioCodec": "aac,mp3,ac3,eac3,mp2",
+            }, {
+                "Type": "Video", "Container": "mp4",
+                "VideoCodec": "h264,hevc", "AudioCodec": "aac,mp3,ac3,eac3",
+            }],
+            "TranscodingProfiles": [{
+                "Type": "Video", "Container": "ts", "Protocol": "hls",
+                "VideoCodec": "h264", "AudioCodec": "aac", "Context": "Streaming",
+            }],
+        }
+        code, android_media = request(
+            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_a,
+            {"DeviceProfile": android_profile, "AutoOpenLiveStream": True,
+             "MaxStreamingBitrate": 120000000}, token=customer["AccessToken"])
+        sources = (android_media or {}).get("MediaSources", [])
+        print("JELLYFIN_ANDROID_PROFILE_NEGOTIATION=" + json.dumps({
+            "status": code,
+            "error": (android_media or {}).get("ErrorCode"),
+            "sources": [{k: source.get(k) for k in (
+                "Container", "SupportsDirectPlay", "SupportsDirectStream",
+                "SupportsTranscoding", "TranscodeReasons")}
+                for source in sources],
+        }, sort_keys=True), flush=True)
+        if code != 200 or len(sources) != 1 or any(
+            source.get("SupportsDirectPlay") is not True
+            or source.get("SupportsTranscoding") is not False
+            or source.get("TranscodingUrl")
+            for source in sources
+        ):
+            raise RuntimeError("Native Android device profile cannot direct-play pilot")
+        print("JELLYFIN_ANDROID_PROFILE_DIRECT_PLAY=PASS")
         for path in DATAROOT.rglob("*"):
             if (path.is_symlink() or not path.is_file() or
                     path.stat().st_size > 16 * 1024 * 1024):
