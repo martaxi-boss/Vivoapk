@@ -1,4 +1,5 @@
 using Jellyfin.Data;
+using MediaBrowser.Common.Configuration;
 using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Tasks;
@@ -17,13 +18,16 @@ public sealed class VivoapkEntitlementTask : IScheduledTask
     private readonly IUserManager _users;
     private readonly ILogger<VivoapkEntitlementTask> _logger;
     private readonly MegaResolverClient _resolver = new();
+    private readonly VivoapkSuspensionMarker _suspensions;
 
     public VivoapkEntitlementTask(
         IUserManager users,
+        IApplicationPaths appPaths,
         ILogger<VivoapkEntitlementTask> logger)
     {
         _users = users;
         _logger = logger;
+        _suspensions = new VivoapkSuspensionMarker(appPaths);
     }
 
     public string Name => "VivoAPK — verificar subscrições Mega OTT";
@@ -59,34 +63,60 @@ public sealed class VivoapkEntitlementTask : IScheduledTask
             .ToArray();
 
         var blocked = 0;
+        var restored = 0;
         var checkedCount = 0;
         foreach (var user in ownedUsers)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            // Disabled accounts can have been blocked by the administrator;
-            // never automatically re-enable one until origin is tracked safely.
-            if (user.HasPermission(PermissionKind.IsDisabled))
+            var ownedSuspension = _suspensions.IsOwned(user.Id);
+            // Administrator-initiated disabled accounts have NO plugin marker
+            // and are never modified or automatically reactivated.
+            if (user.HasPermission(PermissionKind.IsDisabled) && !ownedSuspension)
                 continue;
 
             var status = await _resolver.CheckEntitlementAsync(
                 user.Username, cancellationToken).ConfigureAwait(false);
             checkedCount++;
+            var current = _users.GetUserById(user.Id);
+            if (current is null
+                || !string.Equals(current.AuthenticationProviderId, providerId,
+                    StringComparison.Ordinal)
+                || current.HasPermission(PermissionKind.IsAdministrator))
+                continue;
+
             if (status is EntitlementState.Expired or EntitlementState.Disabled)
             {
-                // Recheck provider ownership and administrator privilege just
-                // before writing, avoiding changes to foreign/local accounts.
-                var current = _users.GetUserById(user.Id);
-                if (current is not null
-                    && string.Equals(current.AuthenticationProviderId, providerId,
-                        StringComparison.Ordinal)
-                    && !current.HasPermission(PermissionKind.IsAdministrator)
-                    && !current.HasPermission(PermissionKind.IsDisabled))
+                if (!current.HasPermission(PermissionKind.IsDisabled))
                 {
-                    current.SetPermission(PermissionKind.IsDisabled, true);
-                    await _users.UpdateUserAsync(current).ConfigureAwait(false);
-                    blocked++;
+                    // Write the durable ownership marker BEFORE disabling.
+                    // If Jellyfin update fails, undo the marker and report failure.
+                    _suspensions.Mark(current.Id);
+                    try
+                    {
+                        current.SetPermission(PermissionKind.IsDisabled, true);
+                        await _users.UpdateUserAsync(current).ConfigureAwait(false);
+                        blocked++;
+                    }
+                    catch
+                    {
+                        _suspensions.Clear(current.Id);
+                        throw;
+                    }
                 }
             }
+            else if (status == EntitlementState.Active && ownedSuspension)
+            {
+                // Only undo a disable that this exact plugin previously created.
+                // Never re-enable a disabled admin or a manually disabled user.
+                if (current.HasPermission(PermissionKind.IsDisabled))
+                {
+                    current.SetPermission(PermissionKind.IsDisabled, false);
+                    await _users.UpdateUserAsync(current).ConfigureAwait(false);
+                    restored++;
+                }
+                _suspensions.Clear(current.Id);
+            }
+            // UNAVAILABLE: preserve existing state; do not change another account.
             progress.Report(ownedUsers.Length == 0
                 ? 100 : 100.0 * checkedCount / ownedUsers.Length);
             // Bound the rate at which the provider control API is polled.
@@ -95,7 +125,8 @@ public sealed class VivoapkEntitlementTask : IScheduledTask
         }
         progress.Report(100);
         _logger.LogInformation(
-            "VivoAPK entitlement check finished: {Checked} checked, {Blocked} blocked.",
-            checkedCount, blocked);
+            "VivoAPK entitlement check finished: {Checked} checked, {Blocked} blocked, " +
+            "{Restored} renewed.",
+            checkedCount, blocked, restored);
     }
 }
