@@ -9,6 +9,7 @@ import socketserver
 import subprocess
 import threading
 import time
+from urllib.parse import urlencode
 
 PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
 MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
@@ -28,9 +29,14 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if not 0 < length < 4096:
             return
         request = json.loads(self.rfile.read(length))
-        valid = (request.get("username") == "synthetic-mega-user"
-                 and request.get("password") == "synthetic-mega-password"
-                 and request.get("platform") == "android")
+        valid = (
+            (request.get("username"), request.get("password"))
+            in {
+                ("synthetic-mega-user", "synthetic-mega-password"),
+                ("synthetic-mega-user-b", "synthetic-mega-password-b"),
+            }
+            and request.get("platform") == "android"
+        )
         body = json.dumps({"code": "SUCCESS" if valid else "INVALID_CREDENTIALS"}).encode()
         self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                          + b"Content-Length: " + str(len(body)).encode()
@@ -159,6 +165,125 @@ def main():
         if code == 200:
             raise RuntimeError("Invalid synthetic Mega password accepted")
         print("JELLYFIN_MEGA_INVALID_PASSWORD_DENIED=PASS")
+
+        # CI-only account isolation: real Jellyfin 12.4 with two local fixture libraries.
+        # Nothing is uploaded to or installed on the VPS.
+        code, customer_b = request("POST", "/Users/AuthenticateByName", {
+            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"})
+        if code != 200 or not customer_b or not customer_b.get("AccessToken"):
+            raise RuntimeError("Synthetic second subscription rejected")
+        account_a = customer["User"]["Id"]
+        account_b = customer_b["User"]["Id"]
+        if account_a.replace("-", "") == account_b.replace("-", ""):
+            raise RuntimeError("Two synthetic customers share Jellyfin identity")
+        sources = {}
+        for owner in ("alpha", "beta"):
+            media_dir = base / "fixture-libraries" / owner
+            media_dir.mkdir(parents=True)
+            media_file = media_dir / ("vivo_ci_" + owner + "_only.mp4")
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                 "-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=1",
+                 "-an", "-c:v", "mpeg4", str(media_file)],
+                check=True, timeout=40,
+            )
+            sources[owner] = media_dir
+            params = urlencode({
+                "name": "Vivo CI " + owner.capitalize(),
+                "collectionType": "movies",
+                "paths": str(media_dir),
+                "refreshLibrary": "true",
+            })
+            code, detail = request("POST", "/Library/VirtualFolders?" + params,
+                                   {"LibraryOptions": {"EnableRealtimeMonitor": False}},
+                                   token=token)
+            if code not in (200, 204):
+                raise RuntimeError("Cannot create fixture virtual library: " + str(code))
+        code, folder_info = request("GET", "/Library/VirtualFolders", token=token)
+        if code != 200 or not isinstance(folder_info, list):
+            raise RuntimeError("Cannot inspect fixture library IDs")
+        ids = {}
+        for owner in ("alpha", "beta"):
+            matches = [x for x in folder_info if x.get("Name") == "Vivo CI " + owner.capitalize()]
+            if len(matches) != 1 or not matches[0].get("ItemId"):
+                raise RuntimeError("Synthetic virtual library not registered")
+            ids[owner] = matches[0]["ItemId"]
+        if ids["alpha"] == ids["beta"]:
+            raise RuntimeError("Library IDs unexpectedly identical")
+        for user_id, own_folder_id in ((account_a, ids["alpha"]), (account_b, ids["beta"])):
+            code, profile = request("GET", "/Users/" + user_id, token=token)
+            if code != 200 or not isinstance(profile, dict) or "Policy" not in profile:
+                raise RuntimeError("Cannot read synthetic user policy")
+            policy = profile["Policy"]
+            policy["EnableAllFolders"] = False
+            policy["EnabledFolders"] = [own_folder_id]
+            policy["EnableAllChannels"] = False
+            policy["EnabledChannels"] = []
+            policy["EnablePublicSharing"] = False
+            policy["EnableContentDownloading"] = False
+            code, _ = request("POST", "/Users/" + user_id + "/Policy", policy, token=token)
+            if code not in (200, 204):
+                raise RuntimeError("Cannot assign isolated library permissions")
+        print("JELLYFIN_SYNTHETIC_USER_SCOPED_POLICIES=PASS")
+
+        def list_movies(customer_token, user_id):
+            code, data = request(
+                "GET", "/Items?" + urlencode({
+                    "userId": user_id,
+                    "recursive": "true",
+                    "includeItemTypes": "Movie",
+                    "limit": 50,
+                }), token=customer_token)
+            if code != 200 or not isinstance(data, dict):
+                raise RuntimeError("User-scoped library listing failed")
+            return data.get("Items", [])
+
+        account_a_token = customer["AccessToken"]
+        account_b_token = customer_b["AccessToken"]
+        alpha_id = beta_id = None
+        for _ in range(45):
+            items_a = list_movies(account_a_token, account_a)
+            items_b = list_movies(account_b_token, account_b)
+            owners_a = [x for x in items_a if "vivo_ci_alpha" in x.get("Name", "").lower()]
+            owners_b = [x for x in items_b if "vivo_ci_beta" in x.get("Name", "").lower()]
+            if owners_a and owners_b:
+                alpha_id = owners_a[0]["Id"]
+                beta_id = owners_b[0]["Id"]
+                break
+            time.sleep(2)
+        if not alpha_id or not beta_id:
+            raise RuntimeError("Synthetic media were not indexed in time")
+        if any("vivo_ci_beta" in x.get("Name", "").lower() for x in items_a):
+            raise RuntimeError("Customer A can see customer B media")
+        if any("vivo_ci_alpha" in x.get("Name", "").lower() for x in items_b):
+            raise RuntimeError("Customer B can see customer A media")
+        print("JELLYFIN_SYNTHETIC_TWO_LIBRARIES_ISOLATED_IN_LISTINGS=PASS")
+        # An item identifier is not a permission grant. Check direct media endpoints.
+        for customer_token, forbidden_item in (
+            (account_a_token, beta_id), (account_b_token, alpha_id)
+        ):
+            for endpoint in (
+                "/Items/" + forbidden_item,
+                "/Items/" + forbidden_item + "/File",
+            ):
+                code, _ = request("GET", endpoint, token=customer_token)
+                if code == 200:
+                    raise RuntimeError("Foreign media ID bypasses library permissions")
+        print("JELLYFIN_SYNTHETIC_CROSS_ACCOUNT_DIRECT_IDS_DENIED=PASS")
+
+        # Revocation test: disabling the second identity must revoke old tokens.
+        code, profile_b = request("GET", "/Users/" + account_b, token=token)
+        if code != 200 or not profile_b:
+            raise RuntimeError("Cannot re-read second user")
+        policy_b = profile_b["Policy"]
+        policy_b["IsDisabled"] = True
+        code, _ = request("POST", "/Users/" + account_b + "/Policy", policy_b, token=token)
+        if code not in (200, 204):
+            raise RuntimeError("Cannot disable second test identity")
+        code, _ = request("GET", "/Users/Me", token=account_b_token)
+        if code == 200:
+            raise RuntimeError("Disabled user token was not revoked")
+        print("JELLYFIN_SYNTHETIC_DISABLED_USER_REVOKED=PASS")
         code, _ = request("POST", "/Users/AuthenticateByName", {
             "Username": "ci-admin", "Pw": "synthetic-admin-password"})
         if code != 200:
