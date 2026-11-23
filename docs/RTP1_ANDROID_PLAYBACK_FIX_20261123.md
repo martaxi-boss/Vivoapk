@@ -2,7 +2,7 @@
 
 Data: 23/11/2026. Código instalado: [a2f00bb0](https://github.com/martaxi-boss/Vivoapk/commit/a2f00bb0eb0bd4ef2d695151238645cc73f110a8), também integrado em main.
 
-**Estado:** defeito de negociação corrigido e instalado; RTP1 real descodificada com imagem não preta e áudio não silencioso. A reprodução na aplicação de um Android físico ainda não foi observada.
+**Estado:** defeito de negociação corrigido e instalado; RTP1 real descodificada com imagem não preta e áudio não silencioso. **Atualização após teste físico às 15:57: a aplicação Jellyfin Android 2.7.3 continua a falhar com «Source error». A correção de negociação abaixo foi validada, mas não resolveu a reprodução no dispositivo. A investigação continua pela ponte GitHub Actions → SSH → VPS.**
 
 ## Causa comprovada
 
