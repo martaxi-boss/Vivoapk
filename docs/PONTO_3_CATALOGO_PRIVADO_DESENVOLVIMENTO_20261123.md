@@ -115,3 +115,23 @@ A [preservação read-only #45092203903](https://github.com/martaxi-boss/VPS/act
 O fluxo integral com `ProvisionPrivateLibraries=true` apenas em teste passou em [CI #45092669249](https://github.com/martaxi-boss/Vivoapk/actions/runs/45092669249). Confirmou contas fictícias, criação automática das bibliotecas privadas por GUID, permissões, login repetido sem duplicação, listagem isolada, acesso por ID estrangeiro negado, revogação de utilizador desativado e administrador intacto. A opção é `false` por omissão e não existe no binário atualmente instalado na VPS.
 
 **Sem ativação em produção:** PINK, VPN, Jellyfin, VivoAPK e as credenciais guardadas no cofre privado permanecem intocados neste desenvolvimento.
+
+## Fase D — sessão persistente e expiração Mega OTT (ramo de desenvolvimento)
+
+**Sem segunda password Jellyfin:** os clientes oficiais Jellyfin conservam o token da sua sessão nativa, enquanto válido; o plugin não guarda a password Mega OTT, nem a devolve no catálogo. O tempo de retenção efetivo em Android, iOS, Samsung e LG ainda tem de ser observado nas aplicações reais.
+
+- Novo `POST /_internal/entitlement/status` no backend: aceita apenas `username` e exige a chave privada `ENTITLEMENT_MONITOR_KEY` de pelo menos 32 caracteres. Sem chave configurada devolve 403. Não devolve passwords, DNS, tokens, IDs de outros utilizadores nem URLs.
+- O estado oficial é reconsultado no detalhe Mega OTT e, quando a API fornece a password em memória, no Xtream autorizado. `ACTIVE`, `EXPIRED` e `DISABLED` distinguem estados explícitos; falta de password, erros temporários ou estado desconhecido são `UNAVAILABLE`, que não desativa automaticamente a conta.
+- A data oficial Mega OTT prevalece sobre o cache local. Quando uma subscrição tinha expirado no cache mas foi renovada, o login volta a consultar **apenas o ID daquela subscrição**, atualiza o mapeamento e mantém a identidade do cliente sem uma password secundária.
+- Novo `VivoapkEntitlementTask` como tarefa agendada **nativa Jellyfin**, com intervalo por omissão de 5 minutos e `MonitorEntitlements=false` na configuração do plugin. Só percorre contas cujo `AuthenticationProviderId` coincide com o plugin e nunca altera administradores ou identidades de outros providers.
+- Para uma expiração/desativação explicitamente verificada, coloca `PermissionKind.IsDisabled=true`; a CI no servidor real descartável demonstrou previamente que esta permissão revoga um token ativo. O desbloqueio após renovação tem uma marca local por GUID, criada exclusivamente quando este plugin bloqueia o cliente, evitando reativar contas simplesmente desativadas manualmente antes do monitor.
+- A chave não pode viver em código, documentação, configuração Jellyfin ou GitHub público: o plugin espera lê-la em `/srv/projects/Vivoapk/run/entitlement-monitor.key`, com permissões privadas, e o backend espera `ENTITLEMENT_MONITOR_KEY` no seu ambiente privado. Esta distribuição ainda **não** foi feita na VPS.
+- Não ligar `MonitorEntitlements` em produção até haver CI PASS para bloqueio+renovação, prova da API Mega real, verificação do Nginx, rollback e operação com `pink-admin` salvaguardada.
+
+**Limitações ainda abertas:** bloqueio é periódico, não instantâneo; `UNAVAILABLE` não comprova uma assinatura válida; a regra de reativação após uma intervenção manual do administrador durante uma suspensão exige auditoria adicional; login guardado em cada aplicação oficial ainda não foi medido; catálogo nativo e Direct Play continuam pendentes.
+
+### Provas de desenvolvimento da fase D
+
+- Backend de estado por subscrição, segredo obrigatório, ausência de fugas, renovação, expiração e desativação: [CI #45094466894](https://github.com/martaxi-boss/Vivoapk/actions/runs/45094466894) **PASS**.
+- Revogação automática nativa em Jellyfin 12.4 descartável com cliente B expirado, cliente A e administrador intactos: [CI #45094234121](https://github.com/martaxi-boss/Vivoapk/actions/runs/45094234121) **PASS**.
+- Recuperação automática de cliente renovado com marca privativa por GUID: **ainda aguarda confirmação da CI específica**; não confundir compilação com teste real.
