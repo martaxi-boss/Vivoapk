@@ -95,7 +95,11 @@ class PinnedHTTPTransport(httpx.BaseTransport):
         target: ResolvedOutboundTarget,
         *,
         network_backend: httpcore.NetworkBackend | None = None,
+        max_response_bytes: int | None = None,
     ) -> None:
+        if max_response_bytes is not None and not 1 <= max_response_bytes <= 16 * 1024 * 1024:
+            raise ValueError("invalid upstream response cap")
+        self._max_response_bytes = max_response_bytes
         ssl_context = httpx.create_ssl_context(verify=True, trust_env=False)
         if ssl_context.verify_mode == ssl.CERT_NONE or not ssl_context.check_hostname:
             raise RuntimeError("TLS verification must remain enabled")
@@ -129,7 +133,15 @@ class PinnedHTTPTransport(httpx.BaseTransport):
         try:
             core_response = self._pool.handle_request(core_request)
             try:
-                content = core_response.read()
+                # The catalogue endpoint can return very large provider payloads.
+                # Bound streaming reads BEFORE buffering them into Python memory.
+                chunks = bytearray()
+                for chunk in core_response.iter_stream():
+                    if (self._max_response_bytes is not None
+                            and len(chunks) + len(chunk) > self._max_response_bytes):
+                        raise httpx.RequestError("provider response exceeds the configured limit", request=request)
+                    chunks.extend(chunk)
+                content = bytes(chunks)
             finally:
                 core_response.close()
         except httpcore.TimeoutException as exc:
