@@ -16,10 +16,10 @@ from app.schemas import (
     CatalogListResponse,
     EpgRequest,
     EpgResponse,
-    SeriesDetailRequest,
-    SeriesDetailResponse,
     ResolveRequest,
     ResolveResponse,
+    SeriesDetailRequest,
+    SeriesDetailResponse,
 )
 from app.services.catalog import CatalogDenied, CatalogService
 from app.services.session import SessionResolver
