@@ -17,28 +17,48 @@ MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
 class BackendHandler(socketserver.StreamRequestHandler):
     def handle(self):
         line = self.rfile.readline(1500)
-        if b"POST /v1/session/resolve " not in line:
+        parts = line.split(b" ")
+        if len(parts) < 3 or parts[0] != b"POST":
+            return
+        route = parts[1]
+        if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status"):
             return
         length = 0
+        headers = {}
         while True:
             header = self.rfile.readline(2000)
             if not header or header == b"\r\n":
                 break
-            if header.lower().startswith(b"content-length:"):
-                length = int(header.partition(b":")[2])
+            key, _, value = header.partition(b":")
+            headers[key.strip().lower()] = value.strip()
+            if key.lower() == b"content-length":
+                length = int(value)
         if not 0 < length < 4096:
             return
         request = json.loads(self.rfile.read(length))
-        valid = (
-            (request.get("username"), request.get("password"))
-            in {
-                ("synthetic-mega-user", "synthetic-mega-password"),
-                ("synthetic-mega-user-b", "synthetic-mega-password-b"),
-            }
-            and request.get("platform") == "android"
-        )
-        body = json.dumps({"code": "SUCCESS" if valid else "INVALID_CREDENTIALS"}).encode()
-        self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        if route == b"/_internal/entitlement/status":
+            if headers.get(b"x-vivoapk-monitor-key") != (
+                b"synthetic-private-monitor-key-1234567890"
+            ):
+                response_code = b"403 Forbidden"
+                body = b'{"detail":"Forbidden"}'
+            else:
+                response_code = b"200 OK"
+                status = self.server.statuses.get(request.get("username"), "UNAVAILABLE")
+                body = json.dumps({"state": status}).encode()
+        else:
+            valid = (
+                (request.get("username"), request.get("password"))
+                in {
+                    ("synthetic-mega-user", "synthetic-mega-password"),
+                    ("synthetic-mega-user-b", "synthetic-mega-password-b"),
+                }
+                and request.get("platform") == "android"
+            )
+            response_code = b"200 OK"
+            body = json.dumps({"code": "SUCCESS" if valid else "INVALID_CREDENTIALS"}).encode()
+        self.wfile.write(b"HTTP/1.1 " + response_code
+                         + b"\r\nContent-Type: application/json\r\n"
                          + b"Content-Length: " + str(len(body)).encode()
                          + b"\r\nConnection: close\r\n\r\n" + body)
 
@@ -91,7 +111,15 @@ def main():
     MOCK.parent.mkdir(parents=True, exist_ok=True)
     if MOCK.exists():
         MOCK.unlink()
+    # Private, synthetic runner-only key; no live Mega or VPS credential is used.
+    monitor_key_path = MOCK.parent / "entitlement-monitor.key"
+    monitor_key_path.write_text("synthetic-private-monitor-key-1234567890")
+    monitor_key_path.chmod(0o600)
     mock = BackendServer(str(MOCK), BackendHandler)
+    mock.statuses = {
+        "synthetic-mega-user": "ACTIVE",
+        "synthetic-mega-user-b": "ACTIVE",
+    }
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     env = os.environ.copy()
     env.update({
@@ -152,7 +180,7 @@ def main():
 
         # CI TEST ONLY: enable the otherwise disabled auth plugin in disposable Jellyfin.
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
-                          {"Enabled": True, "ProvisionPrivateLibraries": True}, token=token)
+                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -284,19 +312,36 @@ def main():
                     raise RuntimeError("Foreign media ID bypasses library permissions")
         print("JELLYFIN_SYNTHETIC_CROSS_ACCOUNT_DIRECT_IDS_DENIED=PASS")
 
-        # Revocation test: disabling the second identity must revoke old tokens.
-        code, profile_b = request("GET", "/Users/" + account_b, token=token)
-        if code != 200 or not profile_b:
-            raise RuntimeError("Cannot re-read second user")
-        policy_b = profile_b["Policy"]
-        policy_b["IsDisabled"] = True
-        code, _ = request("POST", "/Users/" + account_b + "/Policy", policy_b, token=token)
+        # Run the plugin's REAL native scheduled task: Mega subscriber B expires
+        # while their official Jellyfin session still holds a valid native token.
+        code, tasks = request("GET", "/ScheduledTasks", token=token)
+        if code != 200 or not isinstance(tasks, list):
+            raise RuntimeError("Cannot inspect Jellyfin scheduled tasks")
+        monitor_tasks = [task for task in tasks
+                         if task.get("Key") == "VivoapkMegaEntitlementMonitor"]
+        if len(monitor_tasks) != 1:
+            raise RuntimeError("VivoAPK native entitlement scheduler not registered")
+        mock.statuses["synthetic-mega-user-b"] = "EXPIRED"
+        code, _ = request("POST",
+                          "/ScheduledTasks/Running/" + monitor_tasks[0]["Id"],
+                          token=token)
         if code not in (200, 204):
-            raise RuntimeError("Cannot disable second test identity")
-        code, _ = request("GET", "/Users/Me", token=account_b_token)
-        if code == 200:
-            raise RuntimeError("Disabled user token was not revoked")
-        print("JELLYFIN_SYNTHETIC_DISABLED_USER_REVOKED=PASS")
+            raise RuntimeError(f"Cannot trigger entitlement task: {code}")
+        revoked = False
+        for _ in range(60):
+            code, profile_b = request("GET", "/Users/" + account_b, token=token)
+            code_b, _ = request("GET", "/Users/Me", token=account_b_token)
+            code_a, _ = request("GET", "/Users/Me", token=account_a_token)
+            if (code == 200 and profile_b and
+                    profile_b["Policy"].get("IsDisabled") is True and
+                    code_b != 200 and code_a == 200):
+                revoked = True
+                break
+            time.sleep(0.5)
+        if not revoked:
+            raise RuntimeError("Automatic Mega expiry failed to revoke B only")
+        print("JELLYFIN_SYNTHETIC_EXPIRED_MEGA_AUTOMATIC_REVOCATION=PASS")
+        print("JELLYFIN_SYNTHETIC_ACTIVE_MEGA_NATIVE_SESSION_PRESERVED=PASS")
         code, _ = request("POST", "/Users/AuthenticateByName", {
             "Username": "ci-admin", "Pw": "synthetic-admin-password"})
         if code != 200:
@@ -318,6 +363,8 @@ def main():
         log.close()
         if MOCK.exists():
             MOCK.unlink()
+        if monitor_key_path.exists():
+            monitor_key_path.unlink()
 
 if __name__ == "__main__":
     main()
