@@ -181,6 +181,14 @@ def main():
         if code != 200 or not isinstance(admin, dict) or not admin.get("AccessToken"):
             raise RuntimeError("Administrator login not working")
         token = admin["AccessToken"]
+        media_policy_fields = (
+            "EnablePlaybackRemuxing", "EnableVideoPlaybackTranscoding",
+            "EnableAudioPlaybackTranscoding", "ForceRemoteSourceTranscoding",
+        )
+        admin_media_policy_before = {
+            key: admin["User"].get("Policy", {}).get(key)
+            for key in media_policy_fields
+        }
         code, plugins = request("GET", "/Plugins", token=token)
         if code != 200 or not isinstance(plugins, list):
             raise RuntimeError(f"Plugin inventory failed: HTTP {code}; response type {type(plugins).__name__}; admin={bool(admin.get('User', {}).get('Policy', {}).get('IsAdministrator'))}")
@@ -222,6 +230,25 @@ def main():
         account_b = customer_b["User"]["Id"]
         if account_a.replace("-", "") == account_b.replace("-", ""):
             raise RuntimeError("Two synthetic customers share Jellyfin identity")
+
+        # Regression for Jellyfin 12.4: the server overwrites plugin
+        # SupportsDirectStream/Transcoding with the per-user media policy.
+        for customer_id in (account_a, account_b):
+            code, media_profile = request(
+                "GET", "/Users/" + customer_id, token=token)
+            if code != 200 or not isinstance(media_profile, dict):
+                raise RuntimeError("Cannot inspect private media-only user policy")
+            policy = media_profile.get("Policy") or {}
+            if any(policy.get(key) is not False for key in media_policy_fields):
+                raise RuntimeError("Mega subscriber still permits VPS media relay")
+        code, preserved_admin = request(
+            "GET", "/Users/" + admin["User"]["Id"], token=token)
+        if code != 200 or any(
+            preserved_admin.get("Policy", {}).get(key) != before
+            for key, before in admin_media_policy_before.items()
+        ):
+            raise RuntimeError("VivoAPK changed administrator playback rights")
+        print("JELLYFIN_MEGA_DIRECT_ONLY_USER_POLICY_AND_ADMIN=PASS")
 
         # A single test customer can see native pilot channels, never the
         # second customer's media. The backend and stream URL are synthetic.
