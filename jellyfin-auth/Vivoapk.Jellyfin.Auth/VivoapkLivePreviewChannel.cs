@@ -27,7 +27,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public string Name => ChannelName;
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "pilot-v1";
+    public string DataVersion => "pilot-hls-v1";
     public string HomePageUrl => string.Empty;
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
 
@@ -56,10 +56,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     !channel.Id.All(char.IsAsciiDigit) ||
                     channel.Title.Length is < 1 or > 250)
                     continue;
-                var source = origin.TrimEnd('/') + "/live/"
+                // Android Jellyfin 2.7.3 forces HTTP direct play to HLS.\n                // The authorized Mega OTT RTP1 .m3u8 was verified as a real\n                // HLS manifest via a direct upstream 302 then HTTP 200.\n                var source = origin.TrimEnd('/') + "/live/"
                     + Uri.EscapeDataString(username) + "/"
                     + Uri.EscapeDataString(password) + "/"
-                    + Uri.EscapeDataString(channel.Id) + ".ts";
+                    + Uri.EscapeDataString(channel.Id) + ".m3u8";
                 streams.Add(new PilotStream(Guid.NewGuid().ToString("N"),
                     channel.Title, source));
             }
@@ -153,10 +153,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         Protocol = MediaProtocol.Http,
         IsRemote = true,
         IsInfiniteStream = true,
-        Container = "ts",
+        Container = "m3u8",
         SupportsDirectPlay = true,
-        SupportsDirectStream = true,
-        SupportsTranscoding = true,
+        SupportsDirectStream = false,
+        SupportsTranscoding = false,
         SupportsProbing = false,
         RequiresOpening = false,
         RequiresClosing = false
