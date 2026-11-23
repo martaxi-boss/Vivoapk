@@ -262,6 +262,17 @@ def main():
         if code == 200:
             raise RuntimeError("Foreign user can request pilot channel playback info")
         print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
+        # A channel browser must not persist a Mega provider password to
+        # Jellyfin database, metadata, logs or configuration.
+        for path in DATAROOT.rglob("*"):
+            if (path.is_symlink() or not path.is_file() or
+                    path.stat().st_size > 16 * 1024 * 1024):
+                continue
+            if (b"synthetic-mega-password" in path.read_bytes() or
+                    b"synthetic-mega-password-b" in path.read_bytes()):
+                raise RuntimeError(
+                    "Pilot leaked synthetic provider secret into Jellyfin persisted files")
+        print("JELLYFIN_PILOT_NO_CREDENTIALS_PERSISTED=PASS")
         print("JELLYFIN_SYNTHETIC_MEGA_NATIVE_CHANNEL_VISIBLE=PASS")
         print("JELLYFIN_SYNTHETIC_MEGA_PILOT_ACCOUNT_ISOLATION=PASS")
 
