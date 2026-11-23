@@ -1,0 +1,168 @@
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using Jellyfin.Database.Implementations.Entities;
+using MediaBrowser.Controller.Channels;
+using MediaBrowser.Controller.Providers;
+using MediaBrowser.Model.Channels;
+using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
+
+namespace Jellyfin.Plugin.VivoapkMegaAuth;
+
+/// <summary>
+/// Explicitly opt-in, ONE subscriber only pilot. Credentials stay transient in
+/// Jellyfin RAM; never written to STRM/M3U files, databases, logs or GitHub.
+/// The upstream URLs may still be visible to the account during playback.
+/// This is NOT a certified multi-tenant channel provider.
+/// </summary>
+public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCallback, IHasCacheKey
+{
+    public const string ChannelName = "VivoAPK — TV de teste";
+    private sealed record PilotStream(string ExternalId, string Title, string Url);
+    private sealed record PilotSnapshot(Guid Owner, DateTime Expires, List<PilotStream> Streams);
+    private static readonly object Gate = new();
+    private static PilotSnapshot? _pilot;
+
+    public string Name => ChannelName;
+    public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
+    public string DataVersion => "pilot-v1";
+    public string HomePageUrl => string.Empty;
+    public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
+
+    internal static bool Stage(Guid owner, IReadOnlyList<MegaPreviewEntry> channels,
+        string? origin, string username, string password)
+    {
+        if (owner == Guid.Empty || channels.Count is < 1 or > 5 ||
+            string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(username) ||
+            string.IsNullOrWhiteSpace(password) ||
+            !Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https") ||
+            !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) ||
+            !string.IsNullOrEmpty(uri.Fragment) || uri.AbsolutePath != "/")
+            return false;
+
+        lock (Gate)
+        {
+            // Never allow a second customer into the same global channel store.
+            if (_pilot is not null && _pilot.Expires > DateTime.UtcNow &&
+                _pilot.Owner != owner)
+                return false;
+            var streams = new List<PilotStream>();
+            foreach (var channel in channels)
+            {
+                if (channel.Id.Length is < 1 or > 64 ||
+                    !channel.Id.All(char.IsAsciiDigit) ||
+                    channel.Title.Length is < 1 or > 250)
+                    continue;
+                var source = origin.TrimEnd('/') + "/live/"
+                    + Uri.EscapeDataString(username) + "/"
+                    + Uri.EscapeDataString(password) + "/"
+                    + Uri.EscapeDataString(channel.Id) + ".ts";
+                streams.Add(new PilotStream(Guid.NewGuid().ToString("N"),
+                    channel.Title, source));
+            }
+            if (streams.Count == 0)
+                return false;
+            _pilot = new PilotSnapshot(owner, DateTime.UtcNow.AddMinutes(30), streams);
+            return true;
+        }
+    }
+
+    private static PilotSnapshot? ForUser(Guid user)
+    {
+        lock (Gate)
+        {
+            return Plugin.Instance?.Configuration.PilotLiveChannels == true &&
+                _pilot is { } p && p.Owner == user && p.Expires > DateTime.UtcNow
+                ? p : null;
+        }
+    }
+
+    public string GetCacheKey(string? userId)
+    {
+        if (!Guid.TryParse(userId, out var id))
+            return "denied";
+        var snapshot = ForUser(id);
+        if (snapshot is null)
+            return "denied";
+        return id.ToString("N") + ":" + snapshot.Expires.Ticks.ToString(CultureInfo.InvariantCulture);
+    }
+
+    public bool IsEnabledFor(string userId)
+        => Guid.TryParse(userId, out var id) && ForUser(id) is not null;
+
+    public InternalChannelFeatures GetChannelFeatures() => new()
+    {
+        MediaTypes = new List<ChannelMediaType> { ChannelMediaType.Video },
+        ContentTypes = new List<ChannelMediaContentType> { ChannelMediaContentType.Clip },
+        SupportsSortOrderToggle = false,
+        DefaultSortFields = new List<ChannelItemSortField> { ChannelItemSortField.Name },
+        AutoRefreshLevels = 1
+    };
+
+    public Task<ChannelItemResult> GetChannelItems(
+        InternalChannelItemQuery query, CancellationToken cancellationToken)
+    {
+        var snapshot = ForUser(query.UserId);
+        if (snapshot is null)
+            return Task.FromResult(new ChannelItemResult
+            {
+                Items = new List<ChannelItemInfo>(), TotalRecordCount = 0
+            });
+        var list = snapshot.Streams.Select(stream => new ChannelItemInfo
+        {
+            Id = stream.ExternalId,
+            Name = stream.Title,
+            Type = ChannelItemType.Media,
+            MediaType = ChannelMediaType.Video,
+            ContentType = ChannelMediaContentType.Clip,
+            IsLiveStream = true,
+            MediaSources = new List<MediaSourceInfo> { Source(stream) }
+        }).ToList();
+        var total = list.Count;
+        if (query.StartIndex is > 0)
+            list = list.Skip(query.StartIndex.Value).ToList();
+        if (query.Limit is > 0)
+            list = list.Take(query.Limit.Value).ToList();
+        return Task.FromResult(new ChannelItemResult { Items = list, TotalRecordCount = total });
+    }
+
+    public Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
+        string id, CancellationToken cancellationToken)
+    {
+        PilotStream? stream;
+        lock (Gate)
+        {
+            stream = Plugin.Instance?.Configuration.PilotLiveChannels == true &&
+                _pilot is { } p && p.Expires > DateTime.UtcNow
+                ? p.Streams.FirstOrDefault(x => string.Equals(
+                    x.ExternalId, id, StringComparison.Ordinal)) : null;
+        }
+        IEnumerable<MediaSourceInfo> sources = stream is null
+            ? Array.Empty<MediaSourceInfo>() : new[] { Source(stream) };
+        return Task.FromResult(sources);
+    }
+
+    private static MediaSourceInfo Source(PilotStream stream) => new()
+    {
+        Name = stream.Title,
+        Path = stream.Url,
+        Protocol = MediaProtocol.Http,
+        IsRemote = true,
+        IsInfiniteStream = true,
+        Container = "ts",
+        SupportsDirectPlay = true,
+        SupportsDirectStream = true,
+        SupportsTranscoding = true,
+        SupportsProbing = false,
+        RequiresOpening = false,
+        RequiresClosing = false
+    };
+
+    public Task<DynamicImageResponse> GetChannelImage(
+        ImageType type, CancellationToken cancellationToken)
+        => Task.FromResult(new DynamicImageResponse { HasImage = false });
+    public IEnumerable<ImageType> GetSupportedChannelImages() => Array.Empty<ImageType>();
+}
