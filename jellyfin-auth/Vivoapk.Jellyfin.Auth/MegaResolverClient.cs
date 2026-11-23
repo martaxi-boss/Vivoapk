@@ -10,6 +10,9 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 /// </summary>
 public enum EntitlementState { Active, Expired, Disabled, Unavailable }
 
+internal sealed record MegaResolvedSession(string? SessionToken, string? Origin);
+internal sealed record MegaPreviewEntry(string Id, string Title);
+
 public sealed class MegaResolverClient
 {
     private const int MaxResponseBytes = 8192;
@@ -128,17 +131,18 @@ public sealed class MegaResolverClient
         }
     }
 
-    public async Task<bool> ValidateAsync(string username, string password, CancellationToken cancellationToken = default)
+    public async Task<bool> ValidateAsync(
+        string username, string password, CancellationToken cancellationToken = default)
+        => await ResolveAsync(username, password, cancellationToken).ConfigureAwait(false) is not null;
+
+    internal async Task<MegaResolvedSession?> ResolveAsync(
+        string username, string password, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(username) || username.Length > 128 ||
             string.IsNullOrWhiteSpace(password) || password.Length > 2048)
-        {
-            return false;
-        }
-
+            return null;
         try
         {
-            // The platform is internal. The customer never enters a Mega OTT domain.
             var body = JsonSerializer.Serialize(new
             {
                 username,
@@ -150,11 +154,13 @@ public sealed class MegaResolverClient
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
             using var response = await _client.SendAsync(
-                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken
+            ).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return false;
+                return null;
 
-            await using var input = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await using var input = await response.Content.ReadAsStreamAsync(
+                cancellationToken).ConfigureAwait(false);
             using var output = new MemoryStream();
             var buffer = new byte[1024];
             while (true)
@@ -163,32 +169,89 @@ public sealed class MegaResolverClient
                 if (count == 0)
                     break;
                 if (output.Length + count > MaxResponseBytes)
-                    return false;
+                    return null;
                 output.Write(buffer, 0, count);
             }
-
             output.Position = 0;
             using var json = JsonDocument.Parse(output);
-            return json.RootElement.ValueKind == JsonValueKind.Object
-                && json.RootElement.TryGetProperty("code", out var code)
-                && code.ValueKind == JsonValueKind.String
-                && code.GetString() == "SUCCESS";
+            var root = json.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("code", out var code)
+                || code.GetString() != "SUCCESS")
+                return null;
+            var token = root.TryGetProperty("session_token", out var jwt)
+                && jwt.ValueKind == JsonValueKind.String ? jwt.GetString() : null;
+            var origin = root.TryGetProperty("xtream_base_url", out var dns)
+                && dns.ValueKind == JsonValueKind.String ? dns.GetString() : null;
+            return new MegaResolvedSession(token, origin);
         }
-        catch (HttpRequestException)
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException
+                                 or JsonException or IOException)
         {
-            return false;
+            return null;
         }
-        catch (TaskCanceledException)
+    }
+
+    internal async Task<IReadOnlyList<MegaPreviewEntry>> PreviewAsync(
+        string? token, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(token) || token.Length > 4096)
+            return Array.Empty<MegaPreviewEntry>();
+        try
         {
-            return false;
+            using var request = new HttpRequestMessage(HttpMethod.Post, "v1/catalog/preview")
+            {
+                Content = new StringContent(
+                    "{\"kind\":\"live\",\"platform\":\"android\"}",
+                    Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            using var response = await _client.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken
+            ).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return Array.Empty<MegaPreviewEntry>();
+
+            await using var input = await response.Content.ReadAsStreamAsync(
+                cancellationToken).ConfigureAwait(false);
+            using var output = new MemoryStream();
+            var buf = new byte[1024];
+            while (true)
+            {
+                var count = await input.ReadAsync(buf, cancellationToken).ConfigureAwait(false);
+                if (count == 0)
+                    break;
+                if (output.Length + count > MaxResponseBytes)
+                    return Array.Empty<MegaPreviewEntry>();
+                output.Write(buf, 0, count);
+            }
+            output.Position = 0;
+            using var doc = JsonDocument.Parse(output);
+            if (!doc.RootElement.TryGetProperty("items", out var items)
+                || items.ValueKind != JsonValueKind.Array || items.GetArrayLength() > 5)
+                return Array.Empty<MegaPreviewEntry>();
+            var result = new List<MegaPreviewEntry>();
+            foreach (var item in items.EnumerateArray())
+            {
+                if (!item.TryGetProperty("id", out var itemId)
+                    || !item.TryGetProperty("title", out var title)
+                    || itemId.ValueKind != JsonValueKind.String
+                    || title.ValueKind != JsonValueKind.String)
+                    continue;
+                var id = itemId.GetString() ?? string.Empty;
+                var name = title.GetString() ?? string.Empty;
+                if (id.Length is < 1 or > 64 || !id.All(char.IsAsciiDigit)
+                    || string.IsNullOrWhiteSpace(name) || name.Length > 250)
+                    continue;
+                result.Add(new MegaPreviewEntry(id, name));
+            }
+            return result;
         }
-        catch (JsonException)
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException
+                                 or JsonException or IOException)
         {
-            return false;
-        }
-        catch (IOException)
-        {
-            return false;
+            return Array.Empty<MegaPreviewEntry>();
         }
     }
 }
