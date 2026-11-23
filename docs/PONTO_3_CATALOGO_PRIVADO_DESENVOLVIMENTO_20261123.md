@@ -1,6 +1,6 @@
 # Ponto 3 — catálogo privado VivoAPK / Jellyfin — desenvolvimento (23/11/2026)
 
-**Estado: backend de metadados em ramo de desenvolvimento; NÃO instalado em produção e NÃO equivale à playlist automática do Jellyfin.**
+**Estado: backend de metadados + provisionador de biblioteca nativa por utilizador em ramo de desenvolvimento; NÃO instalado em produção e NÃO equivale à playlist automática do Jellyfin.**
 
 ## Contrato do cliente
 
@@ -79,3 +79,24 @@ chave do PINK deixou de funcionar. Nenhuma credencial foi publicada.
 
 O PINK e o Jellyfin de produção ficam inalterados enquanto este trabalho
 está no ramo de desenvolvimento.
+
+## Fase B — isolamento nativo Jellyfin (desenvolvimento)
+
+- A auditoria ao código Jellyfin `ChannelManager` confirmou que os itens `IChannel` passam por indexação comum. Não assumir que `GetCacheKey(userId)` protege um item indexado.
+- A prova com o servidor Jellyfin 12.4 real e duas bibliotecas de vídeo **fictícias** passou em [CI #45092098008](https://github.com/martaxi-boss/Vivoapk/actions/runs/45092098008). Cada utilizador só viu a sua biblioteca; um ID de outro utilizador não abriu o ficheiro; a desativação revogou o token Jellyfin. Foram usadas duas amostras MP4 locais no runner; nenhum media foi colocado na VPS.
+- O plugin de autenticação ganhou o opt-in `ProvisionPrivateLibraries=false` por defeito. Com o opt-in ativo num Jellyfin descartável, a autenticação Mega bem-sucedida pode criar uma biblioteca **vazia** própria com pasta por GUID em `IApplicationPaths.DataPath/vivoapk-private-libraries/<user-guid>`, e configurar `EnabledFolders` apenas para a biblioteca dessa conta, desabilitando partilha pública, download e canais globais. O login original com nome e password não muda.
+- O provisionador recusa bibliotecas com mesmo nome mas caminho inesperado, e diretórios-alvo simbólicos. Usa uma serialização por GUID para impedir criação duplicada em logins simultâneos.
+- **A prova de provisionamento automático deve ser considerada pendente até a CI específica ficar verde.** Um teste falhou inicialmente porque assumiu um caminho de dados Jellyfin distinto do realmente usado; a validação agora usa `IApplicationPaths.DataPath` observado e exige que a localização esteja debaixo da árvore de dados, com sufixo GUID correto. Não declarar esta fase aprovada apenas porque o plugin compila.
+- Enquanto o backend não disponibilizar URLs de media autorizadas num contrato privado seguro, estas bibliotecas ficam vazias: não guardar credenciais Mega em ficheiros `.strm` públicos ou inserir uma playlist global temporária.
+
+### Auditoria real Ferrari (23/11/2026)
+
+A [preservação read-only #45092203903](https://github.com/martaxi-boss/VPS/actions/runs/45092203903) terminou com `status=passed` **dentro do artefacto `rea-mcp-result.json`**, além do `FERRARI_SKILL_JOB_STATUS=completed`. Confirmou seis serviços ativos (PINK backend/VPN, VivoAPK, Jellyfin, Nginx e PostgreSQL), sockets internos Jellyfin e VivoAPK HTTP 200 e plugin Auth presente. O backend de produção permanece na revisão `540846e48ca3655acb3b0a8601dea700a082979d`, não no ramo do ponto 3. O pedido não acedeu a credenciais e não alterou serviços.
+
+### Portas restantes
+
+1. Demonstrar os detalhes da API Mega OTT reais e autorizados, sem publicar credenciais.
+2. Definir e testar um vínculo duradouro revogável entre a identidade Jellyfin e a subscrição Mega, **sem guardar passwords em texto claro**.
+3. Preencher a biblioteca correta apenas com metadados autorizados (canais, filmes, temporadas, episódios e EPG), sem indexação partilhada.
+4. Provar que a reprodução é direta no Android/iOS/Samsung/LG, sem pass-through de vídeo pela VPS; limitar e medir consumo.
+5. Só depois ativar a funcionalidade na VPS com backup, rollback e teste da password administrativa original.
