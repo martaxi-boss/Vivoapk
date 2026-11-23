@@ -59,7 +59,8 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
 
         // Jellyfin usernames compare case-insensitively. Keep the stored canonical name.
         var canonicalUsername = user?.Username ?? username;
-        if (!await _resolver.ValidateAsync(canonicalUsername, password).ConfigureAwait(false))
+        var verified = await _resolver.ResolveAsync(canonicalUsername, password).ConfigureAwait(false);
+        if (verified is null)
             throw new AuthenticationException("Invalid username or password.");
 
         if (user == null)
@@ -84,6 +85,24 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             await VivoapkPrivateLibraryProvisioner.EnsureAsync(
                 user, users, _appHost.Resolve<ILibraryManager>(), _appPaths
             ).ConfigureAwait(false);
+        }
+
+        // Experimental, one-user-at-a-time preview. Never stores a credential
+        // in Jellyfin files or database and never enables a shared Live TV tuner.
+        if (Plugin.Instance?.Configuration.PilotLiveChannels == true)
+        {
+            var preview = await _resolver.PreviewAsync(verified.SessionToken).ConfigureAwait(false);
+            if (VivoapkLivePreviewChannel.Stage(
+                user.Id, preview, verified.Origin, canonicalUsername, password))
+            {
+                var library = _appHost.Resolve<ILibraryManager>();
+                var channelId = library.GetNewItemId(
+                    "Channel " + VivoapkLivePreviewChannel.ChannelName,
+                    typeof(MediaBrowser.Controller.Entities.Channel));
+                user.SetPermission(PermissionKind.EnableAllChannels, false);
+                user.SetPreference(PreferenceKind.EnabledChannels, new[] { channelId });
+                await users.UpdateUserAsync(user).ConfigureAwait(false);
+            }
         }
 
         return new ProviderAuthenticationResult { Username = canonicalUsername };
