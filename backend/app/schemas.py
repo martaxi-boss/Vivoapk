@@ -39,3 +39,34 @@ class ResolveResponse(BaseModel):
     session_expires_at: datetime | None = None
     xtream_base_url: str | None = None
     account_expires_at: datetime | None = None
+
+
+class CatalogKind(StrEnum):
+    LIVE = "live"
+    VOD = "vod"
+    SERIES = "series"
+
+
+class CatalogListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: CatalogKind
+    platform: ClientPlatform = ClientPlatform.ANDROID
+
+
+class CatalogCategory(BaseModel):
+    id: str
+    name: str
+
+
+class CatalogItem(BaseModel):
+    id: str
+    title: str
+    category_id: str | None = None
+    container_extension: str | None = None
+
+
+class CatalogListResponse(BaseModel):
+    kind: CatalogKind
+    categories: list[CatalogCategory]
+    items: list[CatalogItem]
