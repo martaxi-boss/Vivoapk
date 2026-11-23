@@ -414,6 +414,86 @@ def main():
         print("JELLYFIN_SYNTHETIC_FULL_LIVE_6_CHANNELS_PER_ACCOUNT=PASS")
         print("JELLYFIN_SYNTHETIC_TWO_ACTIVE_CHANNEL_ACCOUNTS_ISOLATED=PASS")
         print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
+        # Prove actual PROCESS restart reuses the same ChannelId slots without
+        # reassigning existing indexed items to another subscriber. Test-only.
+        prior_channel_a, prior_channel_b = channel_id, pilot_b[0]["Id"]
+        previous_item_a, previous_item_b = pilot_item_id, item_id_b
+        jellyfin.terminate()
+        try:
+            jellyfin.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            jellyfin.kill()
+            jellyfin.wait(timeout=6)
+        jellyfin = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+        for _ in range(100):
+            try:
+                status, info = request("GET", "/System/Info/Public")
+                if status == 200 and (info or {}).get("Version", "").startswith("12.4."):
+                    break
+            except (OSError, http.client.HTTPException):
+                pass
+            time.sleep(0.3)
+        else:
+            raise RuntimeError("Jellyfin failed to restart after persisting slot owner bindings")
+        status, renewed_admin = request("POST", "/Users/AuthenticateByName",
+                                       {"Username": "ci-admin",
+                                        "Pw": "synthetic-admin-password"})
+        if status != 200 or not renewed_admin or not renewed_admin.get("AccessToken"):
+            raise RuntimeError("Admin failed after server process restart")
+        token = renewed_admin["AccessToken"]
+        code, customer = request("POST", "/Users/AuthenticateByName",
+                                 {"Username": "synthetic-mega-user",
+                                  "Pw": "synthetic-mega-password"})
+        code_b, customer_b = request("POST", "/Users/AuthenticateByName",
+                                     {"Username": "synthetic-mega-user-b",
+                                      "Pw": "synthetic-mega-password-b"},
+                                     client_name="Jellyfin for Tizen")
+        if (code != 200 or code_b != 200 or not customer or not customer_b or
+                customer["User"]["Id"] != account_a or
+                customer_b["User"]["Id"] != account_b):
+            raise RuntimeError("Client identities not recovered after Jellyfin restart")
+        code, restarted_channels_a = request(
+            "GET", "/Channels?UserId=" + account_a,
+            token=customer["AccessToken"])
+        code_b, restarted_channels_b = request(
+            "GET", "/Channels?UserId=" + account_b,
+            token=customer_b["AccessToken"])
+        id_list_a = [x.get("Id") for x in (restarted_channels_a or {}).get("Items", [])
+                     if x.get("Name", "").startswith("VivoAPK — TV de teste ")]
+        id_list_b = [x.get("Id") for x in (restarted_channels_b or {}).get("Items", [])
+                     if x.get("Name", "").startswith("VivoAPK — TV de teste ")]
+        if (code != 200 or code_b != 200 or
+                id_list_a != [prior_channel_a] or id_list_b != [prior_channel_b]):
+            raise RuntimeError("SUBSCRIBER_CHANNEL_RESERVATION_CHANGED_AFTER_RESTART")
+        for foreign, credential, old_item in (
+            (account_b, customer_b["AccessToken"], previous_item_a),
+            (account_a, customer["AccessToken"], previous_item_b),
+        ):
+            status, _ = request("GET", "/Users/" + foreign + "/Items/" + old_item,
+                                token=credential)
+            if status == 200:
+                raise RuntimeError("STALE_CHANNEL_ITEM_EXPOSED_AFTER_RESTART")
+            status, response = request(
+                "POST", "/Items/" + old_item + "/PlaybackInfo?UserId=" + foreign,
+                {}, token=credential)
+            if status == 200 and (response or {}).get("MediaSources"):
+                raise RuntimeError("STALE_CHANNEL_PLAYBACK_EXPOSED_AFTER_RESTART")
+        code, recent_items_a = request(
+            "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a,
+            token=customer["AccessToken"])
+        if code != 200 or not (recent_items_a or {}).get("Items"):
+            raise RuntimeError("Subscriber A did not regain channel catalog after restart")
+        pilot_item_id = recent_items_a["Items"][0]["Id"]
+        code, recent_items_b = request(
+            "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b,
+            token=customer_b["AccessToken"])
+        if code != 200 or not (recent_items_b or {}).get("Items"):
+            raise RuntimeError("Subscriber B did not regain channel catalog after restart")
+        item_id_b = recent_items_b["Items"][0]["Id"]
+        if pilot_item_id == item_id_b:
+            raise RuntimeError("Channels merged media IDs after process restart")
+        print("JELLYFIN_SYNTHETIC_RESTART_CHANNEL_OWNER_STABLE=PASS")
+        print("JELLYFIN_SYNTHETIC_RESTART_STALE_ITEMS_DENIED=PASS")
         # A channel browser must not persist a Mega provider password to
         # Jellyfin database, metadata, logs or configuration.
         for path in DATAROOT.rglob("*"):
