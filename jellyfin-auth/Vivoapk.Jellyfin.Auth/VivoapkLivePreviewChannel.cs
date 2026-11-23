@@ -118,8 +118,9 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             Type = ChannelItemType.Media,
             MediaType = ChannelMediaType.Video,
             ContentType = ChannelMediaContentType.Clip,
-            IsLiveStream = true,
-            MediaSources = new List<MediaSourceInfo> { Source(stream) }
+            IsLiveStream = true
+            // Never attach credential-bearing MediaSources to indexed items.
+            // IRequiresMediaInfoCallback supplies the source only at playback.
         }).ToList();
         var total = list.Count;
         if (query.StartIndex is > 0)
