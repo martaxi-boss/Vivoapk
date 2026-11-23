@@ -12,4 +12,7 @@ public sealed class PluginConfiguration : BasePluginConfiguration
 
     // Entitlement scanning is separate opt-in: never affect production accounts by default.
     public bool MonitorEntitlements { get; set; } = false;
+
+    // Experimental in-memory TV preview. Always off on production installs.
+    public bool PilotLiveChannels { get; set; } = false;
 }
