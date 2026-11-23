@@ -133,7 +133,7 @@ def main():
         if code != 200 or not isinstance(plugins, list):
             raise RuntimeError(f"Plugin inventory failed: HTTP {code}; response type {type(plugins).__name__}; admin={bool(admin.get('User', {}).get('Policy', {}).get('IsAdministrator'))}")
         if not any(str(item.get("Id", item.get("id", ""))).lower() == PLUGIN_ID for item in plugins):
-            visible = [{"name": item.get("Name", item.get("name")), "status": item.get("Status", item.get("status")), "id_present": bool(item.get("Id", item.get("id")))} for item in plugins[:10]]
+            visible = [{"name": item.get("Name", item.get("name")), "status": item.get("Status", item.get("status")), "id": str(item.get("Id", item.get("id", "")))} for item in plugins[:10]]
             raise RuntimeError(f"VivoAPK plugin not loaded; visible plugins: {visible}")
         print("JELLYFIN_12_4_PLUGIN_LOADED=PASS")
         print("JELLYFIN_LOCAL_ADMIN_PRESERVED=PASS")
