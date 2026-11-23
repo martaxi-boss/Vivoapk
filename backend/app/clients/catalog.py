@@ -220,6 +220,73 @@ class XtreamCatalogClient:
         return _parse_categories(categories), _parse_items(items, kind, id_field)
 
 
+
+    def _read_one_action(
+        self,
+        *,
+        dns_link: str,
+        username: str,
+        password: str,
+        action: str,
+        extra: dict[str, str] | None = None,
+    ) -> Any:
+        """Read exactly one provider action over a public-IP-pinned connection."""
+        if not username or not password:
+            raise CatalogUnavailable("Incomplete catalogue authorization")
+        try:
+            target = resolve_dns_link_target(dns_link, resolver=self._resolver)
+        except (UnsafeOutboundURL, ValueError, RuntimeError):
+            raise CatalogUnavailable("Provider destination denied") from None
+        transport = (
+            self._transport_factory(target)
+            if self._transport_factory is not None
+            else PinnedHTTPTransport(target, max_response_bytes=_MAX_JSON_BYTES)
+        )
+        with httpx.Client(
+            transport=transport,
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "Connection": "close",
+                "User-Agent": "Vivoapk/1.0",
+            },
+            timeout=httpx.Timeout(12),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            return self._read(
+                client, target.origin, {"username": username, "password": password},
+                action, extra=extra,
+            )
+
+    def list_categories(
+        self, *, dns_link: str, username: str, password: str, kind: CatalogKind
+    ) -> list[dict[str, str]]:
+        """Fetch the light category index, not a giant all-items response."""
+        if not isinstance(kind, CatalogKind):
+            raise CatalogUnavailable("Invalid catalogue kind")
+        action = _ACTIONS[kind][0]
+        return _parse_categories(self._read_one_action(
+            dns_link=dns_link, username=username, password=password, action=action,
+        ))
+
+    def list_category_items(
+        self, *, dns_link: str, username: str, password: str,
+        kind: CatalogKind, category_id: str
+    ) -> list[dict[str, str | None]]:
+        """Get only this category's items; strip any rows outside the category."""
+        if not isinstance(kind, CatalogKind) or not isinstance(category_id, str) \
+                or not _ID.fullmatch(category_id):
+            raise CatalogUnavailable("Invalid category request")
+        _, action, id_field = _ACTIONS[kind]
+        raw = self._read_one_action(
+            dns_link=dns_link, username=username, password=password,
+            action=action, extra={"category_id": category_id},
+        )
+        items = _parse_items(raw, kind, id_field)
+        return [entry for entry in items
+                if entry["category_id"] in (category_id, None)]
+
     def preview_live(
         self, *, dns_link: str, username: str, password: str
     ) -> tuple[list[dict[str, str]], list[dict[str, str | None]]]:

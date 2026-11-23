@@ -15,6 +15,7 @@ from app.db import build_session_factory, get_db
 from app.logging_config import configure_logging
 from app.schemas import (
     CatalogListRequest,
+    CatalogCategoryItemsRequest,
     CatalogListResponse,
     EntitlementCheckRequest,
     EntitlementCheckResponse,
@@ -131,6 +132,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers={"Cache-Control": "no-store"},
             ) from None
 
+
+
+    @app.post("/v1/catalog/categories", response_model=CatalogListResponse)
+    def list_categories(
+        payload: CatalogListRequest, response: Response, request: Request,
+        authorization: str | None = Header(default=None),
+        session: Session = Depends(get_db),
+    ) -> CatalogListResponse:
+        response.headers["Cache-Control"] = "no-store"
+        if (authorization is None or not authorization.startswith("Bearer ")
+                or len(authorization) > 4120):
+            raise HTTPException(
+                status_code=401, detail="Unauthorized",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            return CatalogService(
+                session, runtime_settings,
+                mega_client_factory=request.app.state.mega_client_factory,
+                xtream_client_factory=request.app.state.xtream_client_factory,
+                catalog_client_factory=request.app.state.catalog_client_factory,
+            ).categories(
+                token=authorization[7:], kind=payload.kind, platform=payload.platform,
+            )
+        except CatalogDenied:
+            raise HTTPException(status_code=401, detail="Unauthorized",
+                                headers={"Cache-Control": "no-store"}) from None
+        except CatalogUnavailable:
+            raise HTTPException(status_code=503, detail="Catalogue temporarily unavailable",
+                                headers={"Cache-Control": "no-store"}) from None
+
+    @app.post("/v1/catalog/category-items", response_model=CatalogListResponse)
+    def list_category_items(
+        payload: CatalogCategoryItemsRequest, response: Response, request: Request,
+        authorization: str | None = Header(default=None),
+        session: Session = Depends(get_db),
+    ) -> CatalogListResponse:
+        response.headers["Cache-Control"] = "no-store"
+        if (authorization is None or not authorization.startswith("Bearer ")
+                or len(authorization) > 4120):
+            raise HTTPException(
+                status_code=401, detail="Unauthorized",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            return CatalogService(
+                session, runtime_settings,
+                mega_client_factory=request.app.state.mega_client_factory,
+                xtream_client_factory=request.app.state.xtream_client_factory,
+                catalog_client_factory=request.app.state.catalog_client_factory,
+            ).category_items(
+                token=authorization[7:], kind=payload.kind,
+                category_id=payload.category_id, platform=payload.platform,
+            )
+        except CatalogDenied:
+            raise HTTPException(status_code=401, detail="Unauthorized",
+                                headers={"Cache-Control": "no-store"}) from None
+        except CatalogUnavailable:
+            raise HTTPException(status_code=503, detail="Catalogue temporarily unavailable",
+                                headers={"Cache-Control": "no-store"}) from None
 
     @app.post("/v1/catalog/preview", response_model=CatalogListResponse)
     def preview_live_channels(

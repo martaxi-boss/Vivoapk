@@ -61,6 +61,22 @@ class FakeCatalog:
             [{"id": "101", "title": title, "category_id": "20", "container_extension": None}],
         )
 
+
+    def list_categories(self, **kwargs):
+        self.calls.append(kwargs)
+        category = "10" if kwargs["username"] == "sub-a" else "20"
+        return [{"id": category, "name": "Categoria particular"}]
+
+    def list_category_items(self, **kwargs):
+        self.calls.append(kwargs)
+        suffix = "Azul" if kwargs["username"] == "sub-a" else "Verde"
+        return [{
+            "id": "301" if kwargs["username"] == "sub-a" else "401",
+            "title": "Canal " + suffix,
+            "category_id": kwargs["category_id"],
+            "container_extension": None,
+        }]
+
     def preview_live(self, **kwargs):
         self.calls.append(kwargs)
         suffix = "Azul" if kwargs["username"] == "sub-a" else "Verde"
@@ -671,3 +687,128 @@ def test_preview_never_substitutes_ufc_events_for_portuguese_channels(public_res
     assert items[0]["title"] == "PT| RTP 1 HD"
     assert calls == [("get_live_categories", None), ("get_live_streams", "97")]
 
+
+
+
+def test_category_paging_never_crosses_subscriber_entitlement(settings, session_factory):
+    future = datetime.now(UTC) + timedelta(days=9)
+    with session_factory() as db:
+        for number, username in ((1, "sub-a"), (2, "sub-b")):
+            db.add(SubscriptionMapping(
+                mega_subscription_id=800 + number, username=username,
+                dns_link="http://origin.example.com", dns_link_samsung_lg=None,
+                expiring_at=future, last_synced_at=datetime.now(UTC),
+            ))
+        db.commit()
+        ids = {name: db.query(SubscriptionMapping).filter_by(username=name).one().id
+               for name in ("sub-a", "sub-b")}
+    rows = {
+        801: SimpleNamespace(
+            id=801, username="sub-a", password=SecretStr("secret-a"),
+            expiring_at=future, dns_link="http://origin.example.com",
+            dns_link_for_samsung_lg=None,
+        ),
+        802: SimpleNamespace(
+            id=802, username="sub-b", password=SecretStr("secret-b"),
+            expiring_at=future, dns_link="http://origin.example.com",
+            dns_link_for_samsung_lg=None,
+        ),
+    }
+    mega, xtream, catalog = FakeMega(rows), FakeXtream(), FakeCatalog()
+    app = create_app(settings)
+    app.state.session_factory = session_factory
+    app.state.mega_client_factory = lambda: mega
+    app.state.xtream_client_factory = lambda: xtream
+    app.state.catalog_client_factory = lambda: catalog
+    client = TestClient(app)
+    tokens = {name: issue_session_token(ids[name], settings)[0]
+              for name in ("sub-a", "sub-b")}
+
+    def post(user, route, body):
+        return client.post(
+            route, headers={"Authorization": "Bearer " + tokens[user]}, json=body,
+        )
+
+    for name, category_id, title in (("sub-a", "10", "Canal Azul"),
+                                    ("sub-b", "20", "Canal Verde")):
+        categories = post(name, "/v1/catalog/categories",
+                          {"kind": "live", "platform": "android"})
+        assert categories.status_code == 200
+        assert categories.json()["categories"] == [
+            {"id": category_id, "name": "Categoria particular"}]
+        assert categories.json()["items"] == []
+        items = post(name, "/v1/catalog/category-items",
+                     {"kind": "live", "category_id": category_id, "platform": "android"})
+        assert items.status_code == 200
+        assert items.json()["categories"] == []
+        assert items.json()["items"][0]["title"] == title
+        assert items.headers["Cache-Control"] == "no-store"
+        assert "secret-" not in items.text and "http" not in items.text
+    before = len(catalog.calls)
+    denied = post("sub-a", "/v1/catalog/category-items",
+                  {"kind": "live", "category_id": "20"})
+    assert denied.status_code == 401
+    # A forbidden category is rejected after the owner's category list, no item call.
+    assert len(catalog.calls) == before + 1
+    assert post("sub-a", "/v1/catalog/category-items",
+                {"kind": "live", "category_id": "../bad"}).status_code == 422
+    assert post("sub-a", "/v1/catalog/category-items",
+                {"kind": "live", "category_id": "10", "username": "sub-b"}).status_code == 422
+    assert client.post("/v1/catalog/categories", json={"kind": "live"}).status_code == 401
+    assert client.post("/v1/catalog/category-items", json={
+        "kind": "live", "category_id": "10"}).status_code == 401
+    assert post("sub-a", "/v1/catalog/categories", {
+        "kind": "live", "platform": "invalid"}).status_code == 422
+    rows[801].password = SecretStr("")
+    assert post("sub-a", "/v1/catalog/categories", {"kind": "live"}).status_code == 503
+
+
+def test_pinned_per_category_catalog_filter_and_sanitization(public_resolver):
+    requests = []
+    def handler(req: httpx.Request) -> httpx.Response:
+        action = req.url.params["action"]
+        category = req.url.params.get("category_id")
+        requests.append((action, category))
+        assert req.headers["Connection"] == "close"
+        assert req.headers["Accept-Encoding"] == "identity"
+        if action == "get_live_categories":
+            return httpx.Response(200, json=[
+                {"category_id": "10", "category_name": "Portugal"},
+                {"category_id": "11", "category_name": "Desporto"},
+            ])
+        if action == "get_live_streams":
+            assert category == "10"
+            return httpx.Response(200, json=[
+                {"stream_id": 42, "name": "Canal português", "category_id": "10",
+                 "direct_source": "http://unsafe.example/hidden", "password": "secret"},
+                {"stream_id": 43, "name": "Estrangeiro", "category_id": "11"},
+            ])
+        raise AssertionError("The backend fetched an unbounded global listing")
+
+    adapter = XtreamCatalogClient(
+        resolver=public_resolver,
+        transport_factory=lambda _target: httpx.MockTransport(handler),
+    )
+    kwargs = {"dns_link": "http://stream.example.com",
+              "username": "synthetic", "password": "synthetic-only"}
+    cats = adapter.list_categories(**kwargs, kind=CatalogKind.LIVE)
+    assert cats == [{"id": "10", "name": "Portugal"},
+                    {"id": "11", "name": "Desporto"}]
+    selected = adapter.list_category_items(
+        **kwargs, kind=CatalogKind.LIVE, category_id="10",
+    )
+    assert selected == [{
+        "id": "42", "title": "Canal português",
+        "category_id": "10", "container_extension": None,
+    }]
+    assert requests == [("get_live_categories", None),
+                        ("get_live_streams", "10")]
+    assert "password" not in str(selected) and "http" not in str(selected)
+    try:
+        adapter.list_category_items(
+            **kwargs, kind=CatalogKind.LIVE, category_id="../other",
+        )
+    except CatalogUnavailable:
+        pass
+    else:
+        raise AssertionError("Unsafe category identifier reached the provider")

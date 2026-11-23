@@ -71,6 +71,14 @@ class CatalogListRequest(BaseModel):
     platform: ClientPlatform = ClientPlatform.ANDROID
 
 
+class CatalogCategoryItemsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: CatalogKind
+    category_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    platform: ClientPlatform = ClientPlatform.ANDROID
+
+
 class CatalogCategory(BaseModel):
     id: str
     name: str
