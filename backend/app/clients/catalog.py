@@ -38,6 +38,40 @@ def _preview_is_information(name: str) -> bool:
     return " ".join(re.findall(r"[a-z0-9]+", name.casefold())) in _PREVIEW_INFO_NAMES
 
 
+# The trial must prefer regular Portuguese television, not the first
+# provider category (which can contain PPV/UFC event-only streams).
+def _preview_category_rank(name: str) -> int:
+    text = name.casefold()
+    if re.search(r"\bportugal\b", text):
+        if re.search(r"\bgeral\b", text):
+            return 0
+        if "24/7" not in text:
+            return 1
+        return 2
+    return 3
+
+
+def _preview_is_event_or_separator(name: str) -> bool:
+    text = name.casefold()
+    return (
+        _preview_is_information(name)
+        or any(word in text for word in ("event only", "ppv", "ufc"))
+        or name.lstrip().startswith(("✦", "★", "●", "◆"))
+    )
+
+
+def _preview_channel_rank(name: str) -> int:
+    # Test major public-service/general stations when they appear in the
+    # authorized supplier listing. Never synthesize missing channels.
+    text = name.casefold()
+    for priority, marker in enumerate(
+        (r"\brtp\s*1\b", r"\brtp\s*2\b", r"\bsic\b", r"\btvi\b", r"\brtp\s*3\b")
+    ):
+        if re.search(marker, text):
+            return priority
+    return 5
+
+
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _EXTENSION = re.compile(r"^[A-Za-z0-9]{1,12}$")
 _ACTIONS = {
@@ -218,12 +252,20 @@ class XtreamCatalogClient:
             ))
             if not categories:
                 return [], []
-            # Information and subscription-status entries are not playable TV.
-            # Probe a strictly bounded number of categories and select the
-            # first one containing real candidate channels. Never fetch media.
-            for category in categories[:_PREVIEW_MAX_CATEGORY_QUERIES]:
+            # Server order begins with event-only categories in this account.
+            # Prefer EU | PORTUGAL GERAL even when it appears far beyond the
+            # first six, but never query more than six categories in total.
+            ranked_categories = sorted(
+                categories,
+                key=lambda category: _preview_category_rank(category["name"]),
+            )
+            queried = 0
+            for category in ranked_categories:
                 if _preview_is_information(category["name"]):
                     continue
+                if queried >= _PREVIEW_MAX_CATEGORY_QUERIES:
+                    break
+                queried += 1
                 items = _parse_items(self._read(
                     client, target.origin, credentials, "get_live_streams",
                     extra={"category_id": category["id"]},
@@ -231,10 +273,13 @@ class XtreamCatalogClient:
                 playable_candidates = [
                     item for item in items
                     if item["category_id"] in (category["id"], None)
-                    and not _preview_is_information(item["title"])
-                ][:5]
+                    and not _preview_is_event_or_separator(item["title"])
+                ]
                 if playable_candidates:
-                    return [category], playable_candidates
+                    playable_candidates.sort(
+                        key=lambda item: _preview_channel_rank(item["title"])
+                    )
+                    return [category], playable_candidates[:5]
         return [], []
 
     def _detail_request(
