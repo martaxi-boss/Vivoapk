@@ -24,17 +24,54 @@ O DNS público DuckDNS pertence ao servidor Jellyfin e não se confunde com os U
 - Plugin `Enabled=false` por defeito; **não instalado na produção Jellyfin**. A compilação dos assemblies Jellyfin 12.4 e os testes sintéticos passaram em [CI #45085448963](https://github.com/martaxi-boss/Vivoapk/actions/runs/45085448963).
 - **Teste real em instância Jellyfin 12.4 descartável PASS**: [CI #45086626328](https://github.com/martaxi-boss/Vivoapk/actions/runs/45086626328). Confirmou: plugin listado e ativo no Jellyfin de teste, login do administrador, autenticação do cliente fictício através de Mega fictícia (Unix socket), criação automática da identidade, recusa de password errada e preservação do administrador após a autenticação. Um aviso `GUID_MATCH=FAIL` no relatório foi apenas diferença de representação do GUID com/sem hífen, verificada pelo identificador observado, normalização corrigida na revisão seguinte. Não envolveu contas verdadeiras nem instalações na VPS.
 
-## Bloqueio de autenticação no fornecedor real
+## Credencial API do PINK recuperada para o VivoAPK (23/11/2026)
 
-Auditorias Ferrari sem expor valores de chaves, URLs individuais ou usernames:
+**Estado atualizado: problema de chave incorreta no VivoAPK RESOLVIDO.**
+Não pedir nova chave ao revendedor.
 
-- [#45085572845](https://github.com/martaxi-boss/VPS/actions/runs/45085572845): pedido de metadados `GET /v1/subscriptions/{id}` com token copiado para VivoAPK devolveu 403 numa primeira consulta.
-- [#45085706904](https://github.com/martaxi-boss/VPS/actions/runs/45085706904): token do VivoAPK devolveu 401 nos pedidos de listagem e consulta individual de subscrição; parâmetros seguros e resposta resumida.
-- [#45085851833](https://github.com/martaxi-boss/VPS/actions/runs/45085851833): token antigo da instalação PINK e token do VivoAPK **diferem**. Na rota de perfil de teste, token do PINK devolveu 403 e o do VivoAPK 401.
+A auditoria real [Ferrari #45087046545](https://github.com/martaxi-boss/VPS/actions/runs/45087046545) confirmou que a chave de
+`/srv/projects/pink-iptv/private/systemd-env/secrets.env` corresponde
+exatamente à variável Mega OTT já carregada em memória pelo serviço PINK,
+mas era **diferente** da chave em
+`/root/project-secrets/VIVOAPK/backend-auth.env` e
+`backend-runtime.env`. As origens base API dos dois serviços coincidem.
 
-**Interpretação:** o código de descoberta de novas subscrições está presente, mas **não há autorização real comprovada** para a conta/credencial de API atualmente configurada. Não atribuir o erro a um único motivo (permissão, token, proteção de acesso ou endpoint) sem diagnóstico oficial. Precisa de token API legítimo e ativo com permissões de consulta, guardado apenas no cofre da VPS, nunca no repositório público ou na conversa. Não contornar restrições.
+A consulta oficial usando `httpx` e `trust_env=False`, tal como no
+código PINK, provou [Ferrari #45087196977](https://github.com/martaxi-boss/VPS/actions/runs/45087196977):
+- `GET /v1/subscriptions?page=1&per_page=1` com a chave original: **HTTP 200**, resposta JSON, acesso de listagem autorizado.
+- `GET /v1/subscriptions/{id}` usando **um ID antigo** da base migrada: HTTP 404. O registo escolhido não foi encontrado pela API; isto não invalida a chave nem prova que uma subscrição nova falhe.
 
-Os quatro mapeamentos antigos continuam guardados e não foram alterados. Isso não prova login Xtream de uma conta ativa nem reprodução; exemplos expirados não são credenciais de teste válidas.
+Uma inspeção read-only [#45087559930](https://github.com/martaxi-boss/VPS/actions/runs/45087559930) confirmou modo
+`0640` nas configurações PINK sob diretório `0700`, e `0600` nas configurações VivoAPK. A versão do
+instalador foi ajustada para respeitar ambos, preservando o controlo
+de root e sem publicar valores. [CI do instalador #45087701904](https://github.com/martaxi-boss/Vivoapk/actions/runs/45087701904) PASS.
+[Pré-verificação #45087750560](https://github.com/martaxi-boss/VPS/actions/runs/45087750560) devolveu `ready`, sem mudanças.
+
+**Aplicação concluída e verificada no Ferrari
+[#45087866003](https://github.com/martaxi-boss/VPS/actions/runs/45087866003):**
+`status=applied_verified`; a chave original foi **copiada separadamente**
+para os dois ficheiros privados VivoAPK (auth e runtime), com backups
+privados, sem alterar qualquer ficheiro ou serviço PINK. Foi reiniciado
+**só o serviço VivoAPK**. A chave efetiva do processo VivoAPK coincide
+agora com a do PINK, e o GET de listagem Mega OTT devolve 200,
+com o socket VivoAPK saudável e os serviços protegidos ativos.
+
+A chave nunca foi enviada para o GitHub, para artefactos públicos ou
+para esta documentação. A alteração de configuração permanece no cofre
+da VPS; o procedimento está versionado em
+[`infra/sync_pink_api_token.py`](../infra/sync_pink_api_token.py).
+
+**Pendências distintas:** demonstrar descoberta e login de uma
+subscrição nova realmente ativa, validar o conteúdo do catálogo,
+instalar/testar a integração Jellyfin com proteção do administrador,
+validar separação entre clientes e medir banda de reprodução.
+O sucesso da listagem por API não implica playlist automática no Jellyfin.
+
+### Histórico dos bloqueios anteriores, já corrigidos para a listagem
+
+- [#45085572845](https://github.com/martaxi-boss/VPS/actions/runs/45085572845): consulta de ID antigo retornou 403 com uma implementação de transporte distinta.
+- [#45085706904](https://github.com/martaxi-boss/VPS/actions/runs/45085706904): chave incorreta antiga do VivoAPK retornou 401.
+- [#45085851833](https://github.com/martaxi-boss/VPS/actions/runs/45085851833): as chaves eram diferentes; a rota adicional de perfil retornou 403 ao token PINK, o que não substitui o teste correto do endpoint de listagem.
 
 ## Catálogo e streaming: limites não resolvidos
 
