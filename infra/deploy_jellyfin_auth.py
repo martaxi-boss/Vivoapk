@@ -200,10 +200,11 @@ def stage(sha):
         fail("vivo_source_worktree_not_clean")
     # Upstream is fetched by complete commit ID; no scripts from remote are executed.
     cmd(["git", "-C", str(SOURCE), "fetch", "--no-tags", "--depth", "1", "origin", sha], timeout=120)
-    previous_tree = cmd(["git", "-C", str(SOURCE), "rev-parse", "HEAD:backend"])
-    proposed_tree = cmd(["git", "-C", str(SOURCE), "rev-parse", sha+":backend"])
-    if previous_tree != proposed_tree:
-        fail("backend_changes_requires_separate_deployment")
+    # The deployment history updates backend/README.md only; runtime source must match.
+    changed_backend = cmd(["git","-C",str(SOURCE),"diff","--name-only",
+                           "HEAD",sha,"--","backend/"]).splitlines()
+    if any(name != "backend/README.md" for name in changed_backend):
+        fail("backend_runtime_changes_requires_separate_deployment")
     if cmd(["git", "-C", str(SOURCE), "rev-parse", "HEAD"]) != sha:
         cmd(["git", "-C", str(SOURCE), "checkout", "--detach", sha], timeout=50)
     if cmd(["git", "-C", str(SOURCE), "rev-parse", "HEAD"]) != sha:
