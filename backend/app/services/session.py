@@ -14,7 +14,11 @@ from app.config import Settings
 from app.models import SubscriptionMapping
 from app.schemas import ClientPlatform, ResolveCode, ResolveResponse
 from app.security import issue_session_token
-from app.services.mappings import MappingConflictError, discover_and_import_subscription
+from app.services.mappings import (
+    MappingConflictError,
+    discover_and_import_subscription,
+    import_subscription,
+)
 from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
 
 
@@ -59,7 +63,30 @@ class SessionResolver:
             if expiry.tzinfo is None:
                 expiry = expiry.replace(tzinfo=UTC)
             if expiry <= datetime.now(UTC):
-                return ResolveResponse(code=ResolveCode.EXPIRED)
+                # The previously stored expiry may precede a customer renewal.
+                # Re-read ONLY this exact Mega subscription, not a global scan.
+                if self._mega_client_factory is None:
+                    return ResolveResponse(code=ResolveCode.EXPIRED)
+                try:
+                    mega_client = self._mega_client_factory()
+                    try:
+                        mapping = import_subscription(
+                            self._session, mega_client, mapping.mega_subscription_id
+                        )
+                    finally:
+                        close = getattr(mega_client, "close", None)
+                        if callable(close):
+                            close()
+                except (MegaClientError, MappingConflictError, RuntimeError, ValueError):
+                    return ResolveResponse(code=ResolveCode.UPSTREAM_ERROR)
+                if mapping.username != username:
+                    return ResolveResponse(code=ResolveCode.INVALID_CREDENTIALS)
+                if mapping.expiring_at is not None:
+                    fresh_expiry = mapping.expiring_at
+                    if fresh_expiry.tzinfo is None:
+                        fresh_expiry = fresh_expiry.replace(tzinfo=UTC)
+                    if fresh_expiry <= datetime.now(UTC):
+                        return ResolveResponse(code=ResolveCode.EXPIRED)
 
         # Keep the exact authoritative provider URL; only select by platform.
         try:
