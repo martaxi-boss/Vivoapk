@@ -78,6 +78,35 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             _logger.LogInformation("Created restricted VivoAPK Jellyfin identity.");
         }
 
+        // Jellyfin 12.4 MediaSourceManager overwrites plugin DirectStream/
+        // Transcoding flags using the authenticated user's permissions.
+        // Enforce direct-only media for every authenticated VivoAPK identity,
+        // including identities created by earlier versions. This never reaches
+        // Jellyfin administrators or accounts owned by another provider.
+        var mediaPolicyChanged = false;
+        if (user.HasPermission(PermissionKind.EnablePlaybackRemuxing))
+        {
+            user.SetPermission(PermissionKind.EnablePlaybackRemuxing, false);
+            mediaPolicyChanged = true;
+        }
+        if (user.HasPermission(PermissionKind.EnableVideoPlaybackTranscoding))
+        {
+            user.SetPermission(PermissionKind.EnableVideoPlaybackTranscoding, false);
+            mediaPolicyChanged = true;
+        }
+        if (user.HasPermission(PermissionKind.EnableAudioPlaybackTranscoding))
+        {
+            user.SetPermission(PermissionKind.EnableAudioPlaybackTranscoding, false);
+            mediaPolicyChanged = true;
+        }
+        if (user.HasPermission(PermissionKind.ForceRemoteSourceTranscoding))
+        {
+            user.SetPermission(PermissionKind.ForceRemoteSourceTranscoding, false);
+            mediaPolicyChanged = true;
+        }
+        if (mediaPolicyChanged)
+            await users.UpdateUserAsync(user).ConfigureAwait(false);
+
         // Optional private library creation is gated independently from Mega authentication.
         // A failed provision fails this login closed; other users and libraries are not changed.
         if (Plugin.Instance?.Configuration.ProvisionPrivateLibraries == true)
