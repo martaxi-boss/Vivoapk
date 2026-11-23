@@ -245,7 +245,7 @@ def test_existing_expired_mapping_can_be_renewed_without_new_password(
     assert result.code == ResolveCode.SUCCESS
     assert result.xtream_base_url == "http://renewed.example.com"
     assert provider.find_calls == [] and provider.get_calls == [530]
-    assert db.get(SubscriptionMapping, mapping.id).expiring_at > datetime.now(UTC)
+    assert db.get(SubscriptionMapping, mapping.id).expiring_at.replace(tzinfo=UTC) > datetime.now(UTC)
     assert xtream.calls[0]["password"] == "synthetic-original-password"
 
 
