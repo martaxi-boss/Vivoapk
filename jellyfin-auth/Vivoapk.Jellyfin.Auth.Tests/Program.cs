@@ -57,9 +57,42 @@ using (var handler = new SyntheticEntitlementHandler("EXPIRED", monitorKey))
         throw new InvalidOperationException("Monitor sent request without a private key.");
     passed++;
 }
+foreach (var (header, agent, platform) in new (string, string, string)[]
+{
+    ("MediaBrowser Client=\"Jellyfin for Tizen\", Device=\"Samsung TV\"", "", "tizen"),
+    ("MediaBrowser Client=\"Jellyfin WebOS\", Device=\"LG TV\"", "", "webos"),
+    ("MediaBrowser Client=\"Jellyfin\", Device=\"Android TV\"", "", "android_tv"),
+    ("MediaBrowser Client=\"Jellyfin\", Device=\"iPhone\"", "", "ios"),
+    ("MediaBrowser Client=\"Jellyfin Media Player\", Device=\"Windows\"", "", "windows"),
+    ("MediaBrowser Client=\"Jellyfin\", Device=\"Android\"", "", "android"),
+    ("MediaBrowser Client=\"Jellyfin Web\"", "Mozilla/5.0 (Tizen Smart TV)", "tizen"),
+    ("MediaBrowser Client=\"Jellyfin Web\"", "Mozilla/5.0 (Web0S LG SmartTV)", "webos"),
+    ("", "", "android")
+})
+{
+    if (JellyfinClientPlatformDetector.FromHeaders(header, agent) != platform)
+        throw new InvalidOperationException("Jellyfin client platform detection regression.");
+    using var handler = new SyntheticHandler(
+        "{\"code\":\"SUCCESS\",\"xtream_base_url\":\"http://hidden.example\"}", HttpStatusCode.OK, platform);
+    using var client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+    var resolver = new MegaResolverClient(client);
+    if (!await resolver.ValidateAsync("synthetic-user", "synthetic-password", platform: platform)
+        || handler.Count != 1)
+        throw new InvalidOperationException("Platform-specific Mega DNS resolution failed.");
+    passed++;
+}
+using (var handler = new SyntheticHandler("{\"code\":\"SUCCESS\"}", HttpStatusCode.OK))
+{
+    using var client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") };
+    var resolver = new MegaResolverClient(client);
+    if (await resolver.ValidateAsync("synthetic-user", "synthetic-password", platform: "unknown")
+        || handler.Count != 0)
+        throw new InvalidOperationException("Unsupported client platform reached backend.");
+    passed++;
+}
 Console.WriteLine($"VivoAPK Jellyfin auth and monitor synthetic checks: {passed}/{passed} PASS");
 
-internal sealed class SyntheticHandler(string body, HttpStatusCode status) : HttpMessageHandler
+internal sealed class SyntheticHandler(string body, HttpStatusCode status, string expectedPlatform = "android") : HttpMessageHandler
 {
     public int Count { get; private set; }
 
@@ -73,7 +106,7 @@ internal sealed class SyntheticHandler(string body, HttpStatusCode status) : Htt
 
         string requestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
         using var json = JsonDocument.Parse(requestBody);
-        if (json.RootElement.GetProperty("platform").GetString() != "android" ||
+        if (json.RootElement.GetProperty("platform").GetString() != expectedPlatform ||
             json.RootElement.GetProperty("username").GetString() != "synthetic-user" ||
             json.RootElement.GetProperty("password").GetString() != "synthetic-password")
             throw new InvalidOperationException("Incorrect automatic DNS/username/password request.");

@@ -1,26 +1,35 @@
-# Vivoapk — arquitetura alvo Mega OTT sem video na VPS
+# Arquitetura vinculativa do VivoAPK — Jellyfin como único cliente
 
-Cliente -> (HTTPS) Backend Vivoapk POST /v1/session/resolve
--> Mega OTT API (meta da linha, dois DNS) -> validacao Xtream no DNS escolhido
--> cliente recebe origem aprovada e reproduz diretamente junto do Mega OTT.
+Fonte de verdade funcional: [BOOTSTRAP](../BOOTSTRAP.md). **Este documento substitui a antiga arquitetura direta Backend → app IPTV**, que era da fase Pink e não corresponde ao produto atual.
 
-O cliente apresenta somente username e password do revendedor Mega OTT.
-O backend nunca retransmite Live/VOD/Series/EPG nem guarda videos.
+```text
+Jellyfin oficial (Android / Android TV / iOS / Windows / Tizen / webOS)
+  URL único: https://serveriptv.duckdns.org
+  Login: utilizador e palavra-passe da Mega OTT
+      │  protocolo oficial Jellyfin
+      ▼
+Jellyfin 12.4 na VPS — plugin nativo VivoAPK
+      │  API interna via socket Unix; nunca porta pública Xtream
+      ▼
+Backend VivoAPK / Meta da subscrição Mega OTT
+      │  valida entitlement, user/pass e DNS oficial por plataforma
+      └─ seleciona dns_link ou dns_link_for_samsung_lg da mesma subscrição
+      │
+      └─ apresenta metadados próprios no Jellyfin:
+         Live TV / Filmes / Séries / Episódios / EPG
+      │
+      └─ MediaSource direto à origem Mega OTT quando o cliente reproduz sem relay
+         (método ainda por provar em cada cliente).
+```
 
-| Plataforma | DNS da subscricao |
-|---|---|
-| Android / Android TV / Windows | dns_link |
-| iOS | dns_link como hipotese tecnica; exige prova com cliente real |
-| Samsung Tizen e LG webOS nativos | dns_link_for_samsung_lg |
+O painel Mega OTT é o único painel de gestão de clientes. A infraestrutura Jellyfin pode ter uma identidade administrativa própria para operação do serviço, mas **essa identidade nunca é um passo de cliente**.
 
-DNS em falta para uma Smart TV nativa causa UPSTREAM_ERROR, sem fallback.
-Os dominios DuckDNS de controlo nao substituem nenhum dos dois DNS Mega.
+Não confundir `serveriptv.duckdns.org` (ponto de entrada Jellyfin HTTPS) com os DNS Xtream completos da Mega OTT. Não pedir esses URLs ao cliente, não construir subdomínios por adivinhação e não publicar credenciais.
 
-- serveriptv.duckdns.org: Jellyfin de teste existente, login independente.
-- vivo-team.duckdns.org: hostname de experiencias anteriores no Vivoapk,
-  ainda nao publicado como backend Mega OTT.
-- Apps Jellyfin oficiais NAO reconhecem usernames Mega OTT so por mudar o DNS.
-- Vivo Player comercial NAO e modificado nem ativado por este codigo.
-- Clientes Android/iOS/Tizen/webOS precisam de implementacao/instalacao propria
-  ou integracao explicitamente suportada com app open source, com testes fisicos.
-- O backend PINK anterior nao sera apagado antes de provar migracao completa.
+**Limite da funcionalidade nativa Jellyfin:** a secção Live TV do Jellyfin aceita tuners M3U ou HDHomeRun e o Jellyfin pode servir/transcodificar media. **Essa funcionalidade, por si só, não cria catálogos por username Mega OTT nem garante streaming sem passar pela VPS.** Exige adaptação nativa segura por subscrição, e os clientes oficiais têm capacidades diferentes. Não adicionar um tuner M3U global com palavras-passe partilhadas só para apresentar mais canais.
+
+O canal piloto `VivoapkLivePreviewChannel` mantém apenas um assinante de cada vez e até cinco itens; não habilitar simultaneidade multiutilizador através de um dicionário estático sem primeiro verificar o isolamento de `ChannelManager` e o `PlaybackInfo` de IDs cruzados. O ramo experimental multiutilizador anterior **não é prova de isolamento**.
+
+O código atualmente acrescenta deteção conservadora de plataforma no login (tizen, webos, android_tv, ios, windows, fallback android) para selecionar o DNS oficial do utilizador, mas só os testes de aparelhos reais permitem certificar a identificação e reprodução em cada aplicação.
+
+Para o histórico de Vivo Player/Pink e testes de interoperabilidade, ver [documento antigo](ESTUDO-APP-DIRETA-2026-11-22.md) e [migração](MIGRACAO_PINK_PARA_VIVOAPK.md).

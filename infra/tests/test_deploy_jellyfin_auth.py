@@ -13,6 +13,10 @@ class JellyfinAuthDeploymentContract(unittest.TestCase):
         self.assertEqual(str(x.ROOT),"/srv/projects/Vivoapk")
         self.assertEqual(str(x.PLUGIN),"/srv/projects/jellyfin-server/data/plugins/VivoAPK Mega OTT Auth_0.1.0.0")
         self.assertEqual(str(x.CONF),"/srv/projects/jellyfin-server/data/plugins/configurations/Jellyfin.Plugin.VivoapkMegaAuth.xml")
+    def test_no_dependency_on_retired_pink(self):
+        self.assertEqual(x.OTHERS, ("vivoapk-backend.service", "nginx.service", "postgresql.service"))
+        self.assertEqual(x.RETIRED, ("pink-iptv-backend.service", "pink-vpn.service"))
+        self.assertIn("retired_pink_service_unexpected", (root/"deploy_jellyfin_auth.py").read_text())
     def test_full_git_commit_required(self):
         for value in ("main","latest","aaaa", "0"*39):
             with self.assertRaises(x.Blocked):

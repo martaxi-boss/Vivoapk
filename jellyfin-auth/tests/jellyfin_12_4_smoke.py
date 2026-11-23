@@ -67,7 +67,8 @@ class BackendHandler(socketserver.StreamRequestHandler):
                     ("synthetic-mega-user", "synthetic-mega-password"),
                     ("synthetic-mega-user-b", "synthetic-mega-password-b"),
                 }
-                and request.get("platform") == "android"
+                and request.get("platform") == (
+                    "tizen" if request.get("username") == "synthetic-mega-user-b" else "android")
             )
             response_code = b"200 OK"
             body = json.dumps({
@@ -120,11 +121,11 @@ class Connection(http.client.HTTPConnection):
         self.sock.settimeout(8)
         self.sock.connect(self.path)
 
-def request(method, uri, data=None, token=None):
+def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
     conn = Connection(DATAROOT / "run/jellyfin.sock")
     headers = {
         "Content-Type": "application/json", "Accept": "application/json",
-        "Authorization": 'MediaBrowser Client="VivoAPK-CI", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0"'
+        "Authorization": 'MediaBrowser Client="' + client_name + '", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0"'
     }
     if uri.startswith("/Startup/"):
         headers.pop("Authorization", None)
@@ -284,7 +285,8 @@ def main():
         # CI-only integration: successful Mega login itself creates the isolated
         # Jellyfin libraries; there is no admin playlist/folder setup per account.
         code, customer_b = request("POST", "/Users/AuthenticateByName", {
-            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"})
+            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"},
+            client_name="Jellyfin for Tizen")
         if code != 200 or not customer_b or not customer_b.get("AccessToken"):
             raise RuntimeError("Synthetic second subscription rejected")
         account_a = customer["User"]["Id"]
@@ -642,7 +644,8 @@ def main():
         if not renewed:
             raise RuntimeError("Renewed Mega subscription did not reactivate same Jellyfin identity")
         code, logged_back = request("POST", "/Users/AuthenticateByName", {
-            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"})
+            "Username": "synthetic-mega-user-b", "Pw": "synthetic-mega-password-b"},
+            client_name="Jellyfin for Tizen")
         if code != 200 or logged_back["User"]["Id"] != account_b:
             raise RuntimeError("Renewed user cannot sign in with original Mega credentials")
         print("JELLYFIN_SYNTHETIC_MEGA_RENEWAL_SAME_IDENTITY=PASS")

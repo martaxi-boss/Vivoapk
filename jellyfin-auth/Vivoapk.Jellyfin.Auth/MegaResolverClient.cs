@@ -21,6 +21,9 @@ public sealed class MegaResolverClient
     private readonly HttpClient _client;
     private readonly Func<string?> _monitorKeyProvider;
 
+    private static bool IsSupportedPlatform(string? value)
+        => value is "android" or "android_tv" or "ios" or "windows" or "tizen" or "webos";
+
     public MegaResolverClient()
     {
         var handler = new SocketsHttpHandler
@@ -132,14 +135,17 @@ public sealed class MegaResolverClient
     }
 
     public async Task<bool> ValidateAsync(
-        string username, string password, CancellationToken cancellationToken = default)
-        => await ResolveAsync(username, password, cancellationToken).ConfigureAwait(false) is not null;
+        string username, string password, CancellationToken cancellationToken = default,
+        string platform = "android")
+        => await ResolveAsync(username, password, cancellationToken, platform).ConfigureAwait(false) is not null;
 
     internal async Task<MegaResolvedSession?> ResolveAsync(
-        string username, string password, CancellationToken cancellationToken = default)
+        string username, string password, CancellationToken cancellationToken = default,
+        string platform = "android")
     {
         if (string.IsNullOrWhiteSpace(username) || username.Length > 128 ||
-            string.IsNullOrWhiteSpace(password) || password.Length > 2048)
+            string.IsNullOrWhiteSpace(password) || password.Length > 2048 ||
+            !IsSupportedPlatform(platform))
             return null;
         try
         {
@@ -147,7 +153,7 @@ public sealed class MegaResolverClient
             {
                 username,
                 password,
-                platform = "android"
+                platform
             });
             using var request = new HttpRequestMessage(HttpMethod.Post, "v1/session/resolve")
             {
@@ -193,16 +199,17 @@ public sealed class MegaResolverClient
     }
 
     internal async Task<IReadOnlyList<MegaPreviewEntry>> PreviewAsync(
-        string? token, CancellationToken cancellationToken = default)
+        string? token, CancellationToken cancellationToken = default,
+        string platform = "android")
     {
-        if (string.IsNullOrEmpty(token) || token.Length > 4096)
+        if (string.IsNullOrEmpty(token) || token.Length > 4096 || !IsSupportedPlatform(platform))
             return Array.Empty<MegaPreviewEntry>();
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, "v1/catalog/preview")
             {
                 Content = new StringContent(
-                    "{\"kind\":\"live\",\"platform\":\"android\"}",
+                    JsonSerializer.Serialize(new { kind = "live", platform }),
                     Encoding.UTF8, "application/json")
             };
             request.Headers.Authorization =
