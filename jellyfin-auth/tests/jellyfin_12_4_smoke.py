@@ -248,6 +248,20 @@ def main():
             raise RuntimeError("Pilot channel did not produce visible media items")
         if pilot_items["Items"][0].get("Name") != "Canal CI Azul":
             raise RuntimeError("Pilot channel content did not match owner")
+        # Access by a known foreign channel item ID must also be denied,
+        # not just hidden from the second account's visible channel list.
+        pilot_item_id = pilot_items["Items"][0]["Id"]
+        code, _ = request(
+            "GET", "/Users/" + account_b + "/Items/" + pilot_item_id,
+            token=customer_b["AccessToken"])
+        if code == 200:
+            raise RuntimeError("Pilot channel media accessible directly to foreign user")
+        code, _ = request(
+            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_b,
+            {}, token=customer_b["AccessToken"])
+        if code == 200:
+            raise RuntimeError("Foreign user can request pilot channel playback info")
+        print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
         print("JELLYFIN_SYNTHETIC_MEGA_NATIVE_CHANNEL_VISIBLE=PASS")
         print("JELLYFIN_SYNTHETIC_MEGA_PILOT_ACCOUNT_ISOLATION=PASS")
 
