@@ -349,7 +349,8 @@ def main():
             raise RuntimeError("Private channel reservation XML not persisted uniquely")
         config = ElementTree.parse(configs[0]).getroot()
         reserved = config.find("ChannelSlotOwners")
-        owners = [x.text.replace("-", "").lower() for x in reserved] if reserved is not None else []
+        owners = [x.text.replace("-", "").lower() for x in reserved
+                  if x.text and x.text.strip()] if reserved is not None else []
         if len(owners) != 2 or set(owners) != {account_a.replace("-", "").lower(),
                                                 account_b.replace("-", "").lower()}:
             raise RuntimeError("Jellyfin channel slots not durably reserved for owners")

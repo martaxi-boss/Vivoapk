@@ -135,16 +135,37 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
         {
             var categoryNavigation = Plugin.Instance.Configuration.CategoryNavigation;
             var fullLive = !categoryNavigation && Plugin.Instance.Configuration.FullLiveCatalog;
-            var preview = categoryNavigation
-                ? await _resolver.CategoriesAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
-                : fullLive
+            IReadOnlyList<MegaPreviewEntry>? preview;
+            IReadOnlyList<MegaPreviewEntry>? movies = null;
+            IReadOnlyList<MegaPreviewEntry>? series = null;
+            if (categoryNavigation)
+            {
+                // All three calls use the existing, private JWT-bound category
+                // endpoints; no provider-global list and no new client fields.
+                var liveTask = _resolver.CategoriesAsync(
+                    verified.SessionToken, platform: platform, kind: "live");
+                var movieTask = _resolver.CategoriesAsync(
+                    verified.SessionToken, platform: platform, kind: "vod");
+                var seriesTask = _resolver.CategoriesAsync(
+                    verified.SessionToken, platform: platform, kind: "series");
+                await Task.WhenAll(liveTask, movieTask, seriesTask).ConfigureAwait(false);
+                preview = liveTask.Result;
+                movies = movieTask.Result;
+                series = seriesTask.Result;
+            }
+            else
+            {
+                preview = fullLive
                     ? await _resolver.FullLiveAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
                     : await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
-            var subscriberChannel = preview is null ? null :
+            }
+            var subscriberChannel = preview is null && movies is null && series is null ? null :
                 VivoapkLivePreviewChannel.Stage(
-                    user.Id, preview, verified.Origin, canonicalUsername, password,
+                    user.Id, preview ?? Array.Empty<MegaPreviewEntry>(),
+                    verified.Origin, canonicalUsername, password,
                     fullLive: fullLive, categoryNavigation: categoryNavigation,
-                    sessionToken: verified.SessionToken, platform: platform);
+                    sessionToken: verified.SessionToken, platform: platform,
+                    movieCategories: movies, seriesCategories: series);
             if (subscriberChannel is not null)
             {
                 var library = _appHost.Resolve<ILibraryManager>();
