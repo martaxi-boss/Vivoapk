@@ -318,7 +318,7 @@ def main():
         if code != 200 or not isinstance(channels_a, dict):
             raise RuntimeError("Native pilot channel list unavailable")
         pilot_a = [x for x in channels_a.get("Items", [])
-                   if x.get("Name") == "VivoAPK — TV de teste"]
+                   if x.get("Name", "").startswith("VivoAPK — TV de teste ")]
         if len(pilot_a) != 1:
             raise RuntimeError("Owner cannot see own native preview TV channel")
         code, channels_b = request("GET", "/Channels?UserId=" + account_b,
@@ -326,12 +326,12 @@ def main():
         if code != 200 or not isinstance(channels_b, dict):
             raise RuntimeError("Second account channel list unavailable")
         pilot_b = [x for x in channels_b.get("Items", [])
-                   if x.get("Name") == "VivoAPK — TV de teste"]
+                   if x.get("Name", "").startswith("VivoAPK — TV de teste ")]
         if len(pilot_b) != 1:
             raise RuntimeError("Second subscribed account cannot see own preview")
         channel_id = pilot_a[0]["Id"]
-        if channel_id != pilot_b[0]["Id"]:
-            raise RuntimeError("Native plugin exposed mismatched channel identifiers")
+        if channel_id == pilot_b[0]["Id"]:
+            raise RuntimeError("Two subscribers still share the same internal ChannelId")
         for image_type in ("Primary", "Thumb"):
             image_code, mime, art = request_png(
                 "/Items/" + channel_id + "/Images/" + image_type,
@@ -349,7 +349,7 @@ def main():
             raise RuntimeError("Pilot channel content did not match owner")
         pilot_item_id = pilot_items["Items"][0]["Id"]
         code, pilot_items_b = request(
-            "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_b,
+            "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b,
             token=customer_b["AccessToken"])
         if code != 200 or not isinstance(pilot_items_b, dict):
             raise RuntimeError("Second account cannot browse own channels")
