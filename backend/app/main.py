@@ -132,6 +132,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from None
 
 
+    @app.post("/v1/catalog/preview", response_model=CatalogListResponse)
+    def preview_live_channels(
+        payload: CatalogListRequest, response: Response, request: Request,
+        authorization: str | None = Header(default=None),
+        session: Session = Depends(get_db),
+    ) -> CatalogListResponse:
+        response.headers["Cache-Control"] = "no-store"
+        if payload.kind != "live":
+            raise HTTPException(422, "Invalid request")
+        if (authorization is None or not authorization.startswith("Bearer ")
+                or len(authorization) > 4120):
+            raise HTTPException(401, "Unauthorized")
+        try:
+            return CatalogService(
+                session, runtime_settings,
+                mega_client_factory=request.app.state.mega_client_factory,
+                xtream_client_factory=request.app.state.xtream_client_factory,
+                catalog_client_factory=request.app.state.catalog_client_factory,
+            ).live_preview(token=authorization[7:], platform=payload.platform)
+        except CatalogDenied:
+            raise HTTPException(401, "Unauthorized") from None
+        except CatalogUnavailable:
+            raise HTTPException(503, "Catalogue temporarily unavailable") from None
+
     @app.post("/v1/catalog/series", response_model=SeriesDetailResponse)
     def read_series_detail(
         payload: SeriesDetailRequest, response: Response, request: Request,
