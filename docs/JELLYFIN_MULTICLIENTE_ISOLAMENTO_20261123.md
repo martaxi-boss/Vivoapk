@@ -39,3 +39,18 @@ O fecho Ruflo certifica **uma execução REA e uma revisão de metadados**, com 
 ## Gate obrigatório
 
 **Nunca** colocar um catálogo multicliente no Jellyfin sem reproduzir com duas contas independentes: listagem pessoal, negação de IDs cruzados, negação de PlaybackInfo estrangeiro, negação de `UserId` forjado, revogação e persistência segura dos metadados sem credenciais. Não sacrificar isolamento de contas para mostrar mais canais.
+
+## Evolução verificada no servidor descartável — 23/11/2026, 22:55 UTC
+
+- **Isolamento por ChannelId:** no ramo `experiment/jellyfin-multitenant-isolation-20261123`, o CI real [#45283509132](https://github.com/martaxi-boss/Vivoapk/actions/runs/45283509132) passou com **duas contas fictícias simultâneas**, `ChannelId` diferentes, negação de acesso a itens e `PlaybackInfo` estrangeiros, proteção contra `UserId` forjado, preservação do administrador, reprodução HLS sintética fora do Jellyfin e renovação da mesma conta.
+- **Catálogo Live alargado:** a versão seguinte, ramo [experiment/jellyfin-full-live-catalog-20261123](https://github.com/martaxi-boss/Vivoapk/tree/experiment/jellyfin-full-live-catalog-20261123), usa o contrato privado já existente `POST /v1/catalog/list` para consultar até 20 000 IDs/nomes (limite de código, **não** tamanho testado), com limite de resposta de 8 MiB e deduplicação de IDs.
+- **Configuração fail-closed:** `FullLiveCatalog=false` por defeito; o piloto antigo de até 5 canais não é alterado sem esta opção. O catálogo completo foi habilitado **apenas** no servidor CI descartável.
+- **Prova positiva:** [#45284059159](https://github.com/martaxi-boss/Vivoapk/actions/runs/45284059159), com **seis canais sintéticos em cada uma das duas contas**, negação de IDs cruzados e `UserId` forjado, ausência de credenciais gravadas nos itens e HLS sintético com vídeo e áudio. A listagem com seis itens mostra que a limitação de cinco foi removida *nessa experiência*, não que os 20 mil itens funcionem em produção.
+- **Redução de exposição:** os itens Jellyfin indexados guardam apenas IDs e títulos. O snapshot em RAM guarda as credenciais **uma única vez por conta** e o URL HLS direto é construído quando o proprietário pede `PlaybackInfo`.
+- **PRs ainda não fundidas:** [#4](https://github.com/martaxi-boss/Vivoapk/pull/4) e [#5](https://github.com/martaxi-boss/Vivoapk/pull/5) mantidas como `draft`. Não há implementação dessas experiências na VPS.
+
+### Pendências que impedem ativação para clientes
+
+Aprovação de produção exige resolver **reserva durável de ChannelId por subscritor (para que um slot nunca seja reutilizado com itens antigos após expiração/reinício)**, recuperação automática de catálogo após expiração do snapshot sem pedir configuração/admin, teste do volume de catálogo real, filmes, séries, episódios e EPG, revogação real, e reprodução direta medida em Android/iOS/Windows/Samsung/LG. O teste de vídeo sintético por FFmpeg não equivale à reprodução nas aplicações físicas.
+
+**Veredito:** está resolvida a fuga reproduzida no teste de dois clientes com canais separados; permanece **em desenvolvimento** a integração completa pedida no Bootstrap.
