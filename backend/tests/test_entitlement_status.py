@@ -82,7 +82,7 @@ def test_monitor_key_and_provider_expiry_renewal(settings, session_factory):
     assert r.headers["cache-control"] == "no-store"
     with session_factory() as db:
         mapping = db.query(SubscriptionMapping).filter_by(username="client-a").one()
-        assert mapping.expiring_at == future
+        assert mapping.expiring_at.replace(tzinfo=UTC) == future
 
     upstream.expiring_at = past
     r = client.post(route, json=body, headers=headers)
