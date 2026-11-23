@@ -405,11 +405,14 @@ def main():
             raise RuntimeError("Pilot channel did not produce visible media items")
         if CATEGORY_MODE:
             folders_a = pilot_items["Items"]
-            if (len(folders_a) != 2 or
-                    [x.get("Name") for x in folders_a] != ["Portugal Azul", "Desporto Azul"] or
-                    any(x.get("Type") != "Folder" for x in folders_a)):
-                raise RuntimeError("Authorized Live categories did not become native Jellyfin folders")
-            folder_id_a = folders_a[0]["Id"]
+            if len(folders_a) != 2 or {x.get("Name") for x in folders_a} != {
+                    "Portugal Azul", "Desporto Azul"}:
+                observed = [{"name": x.get("Name"), "type": x.get("Type"),
+                             "is_folder": x.get("IsFolder")} for x in folders_a]
+                raise RuntimeError("Authorized Live categories did not become folders: "
+                                   + json.dumps(observed, sort_keys=True))
+            folder_id_a = next(x["Id"] for x in folders_a
+                               if x.get("Name") == "Portugal Azul")
             code, pilot_items = request(
                 "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
                 + "&FolderId=" + folder_id_a,
@@ -428,11 +431,14 @@ def main():
             raise RuntimeError("Second account cannot browse own channels")
         if CATEGORY_MODE:
             folders_b = pilot_items_b["Items"]
-            if (len(folders_b) != 2 or
-                    [x.get("Name") for x in folders_b] != ["Portugal Verde", "Desporto Verde"] or
-                    any(x.get("Type") != "Folder" for x in folders_b)):
-                raise RuntimeError("Native category listing crossed subscriber boundaries")
-            folder_id_b = folders_b[0]["Id"]
+            if len(folders_b) != 2 or {x.get("Name") for x in folders_b} != {
+                    "Portugal Verde", "Desporto Verde"}:
+                observed = [{"name": x.get("Name"), "type": x.get("Type"),
+                             "is_folder": x.get("IsFolder")} for x in folders_b]
+                raise RuntimeError("Native category listing crossed subscribers: "
+                                   + json.dumps(observed, sort_keys=True))
+            folder_id_b = next(x["Id"] for x in folders_b
+                               if x.get("Name") == "Portugal Verde")
             code, pilot_items_b = request(
                 "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b
                 + "&FolderId=" + folder_id_b,
@@ -563,7 +569,8 @@ def main():
         if CATEGORY_MODE:
             code, recent_items_a = request(
                 "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a
-                + "&FolderId=" + recent_items_a["Items"][0]["Id"],
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_items_a["Items"] if x.get("Name") == "Portugal Azul"),
                 token=customer["AccessToken"])
             if code != 200 or not (recent_items_a or {}).get("Items"):
                 raise RuntimeError("Subscriber A category unavailable after restart")
@@ -576,7 +583,8 @@ def main():
         if CATEGORY_MODE:
             code, recent_items_b = request(
                 "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b
-                + "&FolderId=" + recent_items_b["Items"][0]["Id"],
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_items_b["Items"] if x.get("Name") == "Portugal Verde"),
                 token=customer_b["AccessToken"])
             if code != 200 or not (recent_items_b or {}).get("Items"):
                 raise RuntimeError("Subscriber B category unavailable after restart")
