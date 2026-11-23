@@ -6,6 +6,7 @@ be disabled. No provider credentials are returned or persisted here.
 """
 from collections.abc import Callable
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,9 +14,8 @@ from sqlalchemy.orm import Session
 from app.clients.mega import MegaClientError, MegaOTTClient
 from app.clients.xtream import XtreamClient, XtreamError
 from app.models import SubscriptionMapping
-from app.schemas import EntitlementState
+from app.schemas import ClientPlatform, EntitlementState
 from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
-from app.schemas import ClientPlatform
 
 
 def is_expired(value: datetime | None) -> bool:
@@ -76,7 +76,7 @@ class EntitlementService:
         if not password:
             return EntitlementState.UNAVAILABLE
         try:
-            dns = select_provider_dns(subscription, ClientPlatform.ANDROID)
+            dns = select_provider_dns(\n                SimpleNamespace(\n                    dns_link=subscription.dns_link,\n                    dns_link_samsung_lg=subscription.dns_link_for_samsung_lg,\n                ),\n                ClientPlatform.ANDROID,\n            )
         except ProviderDNSUnavailable:
             return EntitlementState.UNAVAILABLE
 
