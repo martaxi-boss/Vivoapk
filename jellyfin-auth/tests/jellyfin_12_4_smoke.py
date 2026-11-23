@@ -286,7 +286,7 @@ def main():
                 "/Items/" + channel_id + "/Images/" + image_type,
                 token=customer["AccessToken"])
             if (image_code != 200 or not mime.startswith("image/png")
-                    or not art.startswith(b"\\x89PNG\\r\\n\\x1a\\n")):
+                    or not art.startswith(b"\x89PNG\r\n\x1a\n")):
                 raise RuntimeError("Native pilot cover unavailable in real Jellyfin")
         print("JELLYFIN_NATIVE_PILOT_PRIMARY_THUMB_PNG=PASS")
         code, pilot_items = request(
