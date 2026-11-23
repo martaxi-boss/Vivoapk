@@ -146,7 +146,7 @@ def test_two_subscriptions_are_isolated_by_signed_mapping_identity(settings, ses
     assert "origin-1" not in a.text and "secret-a" not in a.text
     assert "origin-2" not in b.text and "secret-b" not in b.text
     assert mega.calls == [901, 902, 901, 902]
-    assert [i["username"] for i in catalogue.calls] == ["sub-a", "sub-b"]
+    assert [i["username"] for i in catalogue.calls] == ["sub-a", "sub-b", "sub-a", "sub-b"]
 
     # The caller cannot override the signed identity with a body-level username.
     denied = request(token_a, {"kind": "live", "username": "sub-b"})
