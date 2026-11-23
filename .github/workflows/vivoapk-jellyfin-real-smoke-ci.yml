@@ -58,3 +58,4 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" /srv/projects/Vivoapk
           python3 -m py_compile jellyfin-auth/tests/jellyfin_12_4_smoke.py
           python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
+          VIVOAPK_CI_CATEGORY_MODE=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py

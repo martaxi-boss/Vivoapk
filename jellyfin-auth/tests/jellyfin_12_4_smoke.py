@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
 MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
+CATEGORY_MODE = os.environ.get("VIVOAPK_CI_CATEGORY_MODE") == "1"
 
 class BackendHandler(socketserver.StreamRequestHandler):
     def handle(self):
@@ -23,7 +24,8 @@ class BackendHandler(socketserver.StreamRequestHandler):
             return
         route = parts[1]
         if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status",
-                          b"/v1/catalog/preview", b"/v1/catalog/list"):
+                          b"/v1/catalog/preview", b"/v1/catalog/list",
+                          b"/v1/catalog/categories", b"/v1/catalog/category-items"):
             return
         length = 0
         headers = {}
@@ -38,7 +40,40 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if not 0 < length < 4096:
             return
         request = json.loads(self.rfile.read(length))
-        if route in (b"/v1/catalog/preview", b"/v1/catalog/list"):
+        if route in (b"/v1/catalog/categories", b"/v1/catalog/category-items"):
+            auth = headers.get(b"authorization", b"")
+            is_a = auth == b"Bearer ci-session-a"
+            is_b = auth == b"Bearer ci-session-b"
+            name = "Azul" if is_a else "Verde"
+            categories = ([{"id": "10", "name": "Portugal " + name},
+                           {"id": "11", "name": "Desporto " + name}]
+                          if is_a else
+                          [{"id": "20", "name": "Portugal " + name},
+                           {"id": "21", "name": "Desporto " + name}])
+            if not (is_a or is_b):
+                response_code = b"401 Unauthorized"
+                body = b'{"detail":"Unauthorized"}'
+            elif route == b"/v1/catalog/categories":
+                response_code = b"200 OK"
+                body = json.dumps({
+                    "kind": "live", "categories": categories, "items": []
+                }).encode()
+            else:
+                category_id = request.get("category_id")
+                allowed = {c["id"] for c in categories}
+                if category_id not in allowed:
+                    response_code = b"401 Unauthorized"
+                    body = b'{"detail":"Unauthorized"}'
+                else:
+                    response_code = b"200 OK"
+                    expanded = [{"id": str(42+i),
+                                 "title": "Canal CI " + name + ("" if i == 0 else " " + str(i)),
+                                 "category_id": category_id, "container_extension": None}
+                                for i in range(6 if category_id in ("10", "20") else 1)]
+                    body = json.dumps({
+                        "kind": "live", "categories": [], "items": expanded
+                    }).encode()
+        elif route in (b"/v1/catalog/preview", b"/v1/catalog/list"):
             auth = headers.get(b"authorization", b"")
             if auth not in (b"Bearer ci-session-a", b"Bearer ci-session-b"):
                 response_code = b"401 Unauthorized"
@@ -167,7 +202,9 @@ def request_png(uri, *, token):
 
 def main():
     global DATAROOT
-    base = Path(os.environ["RUNNER_TEMP"]) / "vivo-jellyfin-12.4-smoke"
+    base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-category-smoke" if CATEGORY_MODE
+        else "vivo-jellyfin-12.4-smoke")
     DATAROOT = base / "data"
     for p in [DATAROOT, DATAROOT / "run", base / "cache", base / "config", base / "logs"]:
         p.mkdir(parents=True, exist_ok=True)
@@ -272,7 +309,9 @@ def main():
 
         # CI TEST ONLY: enable the otherwise disabled auth plugin in disposable Jellyfin.
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
-                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True, "PilotLiveChannels": True, "FullLiveCatalog": True}, token=token)
+                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True,
+                           "PilotLiveChannels": True, "FullLiveCatalog": not CATEGORY_MODE,
+                           "CategoryNavigation": CATEGORY_MODE}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -364,15 +403,50 @@ def main():
             token=customer["AccessToken"])
         if code != 200 or not isinstance(pilot_items, dict) or not pilot_items.get("Items"):
             raise RuntimeError("Pilot channel did not produce visible media items")
+        if CATEGORY_MODE:
+            folders_a = pilot_items["Items"]
+            if (len(folders_a) != 2 or
+                    [x.get("Name") for x in folders_a] != ["Portugal Azul", "Desporto Azul"] or
+                    any(x.get("Type") != "Folder" for x in folders_a)):
+                raise RuntimeError("Authorized Live categories did not become native Jellyfin folders")
+            folder_id_a = folders_a[0]["Id"]
+            code, pilot_items = request(
+                "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
+                + "&FolderId=" + folder_id_a,
+                token=customer["AccessToken"])
+            if code != 200 or not isinstance(pilot_items, dict):
+                raise RuntimeError("Cannot browse native category folder A")
+            print("JELLYFIN_SYNTHETIC_NATIVE_CATEGORY_FOLDERS_A=PASS")
         if (pilot_items["Items"][0].get("Name") != "Canal CI Azul"
                 or len(pilot_items["Items"]) != 6):
-            raise RuntimeError("Full Live catalog did not return six isolated synthetic channels")
+            raise RuntimeError("Authorized Live category did not return six media items")
         pilot_item_id = pilot_items["Items"][0]["Id"]
         code, pilot_items_b = request(
             "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b,
             token=customer_b["AccessToken"])
         if code != 200 or not isinstance(pilot_items_b, dict):
             raise RuntimeError("Second account cannot browse own channels")
+        if CATEGORY_MODE:
+            folders_b = pilot_items_b["Items"]
+            if (len(folders_b) != 2 or
+                    [x.get("Name") for x in folders_b] != ["Portugal Verde", "Desporto Verde"] or
+                    any(x.get("Type") != "Folder" for x in folders_b)):
+                raise RuntimeError("Native category listing crossed subscriber boundaries")
+            folder_id_b = folders_b[0]["Id"]
+            code, pilot_items_b = request(
+                "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b
+                + "&FolderId=" + folder_id_b,
+                token=customer_b["AccessToken"])
+            if code != 200 or not isinstance(pilot_items_b, dict):
+                raise RuntimeError("Cannot browse native category folder B")
+            code, foreign_folder = request(
+                "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
+                + "&FolderId=" + folder_id_b,
+                token=customer["AccessToken"])
+            if code == 200 and (foreign_folder or {}).get("Items"):
+                raise RuntimeError("CROSS_ACCOUNT_CATEGORY_FOLDER_BYPASS")
+            print("JELLYFIN_SYNTHETIC_NATIVE_CATEGORY_FOLDERS_B=PASS")
+            print("JELLYFIN_SYNTHETIC_CATEGORY_FOLDER_ISOLATION=PASS")
         names_b = [item.get("Name") for item in pilot_items_b.get("Items", [])]
         if (len(names_b) != 6 or names_b[0] != "Canal CI Verde"
                 or "Canal CI Azul" in names_b):
@@ -411,7 +485,10 @@ def main():
             if code == 200 and (response or {}).get("MediaSources"):
                 raise RuntimeError("MULTITENANT_USERID_SPOOFING_PLAYBACK: foreign source")
         print("JELLYFIN_SYNTHETIC_USERID_SPOOFING_DENIED=PASS")
-        print("JELLYFIN_SYNTHETIC_FULL_LIVE_6_CHANNELS_PER_ACCOUNT=PASS")
+        if CATEGORY_MODE:
+            print("JELLYFIN_SYNTHETIC_LAZY_CATEGORY_6_CHANNELS_PER_ACCOUNT=PASS")
+        else:
+            print("JELLYFIN_SYNTHETIC_FULL_LIVE_6_CHANNELS_PER_ACCOUNT=PASS")
         print("JELLYFIN_SYNTHETIC_TWO_ACTIVE_CHANNEL_ACCOUNTS_ISOLATED=PASS")
         print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
         # Prove actual PROCESS restart reuses the same ChannelId slots without
@@ -483,12 +560,27 @@ def main():
             token=customer["AccessToken"])
         if code != 200 or not (recent_items_a or {}).get("Items"):
             raise RuntimeError("Subscriber A did not regain channel catalog after restart")
+        if CATEGORY_MODE:
+            code, recent_items_a = request(
+                "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a
+                + "&FolderId=" + recent_items_a["Items"][0]["Id"],
+                token=customer["AccessToken"])
+            if code != 200 or not (recent_items_a or {}).get("Items"):
+                raise RuntimeError("Subscriber A category unavailable after restart")
         pilot_item_id = recent_items_a["Items"][0]["Id"]
         code, recent_items_b = request(
             "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b,
             token=customer_b["AccessToken"])
         if code != 200 or not (recent_items_b or {}).get("Items"):
             raise RuntimeError("Subscriber B did not regain channel catalog after restart")
+        if CATEGORY_MODE:
+            code, recent_items_b = request(
+                "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b
+                + "&FolderId=" + recent_items_b["Items"][0]["Id"],
+                token=customer_b["AccessToken"])
+            if code != 200 or not (recent_items_b or {}).get("Items"):
+                raise RuntimeError("Subscriber B category unavailable after restart")
+            print("JELLYFIN_SYNTHETIC_CATEGORY_FOLDER_AFTER_RESTART=PASS")
         item_id_b = recent_items_b["Items"][0]["Id"]
         if pilot_item_id == item_id_b:
             raise RuntimeError("Channels merged media IDs after process restart")
