@@ -844,9 +844,9 @@ def main():
             if len(sources) != 2:
                 raise RuntimeError("Live source variant count changed: " + label)
             by_container = {str(x.get("Container") or "").lower(): x for x in sources}
-            if set(by_container) != {"mpegts", "hls"}:
+            if set(by_container) != {"mpegts", "mp4"}:
                 raise RuntimeError("Live source variants missing: " + label)
-            native, web = by_container["mpegts"], by_container["hls"]
+            native, web = by_container["mpegts"], by_container["mp4"]
             if (str(native.get("Path") or "") != str(web.get("Path") or "")
                     or not str(native.get("Path") or "").split("?", 1)[0].endswith(".m3u8")
                     or native.get("Id") == web.get("Id")
@@ -1015,7 +1015,7 @@ def main():
         # Jellyfin Android 2.7.3 routes remote HTTP direct-play sources
         # through its HLS parser even if the path ends in MPEG-TS.
         # A real Mega OTT HLS playlist must be provided instead.
-        if set(live_by_container) != {"mpegts", "hls"}:
+        if set(live_by_container) != {"mpegts", "mp4"}:
             raise RuntimeError("Jellyfin missing native and Web HLS direct sources")
         print("JELLYFIN_MEGA_HTTP_DIRECT_HLS_SOURCE=PASS")
         # Jellyfin Web isHls() selects hls.js only when the source
@@ -1105,9 +1105,33 @@ def main():
         if web_code != 200:
             raise RuntimeError("Browser HLS negotiation failed")
         web_variants = validate_live_variants(web_sources, "web-hls-device-profile")
-        if web_variants["hls"].get("SupportsDirectPlay") is not True:
-            raise RuntimeError("Jellyfin Web HLS-only profile cannot select direct provider stream")
-        print("JELLYFIN_WEB_HLS_PROFILE_DIRECT_PLAY=PASS")
+        # Jellyfin 12.4 refuses DirectPlay of Container=hls by design.
+        # Its HLS.js browser also advertises MP4 decoder capabilities,
+        # allowing the same actual HLS URL to negotiate without transcoding.
+        if any(src.get("SupportsDirectPlay") is True for src in web_sources):
+            raise RuntimeError("HLS-only profile unexpectedly bypassed Jellyfin manifest guard")
+        print("JELLYFIN_WEB_HLS_ONLY_SERVER_GUARD=EXPECTED")
+        web_compat_profile = {
+            **web_hls_profile,
+            "Name": "Jellyfin Web HLS.js with MP4 decoder capability",
+            "DirectPlayProfiles": web_hls_profile["DirectPlayProfiles"] + [{
+                "Type": "Video", "Container": "mp4",
+                "VideoCodec": "h264", "AudioCodec": "aac",
+            }],
+        }
+        web_compat_code, web_compat_media = request(
+            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_a,
+            {"DeviceProfile": web_compat_profile, "AutoOpenLiveStream": True,
+             "MaxStreamingBitrate": 120000000}, token=customer["AccessToken"])
+        web_compat_sources = (web_compat_media or {}).get("MediaSources", [])
+        if web_compat_code != 200:
+            raise RuntimeError("Jellyfin Web-compatible profile negotiation failed")
+        web_compat_variants = validate_live_variants(web_compat_sources, "web-mp4-hlsjs")
+        if (web_compat_variants["mp4"].get("SupportsDirectPlay") is not True
+                or any(src.get("SupportsTranscoding") is True or src.get("TranscodingUrl")
+                       for src in web_compat_sources)):
+            raise RuntimeError("Jellyfin Web HLS.js cannot negotiate remote provider direct play")
+        print("JELLYFIN_WEB_HLS_JS_MP4_DIRECT_PLAY=PASS")
         # Reproduce the Jellyfin Android 2.7.3 automatic-quality behavior.
         # The official app can send a 1.5 Mbps ceiling even when the user
         # selected "Automatic". With all server-side forwarding prohibited,
