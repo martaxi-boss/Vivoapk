@@ -66,5 +66,13 @@ jobs:
           sudo install -d -m 0755 /srv/projects/Vivoapk/run
           sudo chown -R "$(id -u):$(id -g)" /srv/projects/Vivoapk
           python3 -m py_compile jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          VIVOAPK_CI_CATEGORY_MODE=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
+          mkdir -p "$RUNNER_TEMP/vivoapk-ci-diagnostics"
+          python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py | tee "$RUNNER_TEMP/vivoapk-ci-diagnostics/standard.log"
+          VIVOAPK_CI_CATEGORY_MODE=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py | tee "$RUNNER_TEMP/vivoapk-ci-diagnostics/category.log"
+      - name: Save synthetic-only player compatibility observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vivoapk-disposable-jellyfin-direct-play-diagnostics
+          path: ${{ runner.temp }}/vivoapk-ci-diagnostics/*.log
+          retention-days: 7
