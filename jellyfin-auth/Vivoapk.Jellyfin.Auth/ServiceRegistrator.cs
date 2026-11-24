@@ -17,9 +17,15 @@ public sealed class ServiceRegistrator : IPluginServiceRegistrator
         for (int i = 0; i < VivoapkLivePreviewChannel.MaxChannels; i++)
         {
             var slot = i;
-            services.AddSingleton<IChannel>(provider =>
-                new VivoapkLivePreviewChannel(slot,
-                    provider.GetRequiredService<Microsoft.AspNetCore.Http.IHttpContextAccessor>()));
+            foreach (var smartTv in new[] { false, true })
+            {
+                // Different authoritative provider origins require different
+                // ChannelIds: Jellyfin globally caches callbacks by item ID.
+                var family = smartTv;
+                services.AddSingleton<IChannel>(provider =>
+                    new VivoapkLivePreviewChannel(slot, family,
+                        provider.GetRequiredService<Microsoft.AspNetCore.Http.IHttpContextAccessor>()));
+            }
         }
     }
 }
