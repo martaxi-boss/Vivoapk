@@ -1054,6 +1054,43 @@ def main():
         ):
             raise RuntimeError("Native Android device profile cannot direct-play pilot")
         print("JELLYFIN_ANDROID_PROFILE_DIRECT_PLAY=PASS")
+        # Verify browser HLS-only device-profile negotiation separately from
+        # the native MPEG-TS profile. HLS.js requires a manifest hint, while
+        # a browser may not advertise MPEG-TS direct playback at all.
+        web_hls_profile = {
+            "Name": "Jellyfin Web HLS-only metadata diagnostic",
+            "MaxStreamingBitrate": 120000000,
+            "MaxStaticBitrate": 120000000,
+            "DirectPlayProfiles": [{
+                "Type": "Video", "Container": "hls",
+                "VideoCodec": "h264", "AudioCodec": "aac",
+            }],
+            "TranscodingProfiles": [{
+                "Type": "Video", "Container": "ts", "Protocol": "hls",
+                "VideoCodec": "h264", "AudioCodec": "aac", "Context": "Streaming",
+            }],
+        }
+        web_code, web_media = request(
+            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_a,
+            {"DeviceProfile": web_hls_profile, "AutoOpenLiveStream": True,
+             "MaxStreamingBitrate": 120000000}, token=customer["AccessToken"])
+        web_sources = (web_media or {}).get("MediaSources", [])
+        print("JELLYFIN_WEB_HLS_ONLY_PROFILE_DIAGNOSTIC=" +
+              json.dumps({
+                  "http_status": web_code,
+                  "error": (web_media or {}).get("ErrorCode"),
+                  "sources": [{
+                      "container": source.get("Container"),
+                      "direct_play": source.get("SupportsDirectPlay"),
+                      "hls_protocol": str(source.get("TranscodingSubProtocol") or "").lower() == "hls",
+                      "relay_url": bool(source.get("TranscodingUrl")),
+                      "transcoding": source.get("SupportsTranscoding"),
+                  } for source in web_sources],
+              }, sort_keys=True), flush=True)
+        if web_code != 200 or any(source.get("SupportsTranscoding") is True
+                                    or source.get("TranscodingUrl")
+                                    for source in web_sources):
+            raise RuntimeError("Browser HLS negotiation exposed Jellyfin relay")
         # Reproduce the Jellyfin Android 2.7.3 automatic-quality behavior.
         # The official app can send a 1.5 Mbps ceiling even when the user
         # selected "Automatic". With all server-side forwarding prohibited,
