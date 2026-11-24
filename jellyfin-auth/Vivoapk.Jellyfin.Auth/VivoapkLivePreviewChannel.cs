@@ -209,7 +209,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         if (!Guid.TryParse(userId, out var id))
             return false;
         var snapshot = ForUser(id);
-        return snapshot is not null && IsSmartTv(RequestPlatform(snapshot)) == _smartTv;
+        // Visibility must follow the *requesting* official client. A fallback
+        // to the stored login platform would expose both channel families to
+        // the same device when the subscriber has also logged in elsewhere.
+        return snapshot is not null && IsSmartTv(ClientPlatformHint()) == _smartTv;
     }
 
     public InternalChannelFeatures GetChannelFeatures() => new()
@@ -480,18 +483,22 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         return detail;
     }
 
-    private string RequestPlatform(PilotSnapshot snapshot)
+    private string ClientPlatformHint()
     {
         var headers = _httpContextAccessor?.HttpContext?.Request.Headers;
         if (headers is null)
-            return snapshot.Platform;
-        var hinted = JellyfinClientPlatformDetector.FromHeaders(
+            return "android";
+        return JellyfinClientPlatformDetector.FromHeaders(
             string.Concat(headers["X-Emby-Authorization"].ToString(), " ",
                 headers["Authorization"].ToString()),
             headers["User-Agent"].ToString());
-        // Jellyfin can invoke PlaybackInfo without platform-identifying headers.
-        // Never let a generic fallback select the other source family and
-        // poison the globally cached MediaSourceInfo for this channel item.
+    }
+
+    private string RequestPlatform(PilotSnapshot snapshot)
+    {
+        var hinted = ClientPlatformHint();
+        // Jellyfin may invoke a source callback without the original device
+        // headers; never cross a channel's immutable DNS family.
         return IsSmartTv(hinted) == _smartTv ? hinted : snapshot.Platform;
     }
 
