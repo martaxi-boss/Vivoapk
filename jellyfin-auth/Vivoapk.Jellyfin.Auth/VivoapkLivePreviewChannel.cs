@@ -58,7 +58,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public string Name => ChannelNameFor(_slot, _smartTv);
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "vivoapk-native-catalog-root-v12-origin-family";
+    public string DataVersion => "vivoapk-native-catalog-root-v13-hls-direct";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -674,11 +674,12 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             Protocol = MediaProtocol.Http,
             IsRemote = true,
             IsInfiniteStream = isLive,
-            Container = isLive ? "mpegts" : ext,
-            // HLS describes the delivery protocol; MPEG-TS describes the
-            // segments. Jellyfin Web checks TranscodingSubProtocol/Container
-            // to select its HLS.js player even for a DIRECT, non-transcoded
-            // source. The enum is descriptive: it does not authorize relay.
+            Container = isLive ? "mpegts,hls" : ext,
+            // Jellyfin Web advertises hls as a direct-play container, while
+            // the native clients advertise mpegts for MPEG-TS segments.
+            // StreamBuilder normalizes the safe alias list against each
+            // client's profile. The HLS subprotocol also selects HLS.js
+            // in Jellyfin Web; this does NOT create a transcoding URL or relay.
             TranscodingSubProtocol = isLive ? MediaStreamProtocol.hls : MediaStreamProtocol.http,
             MediaStreams = isLive || mp4 ? new List<MediaStream>
             {
@@ -709,7 +710,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         // provider (H.264/AAC). Android negotiates containers/codecs before it
         // opens the URL: a playlist extension and an empty stream list cause
         // Jellyfin to reject otherwise playable media for its device profile.
-        Container = "mpegts",
+        Container = "mpegts,hls",
         TranscodingSubProtocol = MediaStreamProtocol.hls,
         MediaStreams = new List<MediaStream>
         {
