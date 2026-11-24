@@ -21,18 +21,23 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 /// </summary>
 public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCallback, IHasCacheKey
 {
-    public const int MaxChannels = 64; // bounded, stable one-to-one Jellyfin ChannelIds
+    public const int MaxChannels = 64; // 64 subscriber reservations, two source families each
     private readonly int _slot;
+    private readonly bool _smartTv;
     private readonly IHttpContextAccessor? _httpContextAccessor;
     private readonly MegaResolverClient _resolver = new();
-    public VivoapkLivePreviewChannel(int slot, IHttpContextAccessor? httpContextAccessor = null)
+    public VivoapkLivePreviewChannel(int slot, bool smartTv = false, IHttpContextAccessor? httpContextAccessor = null)
     {
         if (slot is < 0 or >= MaxChannels)
             throw new ArgumentOutOfRangeException(nameof(slot));
         _slot = slot;
+        _smartTv = smartTv;
         _httpContextAccessor = httpContextAccessor;
     }
-    public static string ChannelNameFor(int slot) => $"VivoAPK — Conteúdos {slot + 1}";
+    public static bool IsSmartTv(string platform) => platform is "tizen" or "webos";
+    public static string ChannelNameFor(int slot, bool smartTv = false)
+        => $"VivoAPK — Conteúdos {slot + 1}" + (smartTv ? " — Smart TV" : "");
+    private string MediaIdPrefix => "slot:" + _slot + ":" + (_smartTv ? "tv" : "general") + ":";
     private sealed record PilotStream(string ExternalId, string Title, string ProviderId);
     private sealed record PilotSnapshot(
         Guid Owner, DateTime Expires, string Origin, string Username,
@@ -48,18 +53,18 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             { get; } = new(StringComparer.Ordinal);
     }
     private static readonly object Gate = new();
-    private static readonly Dictionary<int, PilotSnapshot> Pilots = new();
+    private static readonly Dictionary<(int Slot, bool SmartTv), PilotSnapshot> Pilots = new();
 
-    public string Name => ChannelNameFor(_slot);
+    public string Name => ChannelNameFor(_slot, _smartTv);
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "vivoapk-native-catalog-root-v11-slot-isolation";
+    public string DataVersion => "vivoapk-native-catalog-root-v12-origin-family";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
     public string HomePageUrl => string.Empty;
     public ChannelParentalRating ParentalRating => ChannelParentalRating.GeneralAudience;
 
-    internal static string? Stage(Guid owner, IReadOnlyList<MegaPreviewEntry> channels,
+    internal static int? Stage(Guid owner, IReadOnlyList<MegaPreviewEntry> channels,
         string? origin, string username, string password, bool fullLive = false,
         bool categoryNavigation = false, string? sessionToken = null, string platform = "android",
         IReadOnlyList<MegaPreviewEntry>? movieCategories = null,
@@ -103,12 +108,13 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 assignedSlot = Array.FindIndex(reservations, string.IsNullOrEmpty);
             if (assignedSlot == -1)
                 return null;
+            var family = IsSmartTv(platform);
             var now = DateTime.UtcNow;
             foreach (var expired in Pilots.Where(kv => kv.Value.Expires <= now)
                          .Select(kv => kv.Key).ToArray())
                 Pilots.Remove(expired);
             // Reject inconsistent in-RAM state instead of changing subscriber owner.
-            if (Pilots.TryGetValue(assignedSlot, out var occupied) &&
+            if (Pilots.TryGetValue((assignedSlot, family), out var occupied) &&
                 occupied.Owner != owner)
                 return null;
             var streams = new List<PilotStream>();
@@ -173,17 +179,17 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             if (!string.IsNullOrEmpty(sessionToken))
                 activeSnapshot.PlatformSessions[platform] = (
                     sessionToken, origin, DateTime.UtcNow.AddMinutes(4));
-            Pilots[assignedSlot] = activeSnapshot;
-            return ChannelNameFor(assignedSlot);
+            Pilots[(assignedSlot, family)] = activeSnapshot;
+            return assignedSlot;
         }
     }
 
-    private static PilotSnapshot? ForUser(Guid user, int slot)
+    private PilotSnapshot? ForUser(Guid user)
     {
         lock (Gate)
         {
             return Plugin.Instance?.Configuration.PilotLiveChannels == true &&
-                Pilots.TryGetValue(slot, out var p) && p.Owner == user &&
+                Pilots.TryGetValue((_slot, _smartTv), out var p) && p.Owner == user &&
                 p.Expires > DateTime.UtcNow ? p : null;
         }
     }
@@ -192,14 +198,19 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     {
         if (!Guid.TryParse(userId, out var id))
             return "denied";
-        var snapshot = ForUser(id, _slot);
+        var snapshot = ForUser(id);
         if (snapshot is null)
             return "denied";
         return id.ToString("N") + ":" + snapshot.Expires.Ticks.ToString(CultureInfo.InvariantCulture);
     }
 
     public bool IsEnabledFor(string userId)
-        => Guid.TryParse(userId, out var id) && ForUser(id, _slot) is not null;
+    {
+        if (!Guid.TryParse(userId, out var id))
+            return false;
+        var snapshot = ForUser(id);
+        return snapshot is not null && IsSmartTv(RequestPlatform(snapshot)) == _smartTv;
+    }
 
     public InternalChannelFeatures GetChannelFeatures() => new()
     {
@@ -215,7 +226,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     public async Task<ChannelItemResult> GetChannelItems(
         InternalChannelItemQuery query, CancellationToken cancellationToken)
     {
-        var snapshot = ForUser(query.UserId, _slot);
+        var snapshot = ForUser(query.UserId);
         if (snapshot is null)
             return EmptyResult();
         List<ChannelItemInfo> list;
@@ -309,8 +320,8 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     list.Add(new ChannelItemInfo
                     {
                         Id = kind == "live"
-                            ? "slot:" + _slot + ":live:" + category.ProviderId + ":" + entry.Id
-                            : "slot:" + _slot + ":vod:" + category.ProviderId + ":" + entry.Id
+                            ? MediaIdPrefix + "live:" + category.ProviderId + ":" + entry.Id
+                            : MediaIdPrefix + "vod:" + category.ProviderId + ":" + entry.Id
                                 + ":" + (ext ?? "unknown"),
                         Name = entry.Title,
                         Type = ChannelItemType.Media,
@@ -358,7 +369,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     episode.SeasonId, parts[3], StringComparison.Ordinal))
                 .Select(episode => new ChannelItemInfo
                 {
-                    Id = "slot:" + _slot + ":ep:" + parts[1] + ":" + parts[2] + ":" + episode.Id
+                    Id = MediaIdPrefix + "ep:" + parts[1] + ":" + parts[2] + ":" + episode.Id
                         + ":" + (ValidExtension(episode.Extension) ?? "unknown"),
                     Name = episode.Title,
                     Type = ChannelItemType.Media,
@@ -431,7 +442,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             return null;
         lock (Gate)
         {
-            if (Pilots.TryGetValue(_slot, out var active) &&
+            if (Pilots.TryGetValue((_slot, _smartTv), out var active) &&
                 ReferenceEquals(active, snapshot))
                 snapshot.CurrentToken = refreshed.SessionToken;
         }
@@ -461,7 +472,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         {
             lock (Gate)
             {
-                if (Pilots.TryGetValue(_slot, out var active) &&
+                if (Pilots.TryGetValue((_slot, _smartTv), out var active) &&
                     ReferenceEquals(active, snapshot))
                     snapshot.CurrentToken = refreshed.SessionToken;
             }
@@ -486,7 +497,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
     {
         lock (Gate)
         {
-            if (Pilots.TryGetValue(_slot, out var active) &&
+            if (Pilots.TryGetValue((_slot, _smartTv), out var active) &&
                 ReferenceEquals(snapshot, active) &&
                 snapshot.PlatformSessions.TryGetValue(platform, out var known) &&
                 known.Expires > DateTime.UtcNow)
@@ -500,7 +511,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             return null;
         lock (Gate)
         {
-            if (!Pilots.TryGetValue(_slot, out var active) ||
+            if (!Pilots.TryGetValue((_slot, _smartTv), out var active) ||
                 !ReferenceEquals(snapshot, active) ||
                 snapshot.Expires <= DateTime.UtcNow)
                 return null;
@@ -535,7 +546,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         lock (Gate)
         {
             snapshot = Plugin.Instance?.Configuration.PilotLiveChannels == true &&
-                Pilots.TryGetValue(_slot, out var stored) &&
+                Pilots.TryGetValue((_slot, _smartTv), out var stored) &&
                 stored.Expires > DateTime.UtcNow ? stored : null;
         }
         if (snapshot is null)
@@ -552,7 +563,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         // No indexed source is trusted at playback: the backend revalidates
         // provider entitlement and exact category/item membership each time.
         // This rejects guessed IDs and revoked subscriptions.
-        var prefix = "slot:" + _slot + ":";
+        var prefix = MediaIdPrefix;
         if (!id.StartsWith(prefix, StringComparison.Ordinal))
             return Array.Empty<MediaSourceInfo>();
         var parts = id[prefix.Length..].Split(':');
