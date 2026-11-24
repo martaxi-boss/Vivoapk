@@ -1040,7 +1040,7 @@ def main():
         audio_frames = sum(line.startswith("1,") for line in frames)
         if (decoded.returncode or video_frames < 40 or audio_frames < 20
                 or provider.requests < 3):
-            raise RuntimeError("Direct HLS fixture did not decode video and audio")
+            raise RuntimeError("Direct HLS fixture failed: " + json.dumps({"decoder_exit": decoded.returncode, "video_frames": video_frames, "audio_frames": audio_frames, "provider_requests": provider.requests}, sort_keys=True))
         print("JELLYFIN_RETURNED_HLS_DECODE=" + json.dumps({
             "video_frames": video_frames, "audio_frames": audio_frames,
             "provider_requests": provider.requests, "jellyfin_media_requests": 0,
