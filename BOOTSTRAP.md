@@ -62,13 +62,17 @@ Aplicação Jellyfin oficial
 - O serviço `jellyfin-pink.service` é o **nome herdado do serviço Jellyfin ativo**, não um pedido para voltar a instalar Pink IPTV. Nunca apagar o Jellyfin por causa do nome.
 - Se existirem componentes antigos do Pink ainda ativos, a remoção definitiva é uma operação separada: inventariar consumidores e backups e nunca destruir serviços ou dados que a integração Jellyfin ainda use. O objetivo final é **não depender do Pink IPTV nem ocupar a VPS com o Pink**.
 
-## Estado comprovado versus objetivo (fotografia de 23/11/2026)
+## Estado comprovado versus objetivo — 24/11/2026
 
-**Já demonstrado:** autenticação Mega OTT via backend e plugin Jellyfin em parte dos ensaios; DNS de subscrição disponíveis no backend; perfil sintético compatível e reprodução RTP1 descodificada por FFmpeg fora do dispositivo.
+**Instalado de facto na VPS:** backend VivoAPK na revisão `74b6a02be199a29c305058d2875063eb46c1b61d` e plugin Jellyfin da revisão `7989e4371f8b0e0f5daf152745361851b1d41e03` (DLL SHA-256 `b443c40c70104c02c32b4b1cf5c5df0e06638289fe2146bcab59a0c2d78c0640`). **Não é a antiga versão de cinco canais / uma conta.** A opção `CategoryNavigation=true` apresenta estruturas nativas de **TV ao vivo, Filmes e Séries**, com categorias, temporadas e episódios carregados à medida que são consultados. O limite atual é de **64 canais internos de subscrição reservados**, não de clientes ilimitados.
 
-**Ainda não concluído:** catálogo inteiro isolado por cliente dentro do Jellyfin, reprodução Android real (erro `Source error` reportado), compatibilidade real iOS/Windows/Smart TVs, ausência de retransmissão medida em cada plataforma. O módulo `VivoapkLivePreviewChannel` em produção é um **piloto de até cinco canais, uma conta de cada vez**, não o produto final. O desenvolvimento de múltiplas contas é experimental até aprovação e testes reais.
+**Verificado por Ferrari/REA na VPS:** [ativação #45295919917](https://github.com/martaxi-boss/VPS/actions/runs/45295919917), [pós-instalação independente #45296130037](https://github.com/martaxi-boss/VPS/actions/runs/45296130037) e [reserva após login real #45296571291](https://github.com/martaxi-boss/VPS/actions/runs/45296571291). Serviço Jellyfin, backend, Nginx e PostgreSQL ativos; quatro APIs privadas respondem HTTP 401 sem credenciais; backup do plugin anterior presente; conta administrativa preservada; versão antiga Pink backend/VPN ausente. Uma subscrição Mega OTT real autenticou-se no Jellyfin com HTTP 200 e recebeu um canal interno privado reservado. O ensaio posterior de consulta de canais teve um cabeçalho de autorização incorreto **no próprio script de diagnóstico** e, portanto, **não comprova a navegação real pela app**.
 
-**Regra de honestidade:** a conclusão de GitHub Actions, CI, Ferrari ou REA por si só **não autoriza anunciar que um dispositivo já reproduz**. Confirmar com provas de imagem e som reais, isolamento e tráfego.
+**Testes com Jellyfin 12.4 descartável:** [#45294305825](https://github.com/martaxi-boss/Vivoapk/actions/runs/45294305825) passou com duas contas fictícias: TV, filmes, séries, temporadas, episódios, fontes HLS/MP4 sintéticas diretas, recusa de itens de outra conta, recusa de IDs de utilizador forjados, nenhuma descarga antecipada de catálogos globais e recuperação após reinício.
+
+**Ainda não certificado como produto final:** imagem e som em Android físico (o último teste anterior reportou `Source error`), iOS, Windows, Samsung Tizen e LG webOS; EPG visível no guia nativo Jellyfin (a API EPG do backend existe, não equivale à UI Live TV); escalabilidade acima das 64 reservas, revogação/reautenticação em sessões longas e recuperação após reinício sem intervenção; prova de que os clientes reais não encaminham media pela VPS. As fontes `DirectPlay` no JSON e a CI **não substituem testes nos aparelhos reais**.
+
+**Regra de honestidade:** este é o estado atual da **instalação técnica com catálogo ativo**, não uma certificação de compatibilidade universal nem de reprodução direta física. Não criar novo painel, APK, proxy ou reinstalação Pink para esconder lacunas.
 
 ## Critério final de aceitação
 
