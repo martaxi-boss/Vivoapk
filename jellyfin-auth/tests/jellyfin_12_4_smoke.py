@@ -819,6 +819,23 @@ def main():
         if code != 200 or not isinstance(owner_media, dict) or not owner_media.get("MediaSources"):
             raise RuntimeError("Pilot playback source not available to its owner")
         media_sources = owner_media["MediaSources"]
+        # Regression: Jellyfin 12.4 globally caches ChannelMediaSourceInfo by
+        # ExternalId, not by user or channel. Both mock subscriptions intentionally
+        # share the same live stream ID: the source must remain account-bound.
+        if CATEGORY_MODE:
+            code_b, other_media = request(
+                "POST", "/Items/" + item_id_b + "/PlaybackInfo?UserId=" + account_b,
+                {}, token=customer_b["AccessToken"], client_name="Jellyfin for Tizen")
+            other_sources = other_media.get("MediaSources", []) if isinstance(other_media, dict) else []
+            if code_b != 200 or len(other_sources) != 1:
+                raise RuntimeError("Second subscriber missing direct-play source")
+            url_a = str(media_sources[0].get("Path") or "")
+            url_b = str(other_sources[0].get("Path") or "")
+            if (url_a == url_b
+                    or "/synthetic-mega-user/synthetic-mega-password/" not in url_a
+                    or "/synthetic-mega-user-b/synthetic-mega-password-b/" not in url_b):
+                raise RuntimeError("MULTITENANT_SOURCE_CACHE_CROSSOVER")
+            print("JELLYFIN_SYNTHETIC_SOURCE_CACHE_ACCOUNT_ISOLATION=PASS")
         # Metadata-only diagnostics; NEVER print source URLs or credentials.
         print("JELLYFIN_HLS_MEDIA_FLAGS=" + json.dumps({
             "count": len(media_sources),
