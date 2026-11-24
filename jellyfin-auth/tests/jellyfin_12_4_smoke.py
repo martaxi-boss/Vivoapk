@@ -11,9 +11,11 @@ import subprocess
 import threading
 import time
 from urllib.parse import urlencode
+from urllib.request import urlopen
 
 PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
 MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
+CATEGORY_MODE = os.environ.get("VIVOAPK_CI_CATEGORY_MODE") == "1"
 
 class BackendHandler(socketserver.StreamRequestHandler):
     def handle(self):
@@ -22,7 +24,10 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if len(parts) < 3 or parts[0] != b"POST":
             return
         route = parts[1]
-        if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status", b"/v1/catalog/preview"):
+        if route not in (b"/v1/session/resolve", b"/_internal/entitlement/status",
+                          b"/v1/catalog/preview", b"/v1/catalog/list",
+                          b"/v1/catalog/categories", b"/v1/catalog/category-items",
+                          b"/v1/catalog/series"):
             return
         length = 0
         headers = {}
@@ -37,7 +42,75 @@ class BackendHandler(socketserver.StreamRequestHandler):
         if not 0 < length < 4096:
             return
         request = json.loads(self.rfile.read(length))
-        if route == b"/v1/catalog/preview":
+        if route in (b"/v1/catalog/categories", b"/v1/catalog/category-items",
+                     b"/v1/catalog/series"):
+            if route == b"/v1/catalog/category-items":
+                self.server.category_item_calls += 1
+            auth = headers.get(b"authorization", b"")
+            is_a = auth == b"Bearer ci-session-a"
+            is_b = auth == b"Bearer ci-session-b"
+            name = "Azul" if is_a else "Verde"
+            kind = request.get("kind", "series" if route == b"/v1/catalog/series" else "live")
+            if kind == "live":
+                ids = ("10", "11") if is_a else ("20", "21")
+                categories = [
+                    {"id": ids[0], "name": "Portugal " + name},
+                    {"id": ids[1], "name": "Desporto " + name},
+                ]
+            elif kind == "vod":
+                ids = ("110",) if is_a else ("120",)
+                categories = [{"id": ids[0], "name": "Filmes " + name}]
+            elif kind == "series":
+                ids = ("210",) if is_a else ("220",)
+                categories = [{"id": ids[0], "name": "Séries " + name}]
+            else:
+                ids, categories = (), []
+            if not (is_a or is_b):
+                response_code = b"401 Unauthorized"
+                body = b'{"detail":"Unauthorized"}'
+            elif route == b"/v1/catalog/categories":
+                response_code = b"200 OK"
+                body = json.dumps({
+                    "kind": kind, "categories": categories, "items": []
+                }).encode()
+            elif request.get("category_id") not in ids:
+                response_code = b"401 Unauthorized"
+                body = b'{"detail":"Unauthorized"}'
+            elif route == b"/v1/catalog/series":
+                if request.get("series_id") != "601":
+                    response_code = b"401 Unauthorized"
+                    body = b'{"detail":"Unauthorized"}'
+                else:
+                    response_code = b"200 OK"
+                    body = json.dumps({
+                        "series_id": "601", "title": "Série " + name,
+                        "seasons": [{"id": "1", "title": "Temporada 1"}],
+                        "episodes": [{"id": "701", "season_id": "1",
+                                      "title": "Episódio " + name,
+                                      "episode_number": "1",
+                                      "container_extension": "mp4"}],
+                    }).encode()
+            else:
+                response_code = b"200 OK"
+                category_id = request["category_id"]
+                if kind == "live":
+                    expanded = [{
+                        "id": str(42+i),
+                        "title": "Canal CI " + name + ("" if i == 0 else " " + str(i)),
+                        "category_id": category_id, "container_extension": None}
+                        for i in range(6 if category_id in ("10", "20") else 1)]
+                elif kind == "vod":
+                    expanded = [{"id": "501", "title": "Filme " + name,
+                                 "category_id": category_id,
+                                 "container_extension": "mp4"}]
+                else:
+                    expanded = [{"id": "601", "title": "Série " + name,
+                                 "category_id": category_id,
+                                 "container_extension": None}]
+                body = json.dumps({
+                    "kind": kind, "categories": [], "items": expanded
+                }).encode()
+        elif route in (b"/v1/catalog/preview", b"/v1/catalog/list"):
             auth = headers.get(b"authorization", b"")
             if auth not in (b"Bearer ci-session-a", b"Bearer ci-session-b"):
                 response_code = b"401 Unauthorized"
@@ -45,10 +118,13 @@ class BackendHandler(socketserver.StreamRequestHandler):
             else:
                 name = "Canal CI Azul" if auth.endswith(b"-a") else "Canal CI Verde"
                 response_code = b"200 OK"
+                expanded = [{"id": str(42 + i),
+                             "title": name if i == 0 else name + " " + str(i),
+                             "category_id": "10", "container_extension": None}
+                            for i in range(6 if route == b"/v1/catalog/list" else 1)]
                 body = json.dumps({
                     "kind": "live", "categories": [{"id": "10", "name": "Teste"}],
-                    "items": [{"id": "42", "title": name, "category_id": "10",
-                               "container_extension": None}]
+                    "items": expanded
                 }).encode()
         elif route == b"/_internal/entitlement/status":
             if headers.get(b"x-vivoapk-monitor-key") != (
@@ -99,15 +175,21 @@ class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         name = Path(self.path).name
-        target = self.server.media_root / (
-            "fixture.m3u8" if name == "42.m3u8" else name)
-        if name not in ("42.m3u8", "part000.ts", "part001.ts", "part002.ts") or not target.is_file():
+        if ((self.path.startswith("/movie/") and name == "501.mp4")
+                or (self.path.startswith("/series/") and name == "701.mp4")):
+            target = self.server.media_root / "fixture.mp4"
+        else:
+            target = self.server.media_root / (
+                "fixture.m3u8" if name == "42.m3u8" else name)
+        if (name not in ("42.m3u8", "part000.ts", "part001.ts", "part002.ts",
+                         "501.mp4", "701.mp4") or not target.is_file()):
             self.send_error(404)
             return
         payload = target.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", "application/vnd.apple.mpegurl"
-                         if name.endswith(".m3u8") else "video/mp2t")
+        self.send_header("Content-Type",
+                         "application/vnd.apple.mpegurl" if name.endswith(".m3u8")
+                         else "video/mp4" if name.endswith(".mp4") else "video/mp2t")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -130,7 +212,7 @@ def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
     if uri.startswith("/Startup/"):
         headers.pop("Authorization", None)
     if token:
-        headers["Authorization"] = 'MediaBrowser Client="VivoAPK-CI", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'
+        headers["Authorization"] = 'MediaBrowser Client="' + client_name + '", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'
         headers["X-Emby-Token"] = token
     conn.request(method, uri, body=json.dumps(data) if data is not None else None, headers=headers)
     response = conn.getresponse()
@@ -163,7 +245,9 @@ def request_png(uri, *, token):
 
 def main():
     global DATAROOT
-    base = Path(os.environ["RUNNER_TEMP"]) / "vivo-jellyfin-12.4-smoke"
+    base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-category-smoke" if CATEGORY_MODE
+        else "vivo-jellyfin-12.4-smoke")
     DATAROOT = base / "data"
     for p in [DATAROOT, DATAROOT / "run", base / "cache", base / "config", base / "logs"]:
         p.mkdir(parents=True, exist_ok=True)
@@ -181,6 +265,7 @@ def main():
     monitor_key_path.write_text("synthetic-private-monitor-key-1234567890")
     monitor_key_path.chmod(0o600)
     mock = BackendServer(str(MOCK), BackendHandler)
+    mock.category_item_calls = 0
     synthetic_media = base / "synthetic-provider"
     synthetic_media.mkdir()
     subprocess.run([
@@ -192,6 +277,14 @@ def main():
         "-f", "hls", "-hls_time", "1", "-hls_list_size", "0",
         "-hls_segment_filename", str(synthetic_media / "part%03d.ts"),
         str(synthetic_media / "fixture.m3u8"),
+    ], check=True, timeout=30)
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=550:sample_rate=48000",
+        "-t", "2", "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-movflags", "+faststart",
+        str(synthetic_media / "fixture.mp4"),
     ], check=True, timeout=30)
     provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SyntheticHlsHandler)
     provider.media_root = synthetic_media
@@ -249,6 +342,7 @@ def main():
                                "EnableVideoPlaybackTranscoding",
                                "EnableAudioPlaybackTranscoding",
                                "ForceRemoteSourceTranscoding")
+        no_download_share = ("EnableContentDownloading", "EnablePublicSharing")
         admin_media_policy_before = {key: admin["User"].get("Policy", {}).get(key)
                                      for key in media_policy_fields}
         code, plugins = request("GET", "/Plugins", token=token)
@@ -268,7 +362,9 @@ def main():
 
         # CI TEST ONLY: enable the otherwise disabled auth plugin in disposable Jellyfin.
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
-                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True, "PilotLiveChannels": True}, token=token)
+                          {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True,
+                           "PilotLiveChannels": True, "FullLiveCatalog": not CATEGORY_MODE,
+                           "CategoryNavigation": CATEGORY_MODE}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -293,14 +389,30 @@ def main():
         account_b = customer_b["User"]["Id"]
         if account_a.replace("-", "") == account_b.replace("-", ""):
             raise RuntimeError("Two synthetic customers share Jellyfin identity")
+        # The channel-to-owner binding is written by the plugin itself, and
+        # contains only GUIDs — no provider password or direct-play URL.
+        from xml.etree import ElementTree
+        configs = [p for root in (DATAROOT, base / "config")
+                   for p in root.rglob("Jellyfin.Plugin.VivoapkMegaAuth.xml")
+                   if p.is_file()]
+        if len(configs) != 1:
+            raise RuntimeError("Private channel reservation XML not persisted uniquely")
+        config = ElementTree.parse(configs[0]).getroot()
+        reserved = config.find("ChannelSlotOwners")
+        owners = [x.text.replace("-", "").lower() for x in reserved
+                  if x.text and x.text.strip()] if reserved is not None else []
+        if len(owners) != 2 or set(owners) != {account_a.replace("-", "").lower(),
+                                                account_b.replace("-", "").lower()}:
+            raise RuntimeError("Jellyfin channel slots not durably reserved for owners")
+        print("JELLYFIN_SYNTHETIC_CHANNEL_SLOT_OWNERS_PERSISTED=PASS")
 
         for customer_id in (account_a, account_b):
             code, profile = request("GET", "/Users/" + customer_id, token=token)
             if code != 200 or not isinstance(profile, dict):
                 raise RuntimeError("Cannot read VivoAPK subscriber policy")
             if any(profile.get("Policy", {}).get(k) is not False
-                   for k in media_policy_fields):
-                raise RuntimeError("Mega user still permits media forwarding via VPS")
+                   for k in media_policy_fields + no_download_share):
+                raise RuntimeError("Mega user still permits media forwarding or downloads")
         code, admin_after = request("GET", "/Users/" + admin["User"]["Id"],
                                     token=token)
         if code != 200 or any(
@@ -310,24 +422,41 @@ def main():
             raise RuntimeError("Mega plugin altered Jellyfin admin media policy")
         print("JELLYFIN_MEGA_DIRECT_ONLY_USER_POLICY_AND_ADMIN=PASS")
 
-        # A single test customer can see native pilot channels, never the
-        # second customer's media. The backend and stream URL are synthetic.
+        # EXPERIMENT: stage two concurrent account catalogues and probe native
+        # Jellyfin ChannelManager/PlaybackInfo authorization across both.
+        # No production deployment or real Mega credentials.
         code, channels_a = request("GET", "/Channels?UserId=" + account_a,
                                    token=customer["AccessToken"])
         if code != 200 or not isinstance(channels_a, dict):
             raise RuntimeError("Native pilot channel list unavailable")
         pilot_a = [x for x in channels_a.get("Items", [])
-                   if x.get("Name") == "VivoAPK — TV de teste"]
+                   if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
         if len(pilot_a) != 1:
             raise RuntimeError("Owner cannot see own native preview TV channel")
         code, channels_b = request("GET", "/Channels?UserId=" + account_b,
                                    token=customer_b["AccessToken"])
         if code != 200 or not isinstance(channels_b, dict):
             raise RuntimeError("Second account channel list unavailable")
-        if any(x.get("Name") == "VivoAPK — TV de teste"
-               for x in channels_b.get("Items", [])):
-            raise RuntimeError("Cross-subscriber pilot channel exposed")
+        pilot_b = [x for x in channels_b.get("Items", [])
+                   if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
+        if len(pilot_b) != 1:
+            raise RuntimeError("Second subscribed account cannot see own preview")
         channel_id = pilot_a[0]["Id"]
+        if channel_id == pilot_b[0]["Id"]:
+            raise RuntimeError("Two subscribers still share the same internal ChannelId")
+        if CATEGORY_MODE:
+            if mock.category_item_calls != 0:
+                raise RuntimeError("Provider category streams loaded during login")
+            # Jellyfin's GetLatestChannelItems eagerly refreshes one folder
+            # level. Only our TV root and category metadata may be refreshed:
+            # it MUST NOT fetch all 453 underlying category item lists.
+            code, _ = request(
+                "GET", "/Channels/Items/Latest?UserId=" + account_a
+                + "&ChannelIds=" + channel_id,
+                token=customer["AccessToken"])
+            if code != 200 or mock.category_item_calls != 0:
+                raise RuntimeError("Jellyfin eagerly downloaded all category items")
+            print("JELLYFIN_SYNTHETIC_NO_EAGER_GLOBAL_CHANNEL_DOWNLOAD=PASS")
         for image_type in ("Primary", "Thumb"):
             image_code, mime, art = request_png(
                 "/Items/" + channel_id + "/Images/" + image_type,
@@ -341,22 +470,336 @@ def main():
             token=customer["AccessToken"])
         if code != 200 or not isinstance(pilot_items, dict) or not pilot_items.get("Items"):
             raise RuntimeError("Pilot channel did not produce visible media items")
-        if pilot_items["Items"][0].get("Name") != "Canal CI Azul":
-            raise RuntimeError("Pilot channel content did not match owner")
-        # Access by a known foreign channel item ID must also be denied,
-        # not just hidden from the second account's visible channel list.
+        if CATEGORY_MODE:
+            root_folders_a = pilot_items["Items"]
+            if {x.get("Name") for x in root_folders_a} != {
+                    "TV ao vivo", "Filmes", "Séries"}:
+                raise RuntimeError("Native multimedia roots not exposed for A")
+            code, pilot_items = request(
+                "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
+                + "&FolderId=" + next(x["Id"] for x in root_folders_a
+                                      if x.get("Name") == "TV ao vivo"),
+                token=customer["AccessToken"])
+            if code != 200 or not (pilot_items or {}).get("Items"):
+                raise RuntimeError("Live TV root did not expose authorized categories for A")
+            folders_a = pilot_items["Items"]
+            if len(folders_a) != 2 or {x.get("Name") for x in folders_a} != {
+                    "Portugal Azul", "Desporto Azul"}:
+                observed = [{"name": x.get("Name"), "type": x.get("Type"),
+                             "is_folder": x.get("IsFolder")} for x in folders_a]
+                raise RuntimeError("Authorized Live categories did not become folders: "
+                                   + json.dumps(observed, sort_keys=True))
+            folder_id_a = next(x["Id"] for x in folders_a
+                               if x.get("Name") == "Portugal Azul")
+            code, pilot_items = request(
+                "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
+                + "&FolderId=" + folder_id_a,
+                token=customer["AccessToken"])
+            if code != 200 or not isinstance(pilot_items, dict):
+                raise RuntimeError("Cannot browse native category folder A")
+            if mock.category_item_calls < 1:
+                raise RuntimeError("Opening a category did not call backend category-items")
+            print("JELLYFIN_SYNTHETIC_LAZY_FETCH_ONLY_ON_FOLDER_OPEN=PASS")
+            print("JELLYFIN_SYNTHETIC_NATIVE_CATEGORY_FOLDERS_A=PASS")
+        if (pilot_items["Items"][0].get("Name") != "Canal CI Azul"
+                or len(pilot_items["Items"]) != 6):
+            raise RuntimeError("Authorized Live category did not return six media items")
         pilot_item_id = pilot_items["Items"][0]["Id"]
-        code, _ = request(
-            "GET", "/Users/" + account_b + "/Items/" + pilot_item_id,
+        code, pilot_items_b = request(
+            "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b,
             token=customer_b["AccessToken"])
-        if code == 200:
-            raise RuntimeError("Pilot channel media accessible directly to foreign user")
-        code, _ = request(
-            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_b,
-            {}, token=customer_b["AccessToken"])
-        if code == 200:
-            raise RuntimeError("Foreign user can request pilot channel playback info")
+        if code != 200 or not isinstance(pilot_items_b, dict):
+            raise RuntimeError("Second account cannot browse own channels")
+        if CATEGORY_MODE:
+            root_folders_b = pilot_items_b["Items"]
+            if {x.get("Name") for x in root_folders_b} != {
+                    "TV ao vivo", "Filmes", "Séries"}:
+                raise RuntimeError("Native multimedia roots not exposed for B")
+            code, pilot_items_b = request(
+                "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b
+                + "&FolderId=" + next(x["Id"] for x in root_folders_b
+                                      if x.get("Name") == "TV ao vivo"),
+                token=customer_b["AccessToken"])
+            if code != 200 or not (pilot_items_b or {}).get("Items"):
+                raise RuntimeError("Live TV root did not expose authorized categories for B")
+            folders_b = pilot_items_b["Items"]
+            if len(folders_b) != 2 or {x.get("Name") for x in folders_b} != {
+                    "Portugal Verde", "Desporto Verde"}:
+                observed = [{"name": x.get("Name"), "type": x.get("Type"),
+                             "is_folder": x.get("IsFolder")} for x in folders_b]
+                raise RuntimeError("Native category listing crossed subscribers: "
+                                   + json.dumps(observed, sort_keys=True))
+            folder_id_b = next(x["Id"] for x in folders_b
+                               if x.get("Name") == "Portugal Verde")
+            code, pilot_items_b = request(
+                "GET", "/Channels/" + pilot_b[0]["Id"] + "/Items?UserId=" + account_b
+                + "&FolderId=" + folder_id_b,
+                token=customer_b["AccessToken"])
+            if code != 200 or not isinstance(pilot_items_b, dict):
+                raise RuntimeError("Cannot browse native category folder B")
+            code, foreign_folder = request(
+                "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
+                + "&FolderId=" + folder_id_b,
+                token=customer["AccessToken"])
+            if code == 200 and (foreign_folder or {}).get("Items"):
+                raise RuntimeError("CROSS_ACCOUNT_CATEGORY_FOLDER_BYPASS")
+            print("JELLYFIN_SYNTHETIC_NATIVE_CATEGORY_FOLDERS_B=PASS")
+            print("JELLYFIN_SYNTHETIC_CATEGORY_FOLDER_ISOLATION=PASS")
+        names_b = [item.get("Name") for item in pilot_items_b.get("Items", [])]
+        if (len(names_b) != 6 or names_b[0] != "Canal CI Verde"
+                or "Canal CI Azul" in names_b):
+            raise RuntimeError("MULTITENANT_CATALOG_LEAK_OR_CACHE_CROSSOVER")
+        item_id_b = pilot_items_b["Items"][0]["Id"]
+        if pilot_item_id == item_id_b:
+            raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
+        for foreign_user, foreign_token, victim_item in (
+            (account_b, customer_b["AccessToken"], pilot_item_id),
+            (account_a, customer["AccessToken"], item_id_b),
+        ):
+            code, _ = request(
+                "GET", "/Users/" + foreign_user + "/Items/" + victim_item,
+                token=foreign_token)
+            if code == 200:
+                raise RuntimeError("MULTITENANT_ITEM_ID_BYPASS: foreign account opened item")
+            code, info = request(
+                "POST", "/Items/" + victim_item + "/PlaybackInfo?UserId=" + foreign_user,
+                {}, token=foreign_token)
+            if code == 200:
+                raise RuntimeError("MULTITENANT_PLAYBACKINFO_BYPASS: foreign account opened PlaybackInfo")
+        # Also reject a stolen or guessed victim UserId in API query parameters;
+        # being logged in as B must never grant A's channel or media.
+        for victim_user, victim_channel, victim_item, attacker_token in (
+            (account_a, channel_id, pilot_item_id, customer_b["AccessToken"]),
+            (account_b, pilot_b[0]["Id"], item_id_b, customer["AccessToken"]),
+        ):
+            code, response = request(
+                "GET", "/Channels/" + victim_channel + "/Items?UserId=" + victim_user,
+                token=attacker_token)
+            if code == 200 and (response or {}).get("Items"):
+                raise RuntimeError("MULTITENANT_USERID_SPOOFING_LEAK: foreign channel listing")
+            code, response = request(
+                "POST", "/Items/" + victim_item + "/PlaybackInfo?UserId=" + victim_user,
+                {}, token=attacker_token)
+            if code == 200 and (response or {}).get("MediaSources"):
+                raise RuntimeError("MULTITENANT_USERID_SPOOFING_PLAYBACK: foreign source")
+        if CATEGORY_MODE:
+            def open_group(owner_id, owner_token, provider_channel, root_folders,
+                           root_name, category_name, client_name):
+                root_id = next(x["Id"] for x in root_folders
+                               if x.get("Name") == root_name)
+                status, categories = request(
+                    "GET", "/Channels/" + provider_channel + "/Items?UserId="
+                    + owner_id + "&FolderId=" + root_id,
+                    token=owner_token, client_name=client_name)
+                if status != 200 or not categories or not categories.get("Items"):
+                    raise RuntimeError("Multimedia category root not browseable")
+                folder_id = next(x["Id"] for x in categories["Items"]
+                                 if x.get("Name") == category_name)
+                status, entries = request(
+                    "GET", "/Channels/" + provider_channel + "/Items?UserId="
+                    + owner_id + "&FolderId=" + folder_id,
+                    token=owner_token, client_name=client_name)
+                if status != 200 or not entries or not entries.get("Items"):
+                    raise RuntimeError("Multimedia category items not browseable")
+                return entries["Items"]
+
+            multimedia = []
+            for who, owner, own_token, channel, roots, label, client_name in (
+                ("a", account_a, customer["AccessToken"], channel_id,
+                 root_folders_a, "Azul", "Jellyfin Android"),
+                ("b", account_b, customer_b["AccessToken"], pilot_b[0]["Id"],
+                 root_folders_b, "Verde", "Jellyfin for Tizen"),
+            ):
+                movies = open_group(
+                    owner, own_token, channel, roots,
+                    "Filmes", "Filmes " + label, client_name)
+                if len(movies) != 1 or movies[0].get("Name") != "Filme " + label:
+                    raise RuntimeError("Subscriber movie catalogue leaked or missing")
+                movie_id = movies[0]["Id"]
+                series = open_group(
+                    owner, own_token, channel, roots,
+                    "Séries", "Séries " + label, client_name)
+                if len(series) != 1 or series[0].get("Name") != "Série " + label:
+                    raise RuntimeError("Subscriber series catalogue leaked or missing")
+                show_id = series[0]["Id"]
+                status, seasons = request(
+                    "GET", "/Channels/" + channel + "/Items?UserId=" + owner
+                    + "&FolderId=" + show_id,
+                    token=own_token, client_name=client_name)
+                if status != 200 or len((seasons or {}).get("Items", [])) != 1:
+                    raise RuntimeError("Cannot browse authorized series seasons")
+                season_id = seasons["Items"][0]["Id"]
+                status, episodes = request(
+                    "GET", "/Channels/" + channel + "/Items?UserId=" + owner
+                    + "&FolderId=" + season_id,
+                    token=own_token, client_name=client_name)
+                if status != 200 or len((episodes or {}).get("Items", [])) != 1:
+                    raise RuntimeError("Cannot browse authorized series episodes")
+                episode_id = episodes["Items"][0]["Id"]
+                if episodes["Items"][0].get("Name") != "Episódio " + label:
+                    raise RuntimeError("Wrong subscriber episode metadata")
+                for video_id, expected_kind, ending in (
+                    (movie_id, "movie", "/501.mp4"),
+                    (episode_id, "series", "/701.mp4"),
+                ):
+                    status, info = request(
+                        "POST", "/Items/" + video_id + "/PlaybackInfo?UserId=" + owner,
+                        {}, token=own_token, client_name=client_name)
+                    sources = info.get("MediaSources", []) if isinstance(info, dict) else []
+                    if status != 200 or len(sources) != 1:
+                        raise RuntimeError("Private multimedia playback source not available")
+                    source = sources[0]
+                    provider_url = str(source.get("Path") or "")
+                    if ("/" + expected_kind + "/" not in provider_url or
+                            not provider_url.endswith(ending) or
+                            source.get("SupportsDirectPlay") is not True or
+                            source.get("SupportsTranscoding") is not False or
+                            bool(source.get("TranscodingUrl"))):
+                        raise RuntimeError("Invalid direct-only MP4 source for subscriber")
+                    # Download only synthetic test media direct from local provider,
+                    # NOT through Jellyfin and NEVER log credential-bearing URLs.
+                    with urlopen(provider_url, timeout=8) as stream:
+                        payload = stream.read(2 * 1024 * 1024)
+                    if b"ftyp" not in payload[:32] or len(payload) < 1000:
+                        raise RuntimeError("Synthetic direct MP4 media corrupt")
+                multimedia.append((who, movie_id, episode_id))
+            for _, movie_id, episode_id in multimedia:
+                other_id = account_b if _ == "a" else account_a
+                other_token = customer_b["AccessToken"] if _ == "a" else customer["AccessToken"]
+                for victim_id in (movie_id, episode_id):
+                    code, _ = request(
+                        "GET", "/Users/" + other_id + "/Items/" + victim_id,
+                        token=other_token)
+                    if code == 200:
+                        raise RuntimeError("MULTIMEDIA_CROSS_SUBSCRIBER_ITEM_BYPASS")
+                    code, leaked = request(
+                        "POST", "/Items/" + victim_id + "/PlaybackInfo?UserId=" + other_id,
+                        {}, token=other_token)
+                    if code == 200 and (leaked or {}).get("MediaSources"):
+                        raise RuntimeError("MULTIMEDIA_CROSS_SUBSCRIBER_SOURCE_BYPASS")
+            print("JELLYFIN_SYNTHETIC_MOVIE_SERIES_EPISODE_FOLDERS=PASS")
+            print("JELLYFIN_SYNTHETIC_DIRECT_MP4_FROM_PROVIDER=PASS")
+            print("JELLYFIN_SYNTHETIC_MULTIMEDIA_CROSS_USER_DENIED=PASS")
+        print("JELLYFIN_SYNTHETIC_USERID_SPOOFING_DENIED=PASS")
+        if CATEGORY_MODE:
+            print("JELLYFIN_SYNTHETIC_LAZY_CATEGORY_6_CHANNELS_PER_ACCOUNT=PASS")
+        else:
+            print("JELLYFIN_SYNTHETIC_FULL_LIVE_6_CHANNELS_PER_ACCOUNT=PASS")
+        print("JELLYFIN_SYNTHETIC_TWO_ACTIVE_CHANNEL_ACCOUNTS_ISOLATED=PASS")
         print("JELLYFIN_SYNTHETIC_PILOT_DIRECT_ACCESS_ISOLATED=PASS")
+        # Prove actual PROCESS restart reuses the same ChannelId slots without
+        # reassigning existing indexed items to another subscriber. Test-only.
+        prior_channel_a, prior_channel_b = channel_id, pilot_b[0]["Id"]
+        previous_item_a, previous_item_b = pilot_item_id, item_id_b
+        jellyfin.terminate()
+        try:
+            jellyfin.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            jellyfin.kill()
+            jellyfin.wait(timeout=6)
+        jellyfin = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
+        for _ in range(100):
+            try:
+                status, info = request("GET", "/System/Info/Public")
+                if status == 200 and (info or {}).get("Version", "").startswith("12.4."):
+                    break
+            except (OSError, http.client.HTTPException):
+                pass
+            time.sleep(0.3)
+        else:
+            raise RuntimeError("Jellyfin failed to restart after persisting slot owner bindings")
+        status, renewed_admin = request("POST", "/Users/AuthenticateByName",
+                                       {"Username": "ci-admin",
+                                        "Pw": "synthetic-admin-password"})
+        if status != 200 or not renewed_admin or not renewed_admin.get("AccessToken"):
+            raise RuntimeError("Admin failed after server process restart")
+        token = renewed_admin["AccessToken"]
+        code, customer = request("POST", "/Users/AuthenticateByName",
+                                 {"Username": "synthetic-mega-user",
+                                  "Pw": "synthetic-mega-password"})
+        code_b, customer_b = request("POST", "/Users/AuthenticateByName",
+                                     {"Username": "synthetic-mega-user-b",
+                                      "Pw": "synthetic-mega-password-b"},
+                                     client_name="Jellyfin for Tizen")
+        if (code != 200 or code_b != 200 or not customer or not customer_b or
+                customer["User"]["Id"] != account_a or
+                customer_b["User"]["Id"] != account_b):
+            raise RuntimeError("Client identities not recovered after Jellyfin restart")
+        code, restarted_channels_a = request(
+            "GET", "/Channels?UserId=" + account_a,
+            token=customer["AccessToken"])
+        code_b, restarted_channels_b = request(
+            "GET", "/Channels?UserId=" + account_b,
+            token=customer_b["AccessToken"])
+        id_list_a = [x.get("Id") for x in (restarted_channels_a or {}).get("Items", [])
+                     if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
+        id_list_b = [x.get("Id") for x in (restarted_channels_b or {}).get("Items", [])
+                     if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
+        if (code != 200 or code_b != 200 or
+                id_list_a != [prior_channel_a] or id_list_b != [prior_channel_b]):
+            raise RuntimeError("SUBSCRIBER_CHANNEL_RESERVATION_CHANGED_AFTER_RESTART")
+        for foreign, credential, old_item in (
+            (account_b, customer_b["AccessToken"], previous_item_a),
+            (account_a, customer["AccessToken"], previous_item_b),
+        ):
+            status, _ = request("GET", "/Users/" + foreign + "/Items/" + old_item,
+                                token=credential)
+            if status == 200:
+                raise RuntimeError("STALE_CHANNEL_ITEM_EXPOSED_AFTER_RESTART")
+            status, response = request(
+                "POST", "/Items/" + old_item + "/PlaybackInfo?UserId=" + foreign,
+                {}, token=credential)
+            if status == 200 and (response or {}).get("MediaSources"):
+                raise RuntimeError("STALE_CHANNEL_PLAYBACK_EXPOSED_AFTER_RESTART")
+        code, recent_items_a = request(
+            "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a,
+            token=customer["AccessToken"])
+        if code != 200 or not (recent_items_a or {}).get("Items"):
+            raise RuntimeError("Subscriber A did not regain channel catalog after restart")
+        if CATEGORY_MODE:
+            code, recent_categories_a = request(
+                "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_items_a["Items"] if x.get("Name") == "TV ao vivo"),
+                token=customer["AccessToken"])
+            if code != 200 or not (recent_categories_a or {}).get("Items"):
+                raise RuntimeError("Cannot recover A categories after restart")
+            code, recent_items_a = request(
+                "GET", "/Channels/" + prior_channel_a + "/Items?UserId=" + account_a
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_categories_a["Items"]
+                    if x.get("Name") == "Portugal Azul"),
+                token=customer["AccessToken"])
+            if code != 200 or not (recent_items_a or {}).get("Items"):
+                raise RuntimeError("Subscriber A category unavailable after restart")
+        pilot_item_id = recent_items_a["Items"][0]["Id"]
+        code, recent_items_b = request(
+            "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b,
+            token=customer_b["AccessToken"])
+        if code != 200 or not (recent_items_b or {}).get("Items"):
+            raise RuntimeError("Subscriber B did not regain channel catalog after restart")
+        if CATEGORY_MODE:
+            code, recent_categories_b = request(
+                "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_items_b["Items"] if x.get("Name") == "TV ao vivo"),
+                token=customer_b["AccessToken"])
+            if code != 200 or not (recent_categories_b or {}).get("Items"):
+                raise RuntimeError("Cannot recover B categories after restart")
+            code, recent_items_b = request(
+                "GET", "/Channels/" + prior_channel_b + "/Items?UserId=" + account_b
+                + "&FolderId=" + next(
+                    x["Id"] for x in recent_categories_b["Items"]
+                    if x.get("Name") == "Portugal Verde"),
+                token=customer_b["AccessToken"])
+            if code != 200 or not (recent_items_b or {}).get("Items"):
+                raise RuntimeError("Subscriber B category unavailable after restart")
+            print("JELLYFIN_SYNTHETIC_CATEGORY_FOLDER_AFTER_RESTART=PASS")
+        item_id_b = recent_items_b["Items"][0]["Id"]
+        if pilot_item_id == item_id_b:
+            raise RuntimeError("Channels merged media IDs after process restart")
+        print("JELLYFIN_SYNTHETIC_RESTART_CHANNEL_OWNER_STABLE=PASS")
+        print("JELLYFIN_SYNTHETIC_RESTART_STALE_ITEMS_DENIED=PASS")
         # A channel browser must not persist a Mega provider password to
         # Jellyfin database, metadata, logs or configuration.
         for path in DATAROOT.rglob("*"):

@@ -116,6 +116,19 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             user.SetPermission(PermissionKind.ForceRemoteSourceTranscoding, false);
             mediaPolicyChanged = true;
         }
+        // Without a private library, Jellyfin's default download/share
+        // permissions could let a client ask the VPS to fetch remote media.
+        // The product contract permits only direct provider playback.
+        if (user.HasPermission(PermissionKind.EnableContentDownloading))
+        {
+            user.SetPermission(PermissionKind.EnableContentDownloading, false);
+            mediaPolicyChanged = true;
+        }
+        if (user.HasPermission(PermissionKind.EnablePublicSharing))
+        {
+            user.SetPermission(PermissionKind.EnablePublicSharing, false);
+            mediaPolicyChanged = true;
+        }
         if (mediaPolicyChanged)
             await users.UpdateUserAsync(user).ConfigureAwait(false);
 
@@ -128,17 +141,49 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             ).ConfigureAwait(false);
         }
 
-        // Experimental, one-user-at-a-time preview. Never stores a credential
-        // in Jellyfin files or database and never enables a shared Live TV tuner.
+        // Experimental per-subscriber channel: metadata from the private backend,
+        // direct provider source only when the owner explicitly requests playback.
+        // Never creates a shared Live TV tuner or stores media passwords on disk.
         if (Plugin.Instance?.Configuration.PilotLiveChannels == true)
         {
-            var preview = await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
-            if (VivoapkLivePreviewChannel.Stage(
-                user.Id, preview, verified.Origin, canonicalUsername, password))
+            var categoryNavigation = Plugin.Instance.Configuration.CategoryNavigation;
+            var fullLive = !categoryNavigation && Plugin.Instance.Configuration.FullLiveCatalog;
+            IReadOnlyList<MegaPreviewEntry>? preview;
+            IReadOnlyList<MegaPreviewEntry>? movies = null;
+            IReadOnlyList<MegaPreviewEntry>? series = null;
+            if (categoryNavigation)
+            {
+                // All three calls use the existing, private JWT-bound category
+                // endpoints; no provider-global list and no new client fields.
+                var liveTask = _resolver.CategoriesAsync(
+                    verified.SessionToken, platform: platform, kind: "live");
+                var movieTask = _resolver.CategoriesAsync(
+                    verified.SessionToken, platform: platform, kind: "vod");
+                var seriesTask = _resolver.CategoriesAsync(
+                    verified.SessionToken, platform: platform, kind: "series");
+                await Task.WhenAll(liveTask, movieTask, seriesTask).ConfigureAwait(false);
+                preview = liveTask.Result;
+                movies = movieTask.Result;
+                series = seriesTask.Result;
+            }
+            else
+            {
+                preview = fullLive
+                    ? await _resolver.FullLiveAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
+                    : await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
+            }
+            var subscriberChannel = preview is null && movies is null && series is null ? null :
+                VivoapkLivePreviewChannel.Stage(
+                    user.Id, preview ?? Array.Empty<MegaPreviewEntry>(),
+                    verified.Origin, canonicalUsername, password,
+                    fullLive: fullLive, categoryNavigation: categoryNavigation,
+                    sessionToken: verified.SessionToken, platform: platform,
+                    movieCategories: movies, seriesCategories: series);
+            if (subscriberChannel is not null)
             {
                 var library = _appHost.Resolve<ILibraryManager>();
                 var channelId = library.GetNewItemId(
-                    "Channel " + VivoapkLivePreviewChannel.ChannelName,
+                    "Channel " + subscriberChannel,
                     typeof(MediaBrowser.Controller.Channels.Channel));
                 user.SetPermission(PermissionKind.EnableAllChannels, false);
                 user.SetPreference(PreferenceKind.EnabledChannels, new[] { channelId });
