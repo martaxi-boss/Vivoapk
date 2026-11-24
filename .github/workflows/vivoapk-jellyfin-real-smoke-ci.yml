@@ -44,10 +44,20 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg >/dev/null
+            # Do not depend on an unbounded apt repository refresh in CI.
+            # The temporary runner image is discarded after this test.
+            python3 -m pip install --quiet --disable-pip-version-check --no-input \
+              --target "$RUNNER_TEMP/vivoapk-test-python" 'imageio-ffmpeg==0.6.0'
+            ffmpeg_binary="$(PYTHONPATH="$RUNNER_TEMP/vivoapk-test-python" python3 -c \
+              'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+            test -x "$ffmpeg_binary"
+            mkdir -p "$RUNNER_TEMP/vivoapk-test-bin"
+            ln -s "$ffmpeg_binary" "$RUNNER_TEMP/vivoapk-test-bin/ffmpeg"
+            export PATH="$RUNNER_TEMP/vivoapk-test-bin:$PATH"
+            echo "$RUNNER_TEMP/vivoapk-test-bin" >> "$GITHUB_PATH"
           fi
           ffmpeg -version | head -n 1
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libx264'
           echo JELLYFIN_TEST_FFMPEG_STARTUP_DEPENDENCY=PASS
           echo JELLYFIN_TEST_MODE=METADATA_ONLY_DIRECT_PLAY
       - name: Run real Jellyfin 12.4 server with a fake local Mega backend
