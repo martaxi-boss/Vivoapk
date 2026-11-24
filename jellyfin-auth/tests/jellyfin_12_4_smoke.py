@@ -206,8 +206,15 @@ class Connection(http.client.HTTPConnection):
         self.sock.settimeout(8)
         self.sock.connect(self.path)
 
+_SESSION_TEST_DEVICES = {}
+
 def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
-    device_id = "vivoapk-ci-" + "".join(ch for ch in client_name.lower() if ch.isascii() and ch.isalnum())
+    def clean(value):
+        return "".join(ch for ch in str(value).lower() if ch.isascii() and ch.isalnum())[:48]
+    identity = (data or {}).get("Username", "") if (
+        uri == "/Users/AuthenticateByName" and isinstance(data, dict)) else ""
+    new_device = "vivoapk-ci-" + clean(client_name) + ("-" + clean(identity) if identity else "")
+    device_id = _SESSION_TEST_DEVICES.get(token, new_device)
     conn = Connection(DATAROOT / "run/jellyfin.sock")
     headers = {
         "Content-Type": "application/json", "Accept": "application/json",
@@ -227,6 +234,9 @@ def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
         parsed = json.loads(payload)
     except (ValueError, UnicodeDecodeError):
         parsed = None
+    if (uri == "/Users/AuthenticateByName" and code == 200
+            and isinstance(parsed, dict) and parsed.get("AccessToken")):
+        _SESSION_TEST_DEVICES[parsed["AccessToken"]] = device_id
     return code, parsed
 
 def request_png(uri, *, token):
@@ -235,7 +245,7 @@ def request_png(uri, *, token):
     headers = {
         "Accept": "image/png",
         "Authorization": ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
-                          'DeviceId="vivoapk-ci-vivoapkci", Version="1.0.0", Token="' + token + '"'),
+                          'DeviceId="' + _SESSION_TEST_DEVICES.get(token, "vivoapk-ci-vivoapkci") + '", Version="1.0.0", Token="' + token + '"'),
         "X-Emby-Token": token,
     }
     conn.request("GET", uri, headers=headers)
