@@ -143,15 +143,18 @@ class BackendHandler(socketserver.StreamRequestHandler):
                     ("synthetic-mega-user", "synthetic-mega-password"),
                     ("synthetic-mega-user-b", "synthetic-mega-password-b"),
                 }
-                and request.get("platform") == (
-                    "tizen" if request.get("username") == "synthetic-mega-user-b" else "android")
+                and request.get("platform") in (
+                    ("tizen",) if request.get("username") == "synthetic-mega-user-b"
+                    else ("android", "tizen"))
             )
             response_code = b"200 OK"
             body = json.dumps({
                 "code": "SUCCESS" if valid else "INVALID_CREDENTIALS",
                 "session_token": ("ci-session-b" if request.get("username") ==
                                   "synthetic-mega-user-b" else "ci-session-a") if valid else None,
-                "xtream_base_url": self.server.provider_origin if valid else None,
+                "xtream_base_url": (
+                    self.server.provider_origin_tv if request.get("platform") == "tizen"
+                    else self.server.provider_origin) if valid else None,
             }).encode()
         self.wfile.write(b"HTTP/1.1 " + response_code
                          + b"\r\nContent-Type: application/json\r\n"
@@ -290,6 +293,7 @@ def main():
     provider.media_root = synthetic_media
     provider.requests = 0
     mock.provider_origin = "http://127.0.0.1:" + str(provider.server_port)
+    mock.provider_origin_tv = "http://localhost:" + str(provider.server_port)
     threading.Thread(target=provider.serve_forever, daemon=True).start()
     mock.statuses = {
         "synthetic-mega-user": "ACTIVE",
@@ -836,6 +840,70 @@ def main():
                     or "/synthetic-mega-user-b/synthetic-mega-password-b/" not in url_b):
                 raise RuntimeError("MULTITENANT_SOURCE_CACHE_CROSSOVER")
             print("JELLYFIN_SYNTHETIC_SOURCE_CACHE_ACCOUNT_ISOLATION=PASS")
+        if CATEGORY_MODE:
+            # The same subscriber signs in from Android and Tizen concurrently.
+            # Two authoritative provider origins must not share a Jellyfin
+            # global MediaSourceInfo cache entry or invalidate either login.
+            tv_status, same_tv = request(
+                "POST", "/Users/AuthenticateByName",
+                {"Username": "synthetic-mega-user",
+                 "Pw": "synthetic-mega-password"},
+                client_name="Jellyfin for Tizen")
+            if tv_status != 200 or not isinstance(same_tv, dict) or (
+                    same_tv.get("User") or {}).get("Id") != account_a:
+                raise RuntimeError("Second-platform login lost subscriber identity")
+            tv_token = same_tv["AccessToken"]
+            status, tv_channels = request(
+                "GET", "/Channels?UserId=" + account_a,
+                token=tv_token, client_name="Jellyfin for Tizen")
+            tv_own = [x for x in (tv_channels or {}).get("Items", [])
+                      if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
+            if status != 200 or len(tv_own) != 1 or tv_own[0]["Id"] == channel_id:
+                raise RuntimeError("Same subscriber TV source-family not separated")
+            tv_channel_id = tv_own[0]["Id"]
+            def tv_items(folder=None):
+                suffix = ("&FolderId=" + folder) if folder else ""
+                return request("GET", "/Channels/" + tv_channel_id
+                               + "/Items?UserId=" + account_a + suffix,
+                               token=tv_token, client_name="Jellyfin for Tizen")
+            status, tv_roots = tv_items()
+            if status != 200 or not tv_roots:
+                raise RuntimeError("TV source-family catalog inaccessible")
+            tv_root = next((x["Id"] for x in tv_roots.get("Items", [])
+                            if x.get("Name") == "TV ao vivo"), None)
+            if not tv_root:
+                raise RuntimeError("TV root missing on same subscription")
+            status, tv_cats = tv_items(tv_root)
+            tv_category = next((x["Id"] for x in (tv_cats or {}).get("Items", [])
+                                if x.get("Name") == "Portugal Azul"), None)
+            if status != 200 or not tv_category:
+                raise RuntimeError("TV categories missing after family selection")
+            status, tv_list = tv_items(tv_category)
+            if status != 200 or not (tv_list or {}).get("Items"):
+                raise RuntimeError("TV category items unavailable")
+            tv_video_id = tv_list["Items"][0]["Id"]
+            status, tv_media = request(
+                "POST", "/Items/" + tv_video_id + "/PlaybackInfo?UserId=" + account_a,
+                {}, token=tv_token, client_name="Jellyfin for Tizen")
+            tv_sources = tv_media.get("MediaSources", []) if isinstance(tv_media, dict) else []
+            if status != 200 or len(tv_sources) != 1:
+                raise RuntimeError("TV source-family media missing")
+            original_path = str(media_sources[0].get("Path") or "")
+            tv_path = str(tv_sources[0].get("Path") or "")
+            if (not original_path.startswith(mock.provider_origin + "/live/")
+                    or not tv_path.startswith(mock.provider_origin_tv + "/live/")
+                    or original_path == tv_path):
+                raise RuntimeError("Same-account general/TV provider origins mixed")
+            status, back_to_general = request(
+                "POST", "/Items/" + pilot_item_id
+                + "/PlaybackInfo?UserId=" + account_a,
+                {}, token=customer["AccessToken"], client_name="Jellyfin Android")
+            recovered_sources = ((back_to_general or {}).get("MediaSources", [])
+                                 if isinstance(back_to_general, dict) else [])
+            if (status != 200 or len(recovered_sources) != 1
+                    or recovered_sources[0].get("Path") != original_path):
+                raise RuntimeError("TV login overwrote concurrent Android media origin")
+            print("JELLYFIN_SYNTHETIC_SAME_ACCOUNT_GENERAL_TV_ORIGIN_ISOLATED=PASS")
         # Metadata-only diagnostics; NEVER print source URLs or credentials.
         print("JELLYFIN_HLS_MEDIA_FLAGS=" + json.dumps({
             "count": len(media_sources),
