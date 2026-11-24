@@ -235,7 +235,7 @@ def request_png(uri, *, token):
     headers = {
         "Accept": "image/png",
         "Authorization": ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
-                          'DeviceId="' + device_id + '", Version="1.0.0", Token="' + token + '"'),
+                          'DeviceId="vivoapk-ci-vivoapkci", Version="1.0.0", Token="' + token + '"'),
         "X-Emby-Token": token,
     }
     conn.request("GET", uri, headers=headers)
