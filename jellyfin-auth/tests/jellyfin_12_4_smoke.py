@@ -988,10 +988,12 @@ def main():
         # A real Mega OTT HLS playlist must be provided instead.
         if any(
             not str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8")
-            or str(source.get("Container") or "").lower() != "mpegts"
+            or not {"mpegts", "hls"}.issubset(
+                set(str(source.get("Container") or "").lower().split(",")))
+            or str(source.get("TranscodingSubProtocol") or "").lower() != "hls"
             for source in media_sources
         ):
-            raise RuntimeError("Jellyfin pilot advertises non-HLS source to Android")
+            raise RuntimeError("Jellyfin pilot does not expose segmented HLS/MPEGTS aliases")
         print("JELLYFIN_MEGA_HTTP_DIRECT_HLS_SOURCE=PASS")
         # Match the native Android client: it advertises media containers and
         # codecs, not the playlist filename extension. An empty request body
@@ -1034,6 +1036,57 @@ def main():
         ):
             raise RuntimeError("Native Android device profile cannot direct-play pilot")
         print("JELLYFIN_ANDROID_PROFILE_DIRECT_PLAY=PASS")
+        if (str(sources[0].get("Container") or "").lower() != "mpegts"
+                or str(sources[0].get("TranscodingSubProtocol") or "").lower() != "hls"):
+            raise RuntimeError("Android lost its native MPEGTS+HLS source negotiation")
+        # Jellyfin Web advertises HLS instead of the native mpegts alias.
+        # Without a compatible 'hls' direct-play profile or an HLS manifest
+        # marker, the HTMLVideoElement may fail with MEDIA_ERR_SRC_NOT_SUPPORTED
+        # before the browser ever makes a media request. Source stays remote;
+        # this fixture cannot validate real HTTPS/CORS/mixed-content policies.
+        web_hls_profile = {
+            "Name": "Jellyfin Web HLS native/MSE",
+            "MaxStreamingBitrate": 120000000,
+            "MaxStaticBitrate": 120000000,
+            "DirectPlayProfiles": [{
+                "Type": "Video", "Container": "hls",
+                "VideoCodec": "h264", "AudioCodec": "aac",
+            }],
+            "TranscodingProfiles": [{
+                "Type": "Video", "Container": "ts", "Protocol": "hls",
+                "VideoCodec": "h264", "AudioCodec": "aac",
+                "Context": "Streaming",
+            }],
+        }
+        web_code, web_media = request(
+            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_a,
+            {"DeviceProfile": web_hls_profile, "AutoOpenLiveStream": True,
+             "MaxStreamingBitrate": 120000000}, token=customer["AccessToken"])
+        web_sources = (web_media or {}).get("MediaSources", [])
+        print("JELLYFIN_WEB_HLS_DIRECT_NEGOTIATION=" +
+              json.dumps({
+                  "status": web_code,
+                  "count": len(web_sources),
+                  "sources": [{
+                      "container": src.get("Container"),
+                      "subprotocol": src.get("TranscodingSubProtocol"),
+                      "direct_play": src.get("SupportsDirectPlay"),
+                      "transcoding": src.get("SupportsTranscoding"),
+                      "transcode_url_present": bool(src.get("TranscodingUrl")),
+                      "same_direct_provider": str(src.get("Path") or "").startswith(
+                          mock.provider_origin + "/live/"),
+                  } for src in web_sources],
+              }, sort_keys=True), flush=True)
+        if (web_code != 200 or len(web_sources) != 1 or
+                str(web_sources[0].get("Container") or "").lower() != "hls" or
+                str(web_sources[0].get("TranscodingSubProtocol") or "").lower() != "hls" or
+                web_sources[0].get("SupportsDirectPlay") is not True or
+                web_sources[0].get("SupportsTranscoding") is not False or
+                web_sources[0].get("TranscodingUrl") or
+                not str(web_sources[0].get("Path") or "").startswith(
+                    mock.provider_origin + "/live/")):
+            raise RuntimeError("Jellyfin Web HLS direct-play profile is incompatible")
+        print("JELLYFIN_WEB_HLS_DIRECT_SOURCE_NO_RELAY=PASS")
         # Reproduce the Jellyfin Android 2.7.3 automatic-quality behavior.
         # The official app can send a 1.5 Mbps ceiling even when the user
         # selected "Automatic". With all server-side forwarding prohibited,
