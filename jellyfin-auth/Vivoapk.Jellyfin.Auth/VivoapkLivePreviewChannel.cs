@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Providers;
@@ -674,6 +675,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             IsRemote = true,
             IsInfiniteStream = isLive,
             Container = isLive ? "mpegts" : ext,
+            // HLS describes the delivery protocol; MPEG-TS describes the
+            // segments. Jellyfin Web checks TranscodingSubProtocol/Container
+            // to select its HLS.js player even for a DIRECT, non-transcoded
+            // source. The enum is descriptive: it does not authorize relay.
+            TranscodingSubProtocol = isLive ? MediaStreamProtocol.hls : MediaStreamProtocol.http,
             MediaStreams = isLive || mp4 ? new List<MediaStream>
             {
                 new() { Index = 0, Type = MediaStreamType.Video, Codec = "h264" },
@@ -704,6 +710,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         // opens the URL: a playlist extension and an empty stream list cause
         // Jellyfin to reject otherwise playable media for its device profile.
         Container = "mpegts",
+        TranscodingSubProtocol = MediaStreamProtocol.hls,
         MediaStreams = new List<MediaStream>
         {
             new() { Index = 0, Type = MediaStreamType.Video, Codec = "h264" },
