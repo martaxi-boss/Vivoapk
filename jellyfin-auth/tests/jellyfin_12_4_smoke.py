@@ -1049,9 +1049,18 @@ def main():
         low_sources = (low_media or {}).get("MediaSources", [])
         if low_code != 200 or not isinstance(low_media, dict):
             raise RuntimeError("Automatic quality source negotiation unavailable")
-        if any(s.get("SupportsTranscoding") is True
-               or s.get("TranscodingUrl")
-               or s.get("TranscodingSubProtocol")
+        # Report the actual negotiated methods before applying safety gates.
+        # A TranscodingSubProtocol value alone can be present even when
+        # SupportsTranscoding is false and no transcoding URL was allocated.
+        print("JELLYFIN_ANDROID_AUTOMATIC_BITRATE_METHODS=" +
+              json.dumps([{
+                  "direct_play": s.get("SupportsDirectPlay"),
+                  "direct_stream": s.get("SupportsDirectStream"),
+                  "transcoding": s.get("SupportsTranscoding"),
+                  "transcoding_url_present": bool(s.get("TranscodingUrl")),
+                  "reasons": s.get("TranscodeReasons"),
+              } for s in low_sources], sort_keys=True), flush=True)
+        if any(s.get("SupportsTranscoding") is True or s.get("TranscodingUrl")
                for s in low_sources):
             raise RuntimeError("Low-bitrate negotiation exposed Jellyfin video forwarding")
         print("JELLYFIN_ANDROID_AUTOMATIC_BITRATE_DIAGNOSTIC=" +
