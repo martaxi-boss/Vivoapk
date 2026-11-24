@@ -172,21 +172,26 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
                     ? await _resolver.FullLiveAsync(verified.SessionToken, platform: platform).ConfigureAwait(false)
                     : await _resolver.PreviewAsync(verified.SessionToken, platform: platform).ConfigureAwait(false);
             }
-            var subscriberChannel = preview is null && movies is null && series is null ? null :
+            int? subscriberSlot = preview is null && movies is null && series is null ? null :
                 VivoapkLivePreviewChannel.Stage(
                     user.Id, preview ?? Array.Empty<MegaPreviewEntry>(),
                     verified.Origin, canonicalUsername, password,
                     fullLive: fullLive, categoryNavigation: categoryNavigation,
                     sessionToken: verified.SessionToken, platform: platform,
                     movieCategories: movies, seriesCategories: series);
-            if (subscriberChannel is not null)
+            if (subscriberSlot is int slot)
             {
                 var library = _appHost.Resolve<ILibraryManager>();
-                var channelId = library.GetNewItemId(
-                    "Channel " + subscriberChannel,
-                    typeof(MediaBrowser.Controller.Channels.Channel));
+                // Both channel families are authorized for this identity.
+                // IsEnabledFor exposes only the caller's real client family,
+                // preserving sessions on other devices when the same user logs in.
+                var channelIds = new[] { false, true }
+                    .Select(tv => library.GetNewItemId(
+                        "Channel " + VivoapkLivePreviewChannel.ChannelNameFor(slot, tv),
+                        typeof(MediaBrowser.Controller.Channels.Channel)))
+                    .ToArray();
                 user.SetPermission(PermissionKind.EnableAllChannels, false);
-                user.SetPreference(PreferenceKind.EnabledChannels, new[] { channelId });
+                user.SetPreference(PreferenceKind.EnabledChannels, channelIds);
                 await users.UpdateUserAsync(user).ConfigureAwait(false);
             }
         }
