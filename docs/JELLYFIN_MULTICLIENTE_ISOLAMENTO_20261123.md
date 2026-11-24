@@ -1,5 +1,7 @@
 # VivoAPK — segurança de múltiplos clientes no Jellyfin (23/11/2026)
 
+> **Atualização de 24/11/2026 — estado de produção atualizado:** o plugin multimédia foi efetivamente instalado na VPS via Ferrari/REA, com backup e pós-verificação aprovada. A leitura abaixo descreve experiências históricas e já não significa que o plugin atual continue limitado ao piloto de cinco canais. Consultar primeiro o [BOOTSTRAP](../BOOTSTRAP.md) e o [README](../README.md). Ver [ativação #45295919917](https://github.com/martaxi-boss/VPS/actions/runs/45295919917), [auditoria #45296130037](https://github.com/martaxi-boss/VPS/actions/runs/45296130037) e [reserva de canal após login real #45296571291](https://github.com/martaxi-boss/VPS/actions/runs/45296571291). Permanecem pendentes reprodução física, EPG visual e escalabilidade além das 64 contas reservadas.
+
 ## Contrato
 
 Conservar o [BOOTSTRAP](../BOOTSTRAP.md): aplicação oficial Jellyfin em todas as plataformas suportadas, entrada única `https://serveriptv.duckdns.org`, username/password Mega OTT, gestão exclusiva no painel Mega e **nenhuma retransmissão/transcodificação pela VPS**.
