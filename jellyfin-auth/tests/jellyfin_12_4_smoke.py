@@ -1034,6 +1034,38 @@ def main():
         ):
             raise RuntimeError("Native Android device profile cannot direct-play pilot")
         print("JELLYFIN_ANDROID_PROFILE_DIRECT_PLAY=PASS")
+        # Reproduce the Jellyfin Android 2.7.3 automatic-quality behavior.
+        # The official app can send a 1.5 Mbps ceiling even when the user
+        # selected "Automatic". With all server-side forwarding prohibited,
+        # the only acceptable outcome is remote DirectPlay or an explicit
+        # unsupported result; never hide a transcode or video proxy.
+        low_profile = {**android_profile,
+                       "MaxStreamingBitrate": 1500000,
+                       "MaxStaticBitrate": 1500000}
+        low_code, low_media = request(
+            "POST", "/Items/" + pilot_item_id + "/PlaybackInfo?UserId=" + account_a,
+            {"DeviceProfile": low_profile, "AutoOpenLiveStream": True,
+             "MaxStreamingBitrate": 1500000}, token=customer["AccessToken"])
+        low_sources = (low_media or {}).get("MediaSources", [])
+        if low_code != 200 or not isinstance(low_media, dict):
+            raise RuntimeError("Automatic quality source negotiation unavailable")
+        if any(s.get("SupportsTranscoding") is True
+               or s.get("TranscodingUrl")
+               or s.get("TranscodingSubProtocol")
+               for s in low_sources):
+            raise RuntimeError("Low-bitrate negotiation exposed Jellyfin video forwarding")
+        print("JELLYFIN_ANDROID_AUTOMATIC_BITRATE_DIAGNOSTIC=" +
+              json.dumps({
+                  "http_status": low_code,
+                  "max_streaming_bitrate": 1500000,
+                  "source_count": len(low_sources),
+                  "supports_direct_play": [
+                      bool(s.get("SupportsDirectPlay")) for s in low_sources],
+                  "transcoding_disabled": all(
+                      s.get("SupportsTranscoding") is False for s in low_sources),
+                  "media_traverses_jellyfin": False,
+                  "real_provider_used": False,
+              }, sort_keys=True), flush=True)
         # Decode the exact URL returned by real Jellyfin. Requests go straight
         # to the separate synthetic provider, including its HLS redirect.
         source_url = sources[0].get("Path", "")
