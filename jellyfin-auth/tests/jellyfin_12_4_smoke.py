@@ -342,6 +342,7 @@ def main():
                                "EnableVideoPlaybackTranscoding",
                                "EnableAudioPlaybackTranscoding",
                                "ForceRemoteSourceTranscoding")
+        no_download_share = ("EnableContentDownloading", "EnablePublicSharing")
         admin_media_policy_before = {key: admin["User"].get("Policy", {}).get(key)
                                      for key in media_policy_fields}
         code, plugins = request("GET", "/Plugins", token=token)
@@ -410,8 +411,8 @@ def main():
             if code != 200 or not isinstance(profile, dict):
                 raise RuntimeError("Cannot read VivoAPK subscriber policy")
             if any(profile.get("Policy", {}).get(k) is not False
-                   for k in media_policy_fields):
-                raise RuntimeError("Mega user still permits media forwarding via VPS")
+                   for k in media_policy_fields + no_download_share):
+                raise RuntimeError("Mega user still permits media forwarding or downloads")
         code, admin_after = request("GET", "/Users/" + admin["User"]["Id"],
                                     token=token)
         if code != 200 or any(

@@ -116,6 +116,19 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             user.SetPermission(PermissionKind.ForceRemoteSourceTranscoding, false);
             mediaPolicyChanged = true;
         }
+        // Without a private library, Jellyfin's default download/share
+        // permissions could let a client ask the VPS to fetch remote media.
+        // The product contract permits only direct provider playback.
+        if (user.HasPermission(PermissionKind.EnableContentDownloading))
+        {
+            user.SetPermission(PermissionKind.EnableContentDownloading, false);
+            mediaPolicyChanged = true;
+        }
+        if (user.HasPermission(PermissionKind.EnablePublicSharing))
+        {
+            user.SetPermission(PermissionKind.EnablePublicSharing, false);
+            mediaPolicyChanged = true;
+        }
         if (mediaPolicyChanged)
             await users.UpdateUserAsync(user).ConfigureAwait(false);
 
