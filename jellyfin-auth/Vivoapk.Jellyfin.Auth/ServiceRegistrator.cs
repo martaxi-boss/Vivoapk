@@ -12,6 +12,14 @@ public sealed class ServiceRegistrator : IPluginServiceRegistrator
     {
         services.AddHttpContextAccessor();
         services.AddSingleton<IAuthenticationProvider, MegaAuthenticationProvider>();
-        services.AddSingleton<IChannel, VivoapkLivePreviewChannel>();
+        // ChannelManager persists item IDs under a global ChannelId. Isolate
+        // the channel itself, not merely its user-dependent cache key.
+        for (int i = 0; i < VivoapkLivePreviewChannel.MaxChannels; i++)
+        {
+            var slot = i;
+            services.AddSingleton<IChannel>(provider =>
+                new VivoapkLivePreviewChannel(slot,
+                    provider.GetRequiredService<Microsoft.AspNetCore.Http.IHttpContextAccessor>()));
+        }
     }
 }
