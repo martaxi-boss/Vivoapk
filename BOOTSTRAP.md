@@ -90,6 +90,8 @@ Aplicação Jellyfin oficial
 
 **Segurança do diagnóstico:** tentativa de nova sonda privada `vivoapk-rea-redirect-head-only-20261124-r39` foi **bloqueada pela ferramenta** antes de criar o pedido; NÃO executou, nem deve ser contornada por outra forma de transporte. As credenciais privadas não foram publicadas. Não mexer no Jellyfin em produção nem fazer downgrade com base em hipóteses; atualização desta secção é apenas documentação.
 
+**Nova auditoria de acesso após a captura:** [Ferrari/REA #45357114166](https://github.com/martaxi-boss/VPS/actions/runs/45357114166), pedido `vivoapk-playback-nginx-20261124-r40`, confirmou em 200 linhas de Nginx (janela 07:50–08:59 UTC) **4 pedidos `PlaybackInfo` HTTP 200 e 3 pedidos Live TV HTTP 200**. O pedido ao Jellyfin está funcional; o resultado **não prova transferência nem descodificação de media do fornecedor**. O relatório não expôs contas, URLs ou credenciais. Não alterar a origem `dns_link` sem confirmação de HLS/HTTPS válido pelo próprio fornecedor; a API MegaOTT documenta endereços atribuídos por linha e não fornece prova de compatibilidade universal do Jellyfin.
+
 **Porta de conclusão em aberto:** validar a resposta final dos redirecionamentos da linha com autorização e dados de reprodução privados (código HTTP final, MIME, existência de HLS válido, HTTPS e acessibilidade pelo dispositivo), sem expor credenciais/media no GitHub; se o fornecedor só disponibilizar HTTP ou fluxo não-HLS, confirmar com a Mega OTT uma origem segura e compatível associada à própria linha ou reconhecer a incompatibilidade. Depois repetir reprodução com imagem/som em cada família oficial, mantendo media fora da VPS.
 
 ## Critério final de aceitação
