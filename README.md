@@ -12,24 +12,29 @@ O servidor Jellyfin recebe o login; o plugin VivoAPK valida a subscrição com o
 
 A VPS não deve fazer proxy, remux nem transcodificação de vídeos. O Jellyfin pode usar o leitor interno para uma fonte compatível, mas **Direct Play anunciado pelo servidor não certifica transmissão direta em todas as apps**. Ver [arquitetura](docs/ARQUITETURA_VIVOAPK.md).
 
-## Estado técnico verificado — 23/11/2026
+## Estado técnico instalado — 24/11/2026
 
-| Componente | Estado |
+| Componente | Estado confirmado |
 |---|---|
-| Backend VivoAPK + plugin Jellyfin 12.4 | Instalados e ativos; validação Mega demonstrada |
-| Catálogo de TV nativo | **Piloto de até 5 canais, uma subscrição de cada vez**, expiração em RAM de 30 minutos |
-| Filmes, séries, episódios, EPG por conta | Backend de metadados desenvolvido; integração nativa completa no Jellyfin **não concluída** |
-| Android físico | Login e catálogo piloto vistos, mas a reprodução continua com `Source error` |
-| iOS, Windows, Samsung/LG | Fluxo final não certificado em aparelhos reais |
-| PINK IPTV antigo | Pasta e unidades backend/VPN ausentes; não reinstalar |
-| `jellyfin-pink.service` | **É o serviço Jellyfin ativo**, com nome herdado — preservar |
+| Backend Mega OTT | **Instalado**; APIs privadas de categorias, episódios e EPG; autenticação sem token recusada (HTTP 401) |
+| Plugin Jellyfin 12.4 | **Instalado**; `CategoryNavigation=true`; backup seguro e rollback disponíveis |
+| TV, filmes, séries e episódios | Pastas nativas por conta e carregamento por categoria, testados com duas contas fictícias num Jellyfin descartável |
+| Login real Mega OTT → Jellyfin | **HTTP 200**, com um canal de subscrição privado reservado no plugin real |
+| Isolamento de clientes | PASS em servidor descartável para duas contas; limite de 64 canais internos reservados, não escalável sem mais desenvolvimento |
+| Guia EPG | API privada existente; **integração visual com guia nativo Jellyfin por certificar** |
+| Android físico | Último teste anterior reportou `Source error`; **não revalidado após esta instalação** |
+| iOS, Windows, Samsung/LG | Reprodução direta e funcionamento completo por verificar em aparelhos reais |
+| PINK IPTV antigo | Backend e VPN ausentes; não reinstalar |
+| `jellyfin-pink.service` | É o Jellyfin ativo (nome herdado), não o programa antigo Pink IPTV |
 
-**Não declarar solução pronta ou apagar backups porque os testes CI deram sucesso.** Requer reprodução em aparelhos reais, isolamento por dois clientes e prova de ausência de media relay pela VPS. Nenhum cliente deve receber itens ou credenciais de outra subscrição.
+**Provas:** [CI Jellyfin 12.4 #45294305825](https://github.com/martaxi-boss/Vivoapk/actions/runs/45294305825) · [Ferrari/REA ativação #45295919917](https://github.com/martaxi-boss/VPS/actions/runs/45295919917) · [auditoria da VPS #45296130037](https://github.com/martaxi-boss/VPS/actions/runs/45296130037) · [login real #45296571291](https://github.com/martaxi-boss/VPS/actions/runs/45296571291).
+
+**Não declarar o sistema 100% concluído até haver imagem, som e isolamento verificados nas aplicações físicas, e até resolver o guia EPG e o limite de clientes.** A ativação do plugin é real, mas o Direct Play sintético da CI não equivale a reprodução nos dispositivos.
 
 ## Código ativo
 
 - `backend/`: validador Mega OTT, DNS por plataforma, catálogo de metadados e sessão privada;
-- `jellyfin-auth/`: plugin nativo de autenticação e piloto de canais Jellyfin;
+- `jellyfin-auth/`: plugin nativo de autenticação e pastas privadas de TV, filmes, séries e episódios no Jellyfin;
 - `infra/`: scripts de instalação/rollback com salvaguardas e testes de serviços;
 - `BOOTSTRAP.md`: requisitos finais de clientes;
 - `docs/`: relatórios históricos e provas das alterações.
