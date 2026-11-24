@@ -29,6 +29,8 @@ A VPS não deve fazer proxy, remux nem transcodificação de vídeos. O Jellyfin
 
 **Provas:** [CI Jellyfin 12.4 #45294305825](https://github.com/martaxi-boss/Vivoapk/actions/runs/45294305825) · [Ferrari/REA ativação #45295919917](https://github.com/martaxi-boss/VPS/actions/runs/45295919917) · [auditoria da VPS #45296130037](https://github.com/martaxi-boss/VPS/actions/runs/45296130037) · [login real #45296571291](https://github.com/martaxi-boss/VPS/actions/runs/45296571291).
 
+**A navegação está implementada num provedor `IChannel` (secção Canais do Jellyfin), não num tuner global da secção Live TV.** Isto evita uma playlist partilhada entre clientes, mas a apresentação nas diferentes aplicações precisa de verificação física.
+
 **Não declarar o sistema 100% concluído até haver imagem, som e isolamento verificados nas aplicações físicas, e até resolver o guia EPG e o limite de clientes.** A ativação do plugin é real, mas o Direct Play sintético da CI não equivale a reprodução nos dispositivos.
 
 ## Código ativo
