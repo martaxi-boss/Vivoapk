@@ -672,7 +672,8 @@ def main():
                             not provider_url.endswith(ending) or
                             source.get("SupportsDirectPlay") is not True or
                             source.get("SupportsTranscoding") is not False or
-                            bool(source.get("TranscodingUrl"))):
+                            bool(source.get("TranscodingUrl")) or
+                            str(source.get("TranscodingSubProtocol") or "").lower() == "hls"):
                         raise RuntimeError("Invalid direct-only MP4 source for subscriber")
                     # Download only synthetic test media direct from local provider,
                     # NOT through Jellyfin and NEVER log credential-bearing URLs.
@@ -900,8 +901,9 @@ def main():
                 "POST", "/Items/" + tv_video_id + "/PlaybackInfo?UserId=" + account_a,
                 {}, token=tv_token, client_name="Jellyfin for Tizen")
             tv_sources = tv_media.get("MediaSources", []) if isinstance(tv_media, dict) else []
-            if status != 200 or len(tv_sources) != 1:
-                raise RuntimeError("TV source-family media missing")
+            if (status != 200 or len(tv_sources) != 1
+                    or str(tv_sources[0].get("TranscodingSubProtocol") or "").lower() != "hls"):
+                raise RuntimeError("TV source-family HLS media missing")
             original_path = str(media_sources[0].get("Path") or "")
             tv_path = str(tv_sources[0].get("Path") or "")
             if (not original_path.startswith(mock.provider_origin + "/live/")
@@ -957,8 +959,9 @@ def main():
                 if (play_code != 200 or len(selected) != 1
                         or not str(selected[0].get("Path") or "").startswith(
                             provider_base + "/live/")
-                        or selected[0].get("SupportsTranscoding") is not False):
-                    raise RuntimeError("Client chose wrong direct source origin: " + family)
+                        or selected[0].get("SupportsTranscoding") is not False
+                        or str(selected[0].get("TranscodingSubProtocol") or "").lower() != "hls"):
+                    raise RuntimeError("Client chose wrong direct HLS source origin: " + family)
             print("JELLYFIN_SYNTHETIC_ALL_SIX_PLATFORM_ORIGINS=PASS")
         # Metadata-only diagnostics; NEVER print source URLs or credentials.
         print("JELLYFIN_HLS_MEDIA_FLAGS=" + json.dumps({
@@ -971,6 +974,7 @@ def main():
                 "Transcoding": source.get("SupportsTranscoding"),
                 "HasTranscodingUrl": bool(source.get("TranscodingUrl")),
                 "HlsPath": str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8"),
+                "HlsProtocol": str(source.get("TranscodingSubProtocol") or "").lower() == "hls",
             } for source in media_sources],
         }, sort_keys=True), flush=True)
         # One HLS URL, with the actual segment container described separately.
@@ -979,9 +983,10 @@ def main():
             or source.get("SupportsDirectStream") is not False
             or source.get("SupportsTranscoding") is not False
             or bool(source.get("TranscodingUrl"))
+            or str(source.get("TranscodingSubProtocol") or "").lower() != "hls"
             for source in media_sources
         ):
-            raise RuntimeError("Jellyfin still offers media forwarding for live pilot")
+            raise RuntimeError("Jellyfin still offers media forwarding or lacks HLS metadata")
         print("JELLYFIN_DIRECT_ONLY_PLAYBACKINFO=PASS")
         # Jellyfin Android 2.7.3 routes remote HTTP direct-play sources
         # through its HLS parser even if the path ends in MPEG-TS.
@@ -989,10 +994,24 @@ def main():
         if any(
             not str(source.get("Path") or "").lower().split("?", 1)[0].endswith(".m3u8")
             or str(source.get("Container") or "").lower() != "mpegts"
+            or str(source.get("TranscodingSubProtocol") or "").lower() != "hls"
             for source in media_sources
         ):
             raise RuntimeError("Jellyfin pilot advertises non-HLS source to Android")
         print("JELLYFIN_MEGA_HTTP_DIRECT_HLS_SOURCE=PASS")
+        # Jellyfin Web isHls() selects hls.js only when the source
+        # TranscodingSubProtocol is HLS (or Container is HLS). We must keep
+        # Container=mpegts for the native device profile and signal the
+        # manifest separately, with zero transcoding permissions or URL.
+        if any(
+            source.get("Container") != "mpegts"
+            or str(source.get("TranscodingSubProtocol") or "").lower() != "hls"
+            or source.get("SupportsTranscoding") is not False
+            or bool(source.get("TranscodingUrl"))
+            for source in media_sources
+        ):
+            raise RuntimeError("Jellyfin Web would misclassify remote HLS as MPEG-TS")
+        print("JELLYFIN_WEB_HLS_MANIFEST_METADATA_DIRECT_ONLY=PASS")
         # Match the native Android client: it advertises media containers and
         # codecs, not the playlist filename extension. An empty request body
         # bypasses this negotiation and cannot detect an unusable source.
@@ -1030,6 +1049,7 @@ def main():
             source.get("SupportsDirectPlay") is not True
             or source.get("SupportsTranscoding") is not False
             or source.get("TranscodingUrl")
+            or str(source.get("TranscodingSubProtocol") or "").lower() != "hls"
             for source in sources
         ):
             raise RuntimeError("Native Android device profile cannot direct-play pilot")
