@@ -207,15 +207,16 @@ class Connection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
+    device_id = "vivoapk-ci-" + "".join(ch for ch in client_name.lower() if ch.isascii() and ch.isalnum())
     conn = Connection(DATAROOT / "run/jellyfin.sock")
     headers = {
         "Content-Type": "application/json", "Accept": "application/json",
-        "Authorization": 'MediaBrowser Client="' + client_name + '", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0"'
+        "Authorization": 'MediaBrowser Client="' + client_name + '", Device="CI", DeviceId="' + device_id + '", Version="1.0.0"'
     }
     if uri.startswith("/Startup/"):
         headers.pop("Authorization", None)
     if token:
-        headers["Authorization"] = 'MediaBrowser Client="' + client_name + '", Device="CI", DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'
+        headers["Authorization"] = 'MediaBrowser Client="' + client_name + '", Device="CI", DeviceId="' + device_id + '", Version="1.0.0", Token="' + token + '"'
         headers["X-Emby-Token"] = token
     conn.request(method, uri, body=json.dumps(data) if data is not None else None, headers=headers)
     response = conn.getresponse()
@@ -234,7 +235,7 @@ def request_png(uri, *, token):
     headers = {
         "Accept": "image/png",
         "Authorization": ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
-                          'DeviceId="vivoapk-ci", Version="1.0.0", Token="' + token + '"'),
+                          'DeviceId="' + device_id + '", Version="1.0.0", Token="' + token + '"'),
         "X-Emby-Token": token,
     }
     conn.request("GET", uri, headers=headers)
@@ -862,7 +863,7 @@ def main():
             tv_own = [x for x in (tv_channels or {}).get("Items", [])
                       if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
             if status != 200 or len(tv_own) != 1 or tv_own[0]["Id"] == channel_id:
-                raise RuntimeError("Same subscriber TV source-family not separated")
+                raise RuntimeError("Same subscriber TV source-family not separated: " + json.dumps({"status": status, "tv_visible": len(tv_own), "channels": [x.get("Name") for x in (tv_channels or {}).get("Items", [])], "same_channel": len(tv_own)==1 and tv_own[0].get("Id")==channel_id}, sort_keys=True))
             tv_channel_id = tv_own[0]["Id"]
             def tv_items(folder=None):
                 suffix = ("&FolderId=" + folder) if folder else ""
