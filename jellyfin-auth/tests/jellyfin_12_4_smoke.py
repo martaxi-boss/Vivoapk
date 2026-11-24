@@ -439,7 +439,7 @@ def main():
         if len(pilot_a) != 1:
             raise RuntimeError("Owner cannot see own native preview TV channel")
         code, channels_b = request("GET", "/Channels?UserId=" + account_b,
-                                   token=customer_b["AccessToken"])
+                                   token=customer_b["AccessToken"], client_name="Jellyfin for Tizen")
         if code != 200 or not isinstance(channels_b, dict):
             raise RuntimeError("Second account channel list unavailable")
         pilot_b = [x for x in channels_b.get("Items", [])
@@ -738,7 +738,7 @@ def main():
             token=customer["AccessToken"])
         code_b, restarted_channels_b = request(
             "GET", "/Channels?UserId=" + account_b,
-            token=customer_b["AccessToken"])
+            token=customer_b["AccessToken"], client_name="Jellyfin for Tizen")
         id_list_a = [x.get("Id") for x in (restarted_channels_a or {}).get("Items", [])
                      if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
         id_list_b = [x.get("Id") for x in (restarted_channels_b or {}).get("Items", [])
