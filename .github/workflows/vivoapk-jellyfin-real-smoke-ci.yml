@@ -44,17 +44,12 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v ffmpeg >/dev/null 2>&1; then
-            # Do not depend on an unbounded apt repository refresh in CI.
-            # The temporary runner image is discarded after this test.
-            python3 -m pip install --quiet --disable-pip-version-check --no-input \
-              --target "$RUNNER_TEMP/vivoapk-test-python" 'imageio-ffmpeg==0.6.0'
-            ffmpeg_binary="$(PYTHONPATH="$RUNNER_TEMP/vivoapk-test-python" python3 -c \
-              'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
-            test -x "$ffmpeg_binary"
-            mkdir -p "$RUNNER_TEMP/vivoapk-test-bin"
-            ln -s "$ffmpeg_binary" "$RUNNER_TEMP/vivoapk-test-bin/ffmpeg"
-            export PATH="$RUNNER_TEMP/vivoapk-test-bin:$PATH"
-            echo "$RUNNER_TEMP/vivoapk-test-bin" >> "$GITHUB_PATH"
+            # Ubuntu runner only; do not install anything on the VivoAPK VPS.
+            # Use the distribution's stable FFmpeg; the temporary static
+            # FFmpeg 7 wheel crashed with SIGSEGV (-11) in the HLS fixture.
+            # Skip the unbounded apt-get update, but retain a hard timeout.
+            sudo timeout 150s apt-get -o DPkg::Lock::Timeout=25 \
+              -o Acquire::Retries=0 -y -qq install ffmpeg >/dev/null
           fi
           ffmpeg -version | head -n 1
           ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libx264'
