@@ -145,7 +145,7 @@ class BackendHandler(socketserver.StreamRequestHandler):
                 }
                 and request.get("platform") in (
                     ("tizen",) if request.get("username") == "synthetic-mega-user-b"
-                    else ("android", "tizen"))
+                    else ("android", "android_tv", "ios", "windows", "tizen", "webos"))
             )
             response_code = b"200 OK"
             body = json.dumps({
@@ -153,7 +153,7 @@ class BackendHandler(socketserver.StreamRequestHandler):
                 "session_token": ("ci-session-b" if request.get("username") ==
                                   "synthetic-mega-user-b" else "ci-session-a") if valid else None,
                 "xtream_base_url": (
-                    self.server.provider_origin_tv if request.get("platform") == "tizen"
+                    self.server.provider_origin_tv if request.get("platform") in ("tizen", "webos")
                     else self.server.provider_origin) if valid else None,
             }).encode()
         self.wfile.write(b"HTTP/1.1 " + response_code
@@ -904,6 +904,48 @@ def main():
                     or recovered_sources[0].get("Path") != original_path):
                 raise RuntimeError("TV login overwrote concurrent Android media origin")
             print("JELLYFIN_SYNTHETIC_SAME_ACCOUNT_GENERAL_TV_ORIGIN_ISOLATED=PASS")
+            # All official Jellyfin client families must choose exactly one
+            # source family for the same Mega identity, without duplicates.
+            for client, family, selected_item, provider_base, expected_channel in (
+                ("Jellyfin Android TV", "general", pilot_item_id,
+                 mock.provider_origin, channel_id),
+                ("Jellyfin for iOS", "general", pilot_item_id,
+                 mock.provider_origin, channel_id),
+                ("Jellyfin Media Player Windows", "general", pilot_item_id,
+                 mock.provider_origin, channel_id),
+                ("Jellyfin WebOS LG TV", "tv", tv_video_id,
+                 mock.provider_origin_tv, tv_channel_id),
+                ("Jellyfin for Tizen", "tv", tv_video_id,
+                 mock.provider_origin_tv, tv_channel_id),
+                ("Jellyfin Android", "general", pilot_item_id,
+                 mock.provider_origin, channel_id),
+            ):
+                login_code, login_data = request(
+                    "POST", "/Users/AuthenticateByName",
+                    {"Username": "synthetic-mega-user",
+                     "Pw": "synthetic-mega-password"}, client_name=client)
+                if (login_code != 200 or not login_data
+                        or login_data["User"]["Id"] != account_a):
+                    raise RuntimeError("Cross-platform Mega sign-in failed: " + family)
+                fresh_token = login_data["AccessToken"]
+                browse_code, visible = request(
+                    "GET", "/Channels?UserId=" + account_a,
+                    token=fresh_token, client_name=client)
+                owned = [x for x in (visible or {}).get("Items", [])
+                         if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
+                if (browse_code != 200 or len(owned) != 1
+                        or owned[0]["Id"] != expected_channel):
+                    raise RuntimeError("Client chose wrong Jellyfin channel family: " + family)
+                play_code, play_data = request(
+                    "POST", "/Items/" + selected_item + "/PlaybackInfo?UserId=" + account_a,
+                    {}, token=fresh_token, client_name=client)
+                selected = (play_data or {}).get("MediaSources", [])
+                if (play_code != 200 or len(selected) != 1
+                        or not str(selected[0].get("Path") or "").startswith(
+                            provider_base + "/live/")
+                        or selected[0].get("SupportsTranscoding") is not False):
+                    raise RuntimeError("Client chose wrong direct source origin: " + family)
+            print("JELLYFIN_SYNTHETIC_ALL_SIX_PLATFORM_ORIGINS=PASS")
         # Metadata-only diagnostics; NEVER print source URLs or credentials.
         print("JELLYFIN_HLS_MEDIA_FLAGS=" + json.dumps({
             "count": len(media_sources),
