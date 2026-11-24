@@ -489,7 +489,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             string.Concat(headers["X-Emby-Authorization"].ToString(), " ",
                 headers["Authorization"].ToString()),
             headers["User-Agent"].ToString());
-        return hinted;
+        // Jellyfin can invoke PlaybackInfo without platform-identifying headers.
+        // Never let a generic fallback select the other source family and
+        // poison the globally cached MediaSourceInfo for this channel item.
+        return IsSmartTv(hinted) == _smartTv ? hinted : snapshot.Platform;
     }
 
     private async Task<(string Token, string Origin)?> PlaybackSessionAsync(
