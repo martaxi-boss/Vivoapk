@@ -444,7 +444,10 @@ def main():
         pilot_b = [x for x in channels_b.get("Items", [])
                    if x.get("Name", "").startswith("VivoAPK — Conteúdos ")]
         if len(pilot_b) != 1:
-            raise RuntimeError("Second subscribed account cannot see own preview")
+            raise RuntimeError("Second subscribed account cannot see own preview: "
+                               + json.dumps({"status": code, "own_count": len(pilot_b),
+                                             "visible_channels": [x.get("Name") for x in (channels_b or {}).get("Items", [])]},
+                                            sort_keys=True))
         channel_id = pilot_a[0]["Id"]
         if channel_id == pilot_b[0]["Id"]:
             raise RuntimeError("Two subscribers still share the same internal ChannelId")
