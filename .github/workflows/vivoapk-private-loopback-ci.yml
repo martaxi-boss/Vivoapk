@@ -1,0 +1,54 @@
+name: VivoAPK private HLS socket and FFmpeg integration (disposable)
+on:
+  push:
+    paths:
+      - 'backend/app/private_media_api.py'
+      - 'backend/app/services/private_hls.py'
+      - 'backend/tests/private_loopback_fixture.py'
+      - 'jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateHls*.cs'
+      - 'jellyfin-auth/Vivoapk.PrivateHls.Harness/**'
+      - '.github/workflows/vivoapk-private-loopback-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  loopback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install disposable backend and compile adapter harness
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check './backend[dev]'
+          dotnet build jellyfin-auth/Vivoapk.PrivateHls.Harness/Vivoapk.PrivateHls.Harness.csproj -c Release
+      - name: Fetch verified official Jellyfin FFmpeg
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/jellyfin-ffmpeg-8.1.3-2.tar.xz"
+          dir="$RUNNER_TEMP/jellyfin-official-ffmpeg"
+          mkdir -p "$dir"
+          curl -fsSL --retry 2 --max-time 240 'https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v8.1.3-2/jellyfin-ffmpeg_8.1.3-2_portable_linux64-gpl.tar.xz' -o "$archive"
+          echo "1df84d04c4322902dba81c290508cdf3d89524d210b9fe03154bea6c4e3bfbb6  $archive" | sha256sum -c -
+          tar -xJf "$archive" -C "$dir"
+          ffmpeg_bin="$(find "$dir" -maxdepth 5 -type f -name ffmpeg -perm /111 -print -quit)"
+          test -x "$ffmpeg_bin"
+          echo "$(dirname "$ffmpeg_bin")" >> "$GITHUB_PATH"
+          "$ffmpeg_bin" -version | sed -n '1p'
+      - name: Real FFmpeg consumes two generated HLS streams through C# and backend Unix socket
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VIVOAPK_LOOPBACK_HARNESS="$GITHUB_WORKSPACE/jellyfin-auth/Vivoapk.PrivateHls.Harness/bin/Release/net10.0/Vivoapk.PrivateHls.Harness.dll"
+          test -f "$VIVOAPK_LOOPBACK_HARNESS"
+          cd backend
+          python -u tests/private_loopback_fixture.py

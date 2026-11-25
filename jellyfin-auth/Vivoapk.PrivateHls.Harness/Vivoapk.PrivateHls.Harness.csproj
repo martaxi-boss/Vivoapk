@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateHlsSocketClient.cs" Link="PrivateHlsSocketClient.cs" />
+    <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateHlsLoopback.cs" Link="PrivateHlsLoopback.cs" />
+  </ItemGroup>
+</Project>
