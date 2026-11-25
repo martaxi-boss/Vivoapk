@@ -343,13 +343,15 @@ def request(method, uri, data=None, token=None, client_name=None):
         _SESSION_TEST_CLIENTS[parsed["AccessToken"]] = client_name
     return code, parsed
 
-def native_bytes(uri, token=None):
+def native_bytes(uri, token=None, *, auth_headers=None):
     conn = Connection(DATAROOT / "run/jellyfin.sock")
     headers = {"Accept": "*/*"}
     if token:
         headers["X-Emby-Token"] = token
         headers["Authorization"] = ('MediaBrowser Client="' + _SESSION_TEST_CLIENTS.get(token, "VivoAPK-CI") + '", Device="CI", '
             'DeviceId="' + _SESSION_TEST_DEVICES.get(token, "vivoapk-ci-invalid") + '", Version="1.0.0", Token="' + token + '"')
+    if auth_headers is not None:
+        headers = {"Accept": "*/*", **auth_headers}
     conn.request("GET", uri, headers=headers)
     response = conn.getresponse()
     result = (response.status, response.read(8 * 1024 * 1024),
@@ -1438,6 +1440,24 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
          if is_auth_query_key(k)})))
     master_route = route
     before = provider.requests
+    # Native v12.4 prioritizes Authorization over legacy token headers.
+    # Conflicting identities must be rejected before the origin is reached.
+    safe = safe_fixture_route(route, owner_token)
+    def authorization_header(token):
+        return ('MediaBrowser Client="' + _SESSION_TEST_CLIENTS[token] +
+                '", Device="CI", DeviceId="' + _SESSION_TEST_DEVICES[token] +
+                '", Version="1.0.0", Token="' + token + '"')
+    for first, second in ((owner_token, foreign_token), (foreign_token, owner_token)):
+        require_denied_response(native_bytes(safe, auth_headers={
+            "Authorization": authorization_header(first), "X-Emby-Token": second}),
+            "master", "conflicting_header_identity")
+    require_denied_response(native_bytes(safe, auth_headers={
+        "Authorization": authorization_header(owner_token) + ', Token="' + foreign_token + '"'}),
+        "master", "duplicate_authorization_token")
+    require_denied_response(native_bytes(safe, auth_headers={
+        "Authorization": authorization_header(owner_token),
+        "X-Emby-Authorization": authorization_header(foreign_token)}),
+        "master", "conflicting_authorization_headers")
     require_native_denial(route, owner_token, foreign_token, "master_before_owner")
     query_route = native_query_fixture(route, owner_token, owner_token)
     require_denied_response(native_bytes(query_route, foreign_token), "master", "mixed_credentials")
@@ -1446,6 +1466,11 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     require_denied_response(native_bytes(duplicate), "master", "duplicate_credentials")
     if provider.requests != before:
         raise RuntimeError("Denied requests reached the synthetic provider")
+    status, explicit_body, guard = native_bytes(safe, auth_headers={
+        "Authorization": authorization_header(owner_token)})
+    if status != 200 or guard != "allowed" or not explicit_body.startswith(b"#EXTM3U"):
+        raise RuntimeError("Native Authorization-only owner request failed")
+    print("JELLYFIN_NATIVE_SHARED_AUTHORIZATION_HEADER_CONSISTENCY=PASS", flush=True)
     body = require_native_owner(route, owner_token, "master")
     if not body.startswith(b"#EXTM3U") or not require_native_query_owner(
             route, owner_token, "master").startswith(b"#EXTM3U"):
