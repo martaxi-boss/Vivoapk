@@ -44,8 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           source_dir="$RUNNER_TEMP/jellyfin-catalog-source"
-          output_dir="$RUNNER_TEMP/jellyfin-catalog-build"
-          mkdir -p "$source_dir" "$output_dir"
+          mkdir -p "$source_dir"
           git -C "$source_dir" init -q
           git -C "$source_dir" fetch --depth=1 https://github.com/jellyfin/jellyfin.git refs/tags/v12.4
           test "$(git -C "$source_dir" rev-parse FETCH_HEAD)" = "83d0d0e7f76e23e2e085c8ff67d28b772d35967d"
@@ -71,24 +70,35 @@ jobs:
           file_version="$(dotnet "$identity_tool" file-version "$original")"
           [[ "$assembly_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$file_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          # Previous diagnostic confirmed SDK default 1.0.0.0 vs official 12.0.0.0.
+          # Scope version settings to LiveTv only, before the first build.
+          # Never rebuild the dependency graph into a shared output directory.
+          project="$source_dir/src/Jellyfin.LiveTv/Jellyfin.LiveTv.csproj"
+          python3 - "$project" "$assembly_version" "$file_version" <<'PY'
+          import sys
+          from pathlib import Path
+          p = Path(sys.argv[1])
+          old = "<TargetFramework>net10.0</TargetFramework>"
+          source = p.read_text()
+          assert source.count(old) == 1 and "<AssemblyVersion>" not in source
+          p.write_text(source.replace(old, old + "\n    <AssemblyVersion>" + sys.argv[2]
+              + "</AssemblyVersion>\n    <FileVersion>" + sys.argv[3] + "</FileVersion>"))
+          PY
+          git -C "$source_dir" diff --check
           (
             cd "$source_dir"
             dotnet test tests/Jellyfin.LiveTv.Tests/Jellyfin.LiveTv.Tests.csproj -c Release --filter 'FullyQualifiedName~ChannelManagerTests'
-            # Observe the SDK's ordinary build before forcing the official identity.
-            default_assembly="src/Jellyfin.LiveTv/bin/Release/net10.0/Jellyfin.LiveTv.dll"
-            if test -s "$default_assembly"; then
-              echo "Unversioned build identity:"
-              dotnet "$identity_tool" show "$default_assembly"
-            fi
-            dotnet build src/Jellyfin.LiveTv/Jellyfin.LiveTv.csproj -c Release -t:Rebuild -o "$output_dir" \
-              -p:AssemblyVersion="$assembly_version" -p:FileVersion="$file_version"
           )
-          # Never install even a test assembly until identity and changed references are verified.
-          test -s "$output_dir/Jellyfin.LiveTv.dll"
-          dotnet "$identity_tool" verify "$original" "$output_dir/Jellyfin.LiveTv.dll" "$runtime_dir"
+          # The test project directly references LiveTv. Use exactly its tested DLL.
+          candidate="$source_dir/src/Jellyfin.LiveTv/bin/Release/net10.0/Jellyfin.LiveTv.dll"
+          tested="$source_dir/tests/Jellyfin.LiveTv.Tests/bin/Release/net10.0/Jellyfin.LiveTv.dll"
+          test -s "$candidate"
+          test -s "$tested"
+          cmp "$candidate" "$tested"
+          dotnet "$identity_tool" verify "$original" "$candidate" "$runtime_dir"
           # Replace only the affected assembly in the disposable official binary tree.
           cp "$runtime_dir/Jellyfin.LiveTv.dll" "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll"
-          install -m 0644 "$output_dir/Jellyfin.LiveTv.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
+          install -m 0644 "$candidate" "$runtime_dir/Jellyfin.LiveTv.dll"
           sha256sum "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
           echo JELLYFIN_UPSTREAM_18231_LAB_BUILD=PASS
       - name: Compare official Jellyfin FFmpeg 8.1.3 on disposable runner
