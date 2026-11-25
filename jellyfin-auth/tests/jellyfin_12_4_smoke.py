@@ -1129,6 +1129,270 @@ def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
     print("JELLYFIN_INFINITE_LIVE_AND_ROLLING_CACHE=PASS", flush=True)
 
 
+def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
+                                  second_item, second_owner, second_token,
+                                  provider, mock):
+    """Two genuinely open-ended, isolated synthetic sessions; no real media."""
+    import re
+    if not second_item or first_item == second_item or first_token == second_token:
+        raise RuntimeError("Parallel live requires distinct subscribers and items")
+    baseline = transcode_cache_files(base)
+    ticks_per_second = os.sysconf("SC_CLK_TCK")
+    page_size = os.sysconf("SC_PAGE_SIZE")
+
+    def jobs():
+        found = {}
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdecimal():
+                continue
+            try:
+                args = [os.fsdecode(x) for x in (proc / "cmdline").read_bytes().split(bytes([0])) if x]
+                if not args or Path(args[0]).name != "ffmpeg":
+                    continue
+                output = Path(args[-1].removeprefix("file:")).resolve()
+                if (output.suffix != ".m3u8" or not output.is_relative_to(base.resolve())
+                        or "transcodes" not in output.parts):
+                    continue
+                stat = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+                rss = int((proc / "statm").read_text().split()[1]) * page_size
+                identity = (proc.name, stat[19])
+                template = Path(args[args.index("-hls_segment_filename") + 1].removeprefix("file:")).resolve()
+                if template.parent != output.parent:
+                    raise RuntimeError("Unexpected live HLS namespace")
+                match = re.search(r"%[0-9]*d", template.name)
+                if not match:
+                    raise RuntimeError("Unrecognized live HLS segment template")
+                pattern = re.escape(template.name[:match.start()]) + r"[0-9]+" + re.escape(template.name[match.end():])
+                found[identity] = {"playlist": output, "pattern": pattern,
+                                   "cpu": (int(stat[11]) + int(stat[12])) / ticks_per_second,
+                                   "rss": rss}
+            except (OSError, ValueError, IndexError):
+                continue
+        return found
+
+    def files_for(job):
+        return {p: size for p, size in native_cache_delta(base, baseline).items()
+                if p.parent == job["playlist"].parent
+                and (p == job["playlist"] or re.fullmatch(job["pattern"], p.name))}
+
+    def report(state, endpoint):
+        status, _ = request("POST", endpoint, {
+            "ItemId": state["item"], "MediaSourceId": state["source"].get("Id"),
+            "PlaySessionId": state["session"], "PositionTicks": int(state["seconds"] * 10000000),
+            "PlayMethod": "Transcode", "IsPaused": False,
+        }, token=state["token"])
+        if status not in (200, 204):
+            raise RuntimeError("Parallel live playback report rejected: " + str(status))
+
+    def playlist(state):
+        data = require_native_owner(state["route"], state["token"], "parallel_live_playlist")
+        if b"#EXT-X-ENDLIST" in data:
+            raise RuntimeError("Parallel live stream unexpectedly ended")
+        entries = parse_timed_segments(data)
+        sequences = [x.split(":", 1)[1] for x in data.decode().splitlines()
+                     if x.startswith("#EXT-X-MEDIA-SEQUENCE:")]
+        if len(sequences) != 1 or not sequences[0].isdigit() or not 1 <= len(entries) <= 12:
+            raise RuntimeError("Parallel live sliding window invalid")
+        return int(sequences[0]), entries
+
+    def consume(state):
+        sequence, entries = playlist(state)
+        if state["next"] is None:
+            state["next"] = sequence + max(0, len(entries) - 2)
+        if sequence > state["next"]:
+            raise RuntimeError("Parallel live skipped unread segment")
+        for offset, (duration, relative) in enumerate(entries):
+            number = sequence + offset
+            if number < state["next"]:
+                continue
+            route = native_route(state["route"], relative, state["item"])
+            payload = require_native_owner(route, state["token"], "parallel_live_segment")
+            if len(payload) < 188 or payload[0] != 0x47:
+                raise RuntimeError("Parallel live invalid transport stream")
+            state["last_route"] = route
+            if state["count"] == 0:
+                state["first_payload"] = payload
+            state["next"] += 1
+            state["count"] += 1
+            state["seconds"] += duration
+            report(state, "/Sessions/Playing/Progress")
+
+    def start(item, owner, token):
+        before = set(jobs())
+        profile = {"Name": "CI parallel live H264 AAC",
+                   "MaxStreamingBitrate": 2000000, "MaxStaticBitrate": 2000000,
+                   "DirectPlayProfiles": [],
+                   "TranscodingProfiles": [{"Type": "Video", "Container": "ts",
+                       "Protocol": "hls", "VideoCodec": "h264", "AudioCodec": "aac",
+                       "Context": "Streaming"}]}
+        status, info = request("POST", "/Items/" + item + "/PlaybackInfo?UserId=" + owner,
+            {"DeviceProfile": profile, "AutoOpenLiveStream": True, "EnableDirectPlay": False,
+             "EnableDirectStream": False, "EnableTranscoding": True,
+             "AllowVideoStreamCopy": False, "AllowAudioStreamCopy": False,
+             "MaxStreamingBitrate": 2000000}, token=token)
+        sources = [s for s in (info or {}).get("MediaSources", [])
+                   if s.get("SupportsTranscoding") is True and s.get("TranscodingUrl")]
+        if status != 200 or len(sources) != 1:
+            raise RuntimeError("Parallel live negotiation failed")
+        source = sources[0]
+        if (source.get("IsInfiniteStream") is not True or source.get("RunTimeTicks") not in (None, 0)
+                or source.get("AnalyzeDurationMs") != 5000):
+            raise RuntimeError("Parallel live source not open-ended")
+        master = native_route("/", source["TranscodingUrl"], item)
+        session = info.get("PlaySessionId") or next(
+            (v for k, v in parse_qsl(urlsplit(master).query) if k.lower() == "playsessionid"), None)
+        if not session:
+            raise RuntimeError("Parallel live session missing")
+        body = require_native_owner(master, token, "parallel_live_master")
+        route = master
+        if b"#EXT-X-STREAM-INF" in body:
+            relative = [x.strip() for x in body.decode().splitlines()
+                        if x.strip() and not x.startswith("#")]
+            if not relative:
+                raise RuntimeError("Parallel live master lacks variant")
+            route = native_route(master, relative[0], item)
+        if not urlsplit(route).path.lower().endswith("/live.m3u8"):
+            raise RuntimeError("Parallel source did not negotiate native live route")
+        state = {"item": item, "token": token, "source": source, "session": session,
+                 "route": route, "master": master, "next": None, "count": 0, "seconds": 0}
+        states.append(state)
+        report(state, "/Sessions/Playing")
+        consume(state)
+        for _ in range(32):
+            current = jobs()
+            fresh = set(current) - before
+            if len(fresh) == 1:
+                identity = next(iter(fresh))
+                if files_for(current[identity]):
+                    state["identity"], state["job"] = identity, current[identity]
+                    return state
+            if len(fresh) > 1:
+                raise RuntimeError("Cannot attribute multiple new live FFmpeg jobs")
+            time.sleep(0.25)
+        raise RuntimeError("No unique live FFmpeg job and cache")
+ 
+    def decode(state, label):
+        target = base / ("parallel-live-decode-" + label + ".ts")
+        target.write_bytes(state["first_payload"])
+        try:
+            decoded = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-i", str(target), "-map", "0:v:0", "-map", "0:a:0", "-f", "framemd5", "pipe:1"],
+                capture_output=True, text=True, check=True, timeout=30)
+            video = sum(x.startswith("0,") for x in decoded.stdout.splitlines())
+            audio = sum(x.startswith("1,") for x in decoded.stdout.splitlines())
+            if min(video, audio) < 20:
+                raise RuntimeError("Parallel live lacks decoded video or audio")
+        finally:
+            target.unlink(missing_ok=True)
+
+    def stop(state):
+        report(state, "/Sessions/Playing/Stopped")
+        state["stopped"] = True
+
+    states = []
+    if jobs() or any(not t["ended"] for t in provider.live_transfers):
+        raise RuntimeError("Earlier synthetic live job still active")
+    try:
+        a = start(first_item, first_owner, first_token)
+        b = start(second_item, second_owner, second_token)
+        if (a["identity"] == b["identity"] or a["session"] == b["session"]
+                or a["job"]["playlist"] == b["job"]["playlist"]):
+            raise RuntimeError("Parallel live shared identity or namespace")
+        if not files_for(a["job"]) or not files_for(b["job"]) or (
+                files_for(a["job"]).keys() & files_for(b["job"]).keys()):
+            raise RuntimeError("Parallel live cache namespaces not independent")
+        for own, other in ((a, b), (b, a)):
+            for key in ("master", "route", "last_route"):
+                require_native_denial(own[key], own["token"], other["token"], "parallel_live_" + key)
+            decode(own, "a" if own is a else "b")
+        initial = jobs()
+        if a["identity"] not in initial or b["identity"] not in initial:
+            raise RuntimeError("Two simultaneous native live FFmpeg jobs not observed")
+        begin = time.monotonic()
+        peak_cache = peak_rss = peak_cpu = 0
+        previous_cpu = sum(initial[s["identity"]]["cpu"] for s in states)
+        previous_time = begin
+        cpu_start = previous_cpu
+        initial_counts = [s["count"] for s in states]
+        while time.monotonic() - begin < 42:
+            for state in states:
+                consume(state)
+            current = jobs()
+            if any(s["identity"] not in current for s in states):
+                raise RuntimeError("Native live process stopped or restarted during overlap")
+            cpu = sum(current[s["identity"]]["cpu"] for s in states)
+            now = time.monotonic()
+            if now - previous_time >= 1:
+                peak_cpu = max(peak_cpu, (cpu - previous_cpu) / (now - previous_time))
+                previous_cpu, previous_time = cpu, now
+            peak_rss = max(peak_rss, sum(current[s["identity"]]["rss"] for s in states))
+            peak_cache = max(peak_cache, sum(native_cache_delta(base, baseline).values()))
+            if peak_cache > 128 * 1024 * 1024:
+                raise RuntimeError("Parallel live exceeded sampled lab cache bound")
+            if sum(not t["ended"] for t in provider.live_transfers) < 2:
+                raise RuntimeError("Two active open-ended synthetic origins not observed")
+            time.sleep(0.75)
+        duration = time.monotonic() - begin
+        if any(s["count"] - old < 10 for s, old in zip(states, initial_counts)):
+            raise RuntimeError("Insufficient live segments served during overlap")
+        print("JELLYFIN_PARALLEL_LIVE_RESOURCES=" + json.dumps({
+            "overlap_seconds": round(duration, 2), "native_ffmpeg_jobs": 2,
+            "media_seconds": [s["seconds"] for s in states],
+            "peak_sampled_cache_bytes": peak_cache,
+            "peak_sampled_ffmpeg_rss_bytes": peak_rss,
+            "average_ffmpeg_cpu_cores": round((previous_cpu - cpu_start) / max(previous_time - begin, 0.001), 3),
+            "peak_sampled_ffmpeg_cpu_cores": round(peak_cpu, 3),
+            "scope": "two low-resolution synthetic streams on CI runner; not VPS capacity",
+        }, sort_keys=True), flush=True)
+        # Revoke A while B remains authorized, including already-issued live URLs.
+        # Use only the synthetic entitlement map; no real subscriber is modified.
+        try:
+            mock.statuses["synthetic-mega-user"] = "EXPIRED"
+            for key in ("master", "route", "last_route"):
+                uri = a[key]
+                require_denied_response(native_bytes(safe_fixture_route(uri, first_token), first_token),
+                                        "parallel_live_revoked", "header")
+                require_denied_response(native_bytes(native_query_fixture(uri, first_token, first_token)),
+                                        "parallel_live_revoked", "query")
+            consume(b)
+            if b["identity"] not in jobs():
+                raise RuntimeError("Revoking A disrupted B's native process")
+            print("JELLYFIN_PARALLEL_LIVE_ENTITLEMENT_ISOLATION=PASS", flush=True)
+        finally:
+            mock.statuses["synthetic-mega-user"] = "ACTIVE"
+        stop(a)
+        before_count = b["count"]
+        stopped_at = time.monotonic()
+        while time.monotonic() - stopped_at < 24:
+            consume(b)
+            if b["identity"] not in jobs():
+                raise RuntimeError("Stopping A disrupted B's native process")
+            time.sleep(0.75)
+        if a["identity"] in jobs() or files_for(a["job"]):
+            raise RuntimeError("Stopped live A left native process or cache")
+        if b["count"] - before_count < 5 or not files_for(b["job"]):
+            raise RuntimeError("Live B failed to advance after A stopped")
+        print("JELLYFIN_PARALLEL_LIVE_STOP_ISOLATION=PASS", flush=True)
+        stop(b)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if not jobs() and not native_cache_delta(base, baseline) and not any(
+                    not t["ended"] for t in provider.live_transfers):
+                break
+            time.sleep(0.5)
+        if jobs() or native_cache_delta(base, baseline) or any(
+                not t["ended"] for t in provider.live_transfers):
+            raise RuntimeError("Parallel live cleanup left resources")
+        print("JELLYFIN_PARALLEL_LIVE_SECURITY_AND_CLEANUP=PASS", flush=True)
+    finally:
+        for state in reversed(states):
+            if not state.get("stopped"):
+                try:
+                    stop(state)
+                except Exception:
+                    pass
+
+
 def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider, mock,
                          second_item=None, second_owner=None):
     cache_baseline = transcode_cache_files(base)
@@ -1159,6 +1423,8 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     if INFINITE_LIVE:
         verify_infinite_live(base, item_id, route, owner_token, foreign_token,
                              cache_baseline, provider, info, ready[0])
+        verify_parallel_infinite_live(base, item_id, owner, owner_token,
+                                      second_item, second_owner, foreign_token, provider, mock)
         return
     if LONG_CACHE:
         verify_long_cache(base, item_id, route, owner_token, foreign_token,
