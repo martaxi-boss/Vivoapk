@@ -22,6 +22,9 @@ SERVER_PLAYBACK = os.environ.get("VIVOAPK_CI_SERVER_PLAYBACK") == "1"
 LONG_CACHE = os.environ.get("VIVOAPK_CI_LONG_CACHE") == "1"
 INFINITE_LIVE = os.environ.get("VIVOAPK_CI_INFINITE_LIVE") == "1"
 PRIVATE_HLS = os.environ.get("VIVOAPK_CI_PRIVATE_HLS") == "1"
+PRIVATE_LIVE = os.environ.get("VIVOAPK_CI_PRIVATE_LIVE") == "1"
+if PRIVATE_LIVE and not PRIVATE_HLS:
+    raise RuntimeError("Private live requires private HLS gate")
 if PRIVATE_HLS and (not SERVER_PLAYBACK or LONG_CACHE or INFINITE_LIVE):
     raise RuntimeError("Private HLS requires independent native lab gate")
 if INFINITE_LIVE and (not SERVER_PLAYBACK or LONG_CACHE):
@@ -1137,8 +1140,8 @@ def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
 
 def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                                   second_item, second_owner, second_token,
-                                  provider, mock):
-    """Two genuinely open-ended, isolated synthetic sessions; no real media."""
+                                  provider, mock, private_backend=None):
+    """Two open-ended, isolated synthetic sessions; no real media."""
     import re
     if not second_item or first_item == second_item or first_token == second_token:
         raise RuntimeError("Parallel live requires distinct subscribers and items")
@@ -1240,6 +1243,9 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                    if s.get("SupportsTranscoding") is True and s.get("TranscodingUrl")]
         if status != 200 or len(sources) != 1:
             raise RuntimeError("Parallel live negotiation failed")
+        if private_backend is not None and any(value in json.dumps(info).lower() for value in
+                ("/vivoapk/", "private-hls-fixture", "fixture-private-password", "media.example.com")):
+            raise RuntimeError("Private native playback exposed its internal origin")
         source = sources[0]
         if (source.get("IsInfiniteStream") is not True or source.get("RunTimeTicks") not in (None, 0)
                 or source.get("AnalyzeDurationMs") != 5000):
@@ -1335,7 +1341,10 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
             peak_cache = max(peak_cache, sum(native_cache_delta(base, baseline).values()))
             if peak_cache > 128 * 1024 * 1024:
                 raise RuntimeError("Parallel live exceeded sampled lab cache bound")
-            if sum(not t["ended"] for t in provider.live_transfers) < 2:
+            if private_backend is not None:
+                if private_backend.count() != 2:
+                    raise RuntimeError("Both private live sessions not active")
+            elif sum(not t["ended"] for t in provider.live_transfers) < 2:
                 raise RuntimeError("Two active open-ended synthetic origins not observed")
             time.sleep(0.75)
         duration = time.monotonic() - begin
@@ -1350,6 +1359,52 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
             "peak_sampled_ffmpeg_cpu_cores": round(peak_cpu, 3),
             "scope": "two low-resolution synthetic streams on CI runner; not VPS capacity",
         }, sort_keys=True), flush=True)
+        if private_backend is not None:
+            # No stop or progress from A. Keep B consuming and require the
+            # exact native A process/cache and its private backend session gone.
+            abandoned = time.monotonic()
+            before_count = b["count"]
+            while time.monotonic() - abandoned < 110:
+                consume(b)
+                current = jobs()
+                if b["identity"] not in current:
+                    raise RuntimeError("Active B restarted/stopped during private abandonment")
+                if (a["identity"] not in current and not files_for(a["job"])
+                        and private_backend.count() == 1):
+                    break
+                time.sleep(0.75)
+            idle = time.monotonic() - abandoned
+            if a["identity"] in jobs() or files_for(a["job"]) or private_backend.count() != 1:
+                raise RuntimeError("Abandoned private live job/cache/lease not reclaimed")
+            if b["count"] - before_count < 20:
+                raise RuntimeError("Surviving private live did not advance")
+            require_denied_response(native_bytes(safe_fixture_route(a["last_route"], first_token),
+                                                 first_token), "abandoned_private", "retired_session")
+            # Ensure the watchdog itself released the lease; a process exiting
+            # naturally or the fixture expiring is not sufficient evidence.
+            logs = (base / "logs/jellyfin-launch.log").read_text(errors="replace")
+            if "VIVOAPK_PRIVATE_NATIVE_RECOVERY_LEASE=PASS" not in logs:
+                raise RuntimeError("Private watchdog recovery marker missing")
+            if "VIVOAPK_PRIVATE_NATIVE_RECOVERY_JOB runningBefore=True removed=True" not in logs:
+                raise RuntimeError("Private watchdog did not reclaim a running native job")
+            a["stopped"] = True  # Prevent cleanup from sending an A stop.
+            print("JELLYFIN_PRIVATE_LIVE_ABANDONMENT=" + json.dumps({
+                "idle_seconds": round(idle, 2), "first_stop_sent": False,
+                "first_process_absent": True, "first_cache_files": 0,
+                "first_lease_absent": True, "second_process_unchanged": True,
+                "second_segments_during_recovery": b["count"] - before_count,
+            }, sort_keys=True), flush=True)
+            stop(b)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if not jobs() and not native_cache_delta(base, baseline) and private_backend.count() == 0:
+                    break
+                time.sleep(.5)
+            if jobs() or native_cache_delta(base, baseline) or private_backend.count() != 0:
+                raise RuntimeError("Private live final cleanup left resources")
+            private_backend.check_cleanup()
+            print("JELLYFIN_PRIVATE_LIVE_WATCHDOG_AND_ISOLATION=PASS", flush=True)
+            return
         # Revoke A while B remains authorized, including already-issued live URLs.
         # Use only the synthetic entitlement map; no real subscriber is modified.
         try:
@@ -1709,6 +1764,7 @@ def request_png(uri, *, token):
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-private-live-smoke" if PRIVATE_LIVE else
         "vivo-jellyfin-12.4-private-hls-smoke" if PRIVATE_HLS else
         "vivo-jellyfin-12.4-infinite-live-smoke" if INFINITE_LIVE else
         "vivo-jellyfin-12.4-native-long-cache-smoke" if LONG_CACHE else
@@ -1781,7 +1837,7 @@ def main():
     }
     if PRIVATE_HLS:
         from private_backend_fixture import PrivateBackend
-        private_backend = PrivateBackend(base, mock.statuses)
+        private_backend = PrivateBackend(base, mock.statuses, live=PRIVATE_LIVE)
         mock.tokens = private_backend.tokens
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     env = os.environ.copy()
@@ -1828,7 +1884,7 @@ def main():
         if code != 200 or not isinstance(admin, dict) or not admin.get("AccessToken"):
             raise RuntimeError("Administrator login not working")
         token = admin["AccessToken"]
-        if LONG_CACHE or INFINITE_LIVE:
+        if LONG_CACHE or INFINITE_LIVE or PRIVATE_LIVE:
             # Jellyfin v12.4 caches named configuration keys case-sensitively,
             # although its XML paths and store lookup are case-insensitive.
             # Use the exact key read by GetEncodingOptions / the segment cleaner.
@@ -2083,6 +2139,11 @@ def main():
         if pilot_item_id == item_id_b:
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
         if SERVER_PLAYBACK:
+            if PRIVATE_LIVE:
+                verify_parallel_infinite_live(base, pilot_item_id, account_a, customer["AccessToken"],
+                                              item_id_b, account_b, customer_b["AccessToken"],
+                                              provider, mock, private_backend=private_backend)
+                return
             if PRIVATE_HLS:
                 verify_private_native(pilot_item_id, account_a, customer["AccessToken"],
                                       item_id_b, account_b, customer_b["AccessToken"],

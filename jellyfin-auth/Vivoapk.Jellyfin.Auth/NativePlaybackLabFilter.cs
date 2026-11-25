@@ -33,6 +33,8 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
     private const long FixtureIdleMilliseconds = 80000;
     private readonly ConcurrentDictionary<string, FixtureRecovery> _recoveries = new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly PrivateLiveRecovery _privateLive = new();
+
     private sealed class FixtureRecovery(TranscodingJob job)
     {
         internal readonly TranscodingJob Job = job;
@@ -268,7 +270,9 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 http.Response.Headers.CacheControl = "no-store";
                 http.Response.Headers["X-Vivoapk-Lab-Guard"] = "allowed";
                 if (PrivateHlsNativeLab.Enabled && info)
-                    await PrivatePlaybackInfoAsync(http, downstream).ConfigureAwait(false);
+                    await PrivatePlaybackInfoAsync(http, downstream, owner, id).ConfigureAwait(false);
+                else if (PrivateHlsNativeLab.LiveRecoveryEnabled && media)
+                    await _privateLive.HandleAsync(http, downstream, owner, id, logger).ConfigureAwait(false);
                 else
                     await downstream(http).ConfigureAwait(false);
                 if (media)
@@ -278,7 +282,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         };
     }
 
-    private static async Task PrivatePlaybackInfoAsync(HttpContext http, RequestDelegate downstream)
+    private async Task PrivatePlaybackInfoAsync(HttpContext http, RequestDelegate downstream, Guid owner, Guid item)
     {
         // Only the synthetic PlaybackInfo response is buffered. The native
         // MediaSource and cache retain the private source for server FFmpeg.
@@ -296,6 +300,9 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 var node = await JsonNode.ParseAsync(buffer, cancellationToken: http.RequestAborted)
                     .ConfigureAwait(false) ?? throw new InvalidOperationException("Missing playback response");
                 PrivateHlsNativeLab.SanitizePlaybackInfo(node);
+                if (PrivateHlsNativeLab.LiveRecoveryEnabled && !_privateLive.Bind(node, owner, item,
+                        http.User.FindFirst("Jellyfin-DeviceId")?.Value))
+                    throw new InvalidOperationException("Private fixture play session not bound");
                 var content = JsonSerializer.SerializeToUtf8Bytes(node);
                 http.Response.ContentLength = content.Length;
                 http.Response.Body = original;

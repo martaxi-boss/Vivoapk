@@ -144,6 +144,29 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         }
     }
 
+    internal async Task ReleaseRecoveredAsync(Guid owner, Lease lease, CancellationToken ct)
+    {
+        if (!_entries.TryGetValue(lease.Id, out var entry) || entry.Owner != owner)
+            return;
+        await entry.Gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (!_entries.TryRemove(new KeyValuePair<string, Entry>(lease.Id, entry)))
+                return;
+            try
+            {
+                await _backend.CloseAsync(entry.Token, entry.SessionId, ct).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                // Local capability removed; backend's bounded sweeper
+                // handles unavailable or previously expired grants.
+            }
+            finally { entry.Token = ""; }
+        }
+        finally { entry.Gate.Release(); }
+    }
+
     // Backend and local capability cleanup need no extra service. Idle or
     // expired entries are removed without a subsequent client request.
     private async Task SweepAsync(CancellationToken stopping)

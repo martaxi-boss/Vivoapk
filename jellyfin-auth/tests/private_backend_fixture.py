@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import uvicorn
 from pydantic import SecretStr
+from sqlalchemy.engine import make_url
 
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -40,20 +41,29 @@ class Catalogue(FakeCatalog):
 
 
 class PrivateBackend:
-    def __init__(self, base, statuses):
+    def __init__(self, base, statuses, live=False):
         self.server = self.thread = None
         self.tokens = {}
         self.routes = {}
         self.accounts = {}
         self.statuses = statuses
+        database_url = os.environ["VIVOAPK_NATIVE_PRIVATE_DATABASE_URL"]
+        database = make_url(database_url)
+        assert database.drivername == "postgresql+psycopg"
+        assert database.host == "127.0.0.1" and database.port == 5432
+        assert database.database == "vivoapk_native_private_ci" and database.username == "vivoapk_fixture"
+        self.live_windows = {}
         settings = Settings(
-            app_env="test", database_url="sqlite+pysqlite:///:memory:",
+            app_env="test", database_url=database_url,
             session_signing_key=secrets.token_urlsafe(32),
             private_hls_enabled=True, private_media_key=secrets.token_urlsafe(32),
+            session_ttl_seconds=300,
         )
         self.app = create_app(settings)
         dbfactory = self.app.state.session_factory
-        Base.metadata.create_all(dbfactory.kw["bind"])
+        self.engine = dbfactory.kw["bind"]
+        assert self.engine.dialect.name == "postgresql"
+        Base.metadata.create_all(self.engine)
         future = datetime.now(UTC) + timedelta(days=3)
         with dbfactory() as db:
             for i, suffix in enumerate(("a", "b"), 1):
@@ -64,8 +74,8 @@ class PrivateBackend:
                     "ffmpeg", "-hide_banner", "-nostdin", "-v", "error",
                     "-f", "lavfi", "-i", video,
                     "-f", "lavfi", "-i", f"sine=frequency={330+i*220}:sample_rate=48000",
-                    "-t", "15", "-c:v", "mpeg2video", "-g", "25", "-threads:v", "1",
-                    "-c:a", "mp2", "-ac", "2", "-b:a", "128k",
+                    "-t", "240" if live else "15", "-c:v", "mpeg2video", "-g", "25", "-threads:v", "1",
+                    "-b:v", "380k", "-c:a", "mp2", "-ac", "2", "-b:a", "128k",
                     "-f", "hls", "-hls_time", "3", "-hls_list_size", "0",
                     "-hls_segment_filename", str(folder / "s%03d.ts"), str(folder / "index.m3u8"),
                 ], capture_output=True, check=True, timeout=30)
@@ -78,7 +88,16 @@ class PrivateBackend:
                         lambda b=body: response(b, b"video/mp2t"))
                 username, password = f"sub-{suffix}", f"fixture-private-password-{suffix}"
                 root = ORIGIN + f"/live/{username}/{password}/42.m3u8"
-                self.routes[root] = lambda p=playlist.encode(): response(p)
+                if live:
+                    # Release pre-generated, uniquely timestamped TS segments
+                    # at broadcast pace. No ENDLIST or finite VOD playlist.
+                    # 240 seconds of material is more than the test's horizon.
+                    names = sorted(segments)
+                    assert len(names) >= 78
+                    self.live_windows[suffix] = {"names": names, "started": None, "sequence": 0}
+                    self.routes[root] = lambda s=suffix: self.live_manifest(s)
+                else:
+                    self.routes[root] = lambda p=playlist.encode(): response(p)
                 mapping = SubscriptionMapping(
                     mega_subscription_id=900+i, username=username, dns_link=ORIGIN,
                     dns_link_samsung_lg=ORIGIN, expiring_at=future, last_synced_at=datetime.now(UTC),
@@ -121,6 +140,21 @@ class PrivateBackend:
             self.close()
             raise RuntimeError("Private fixture backend not listening")
 
+    def live_manifest(self, suffix):
+        window = self.live_windows[suffix]
+        if window["started"] is None:
+            window["started"] = time.monotonic()
+        count = 3 + int((time.monotonic() - window["started"]) / 3)
+        if count >= len(window["names"]):
+            raise RuntimeError("Synthetic live fixture exhausted")
+        first = max(0, count - 8)
+        window["sequence"] = first
+        lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:3",
+                 f"#EXT-X-MEDIA-SEQUENCE:{first}"]
+        for name in window["names"][first:count]:
+            lines.extend(["#EXTINF:3.000,", f"/muxed/{suffix}/{name}"])
+        return response(("\n".join(lines) + "\n").encode())
+
     def count(self):
         return len(self.app.state.private_hls_registry._entries)
 
@@ -136,3 +170,6 @@ class PrivateBackend:
             self.thread.join(timeout=10)
         SOCKET.unlink(missing_ok=True)
         KEY.unlink(missing_ok=True)
+        if getattr(self, "engine", None) is not None:
+            Base.metadata.drop_all(self.engine)
+            self.engine.dispose()

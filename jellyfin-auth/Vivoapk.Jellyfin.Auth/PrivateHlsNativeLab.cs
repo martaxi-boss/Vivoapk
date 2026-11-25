@@ -107,6 +107,27 @@ internal sealed class PrivateHlsNativeLab : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    internal static bool LiveRecoveryEnabled => Enabled &&
+        Environment.GetEnvironmentVariable("VIVOAPK_CI_PRIVATE_LIVE") == "1";
+
+    internal async Task<bool> RecoverAsync(Guid owner, string sourcePath,
+        Func<Task<bool>> recoverNativeJob, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_bridge is null || !_leases.TryGetValue(owner, out var bound)
+                || !string.Equals(bound.Lease.Playlist.AbsoluteUri, sourcePath, StringComparison.Ordinal))
+                return false;
+            if (!await recoverNativeJob().ConfigureAwait(false))
+                return false;
+            await _bridge.ReleaseRecoveredAsync(owner, bound.Lease, ct).ConfigureAwait(false);
+            _leases.Remove(owner);
+            return true;
+        }
+        finally { _gate.Release(); }
+    }
+
     internal static bool ContainsInternalPath(string text) =>
         text.Contains("/vivoapk/", StringComparison.OrdinalIgnoreCase)
         || text.Contains("%2fvivoapk%2f", StringComparison.OrdinalIgnoreCase)

@@ -36,7 +36,8 @@ internal static class NativePlaybackLab
             uri.Query.Length != 0 || uri.Fragment.Length != 0)
             return null;
         // Separate CI-only case: a genuinely open-ended HTTP MPEG-TS source.
-        var infinite = Environment.GetEnvironmentVariable("VIVOAPK_CI_INFINITE_LIVE") == "1";
+        var infinite = Environment.GetEnvironmentVariable("VIVOAPK_CI_INFINITE_LIVE") == "1" ||
+            Environment.GetEnvironmentVariable("VIVOAPK_CI_PRIVATE_LIVE") == "1";
         return new MediaSourceInfo
         {
             Name = "Synthetic native FFmpeg fixture",

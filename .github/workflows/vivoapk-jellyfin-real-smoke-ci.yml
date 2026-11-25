@@ -14,7 +14,23 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vivoapk_fixture
+          POSTGRES_PASSWORD: disposable-native-fixture-only
+          POSTGRES_DB: vivoapk_native_private_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vivoapk_fixture -d vivoapk_native_private_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      VIVOAPK_NATIVE_PRIVATE_DATABASE_URL: postgresql+psycopg://vivoapk_fixture:disposable-native-fixture-only@127.0.0.1:5432/vivoapk_native_private_ci
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -200,6 +216,7 @@ jobs:
           echo "SYNTHETIC_PLUGIN_SHA256=$(sha256sum "$plugin" | cut -d ' ' -f1)" | tee -a "$evidence"
           # Exercise the previously failing gate first in the disposable native build.
           run_gate native-private-hls env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
+          run_gate native-private-live-recovery env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 VIVOAPK_CI_PRIVATE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           if (( failed != 0 )); then
             echo "PRIVATE_HLS_GATE_FAILED_BEFORE_REMAINING_NATIVE_REGRESSION=1" | tee -a "$evidence"
             exit "$failed"
