@@ -356,6 +356,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 Type = ChannelItemType.Folder,
                 FolderType = ChannelFolderType.Season,
                 MediaType = ChannelMediaType.Video,
+                // Match the same season identifier used for episode ParentIndexNumber.
+                // Otherwise Jellyfin can synthesize a second season during metadata refresh.
+                IndexNumber = int.TryParse(season.Id, NumberStyles.None, CultureInfo.InvariantCulture,
+                    out var seasonNumber) ? seasonNumber : null,
                 SeriesName = detail.Title
             }).ToList();
         }
