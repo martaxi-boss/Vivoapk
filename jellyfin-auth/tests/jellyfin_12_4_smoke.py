@@ -1,4 +1,5 @@
 """Disposable real Jellyfin 12.4 integration test. No Mega OTT accounts used."""
+import hashlib
 import http.client
 import http.server
 import json
@@ -340,7 +341,63 @@ def require_native_owner(uri, owner_token, stage):
     return body
 
 
+def transcode_cache_files(base):
+    """Inspect only the disposable server's native transcode folders."""
+    base = base.resolve()
+    files = {}
+    for parent in (base / "cache", base / "data"):
+        for folder in parent.rglob("transcodes"):
+            if folder.is_symlink() or not folder.is_dir() or not folder.resolve().is_relative_to(base):
+                raise RuntimeError("Unexpected synthetic transcode cache location")
+            for candidate in folder.rglob("*"):
+                if candidate.is_symlink():
+                    raise RuntimeError("Unexpected symlink in synthetic transcode cache")
+                if candidate.is_file() and candidate.suffix.lower() in (".ts", ".m3u8", ".m4s", ".mp4", ".aac"):
+                    files[candidate] = candidate.stat().st_size
+    return files
+
+
+def verify_native_cache_cleanup(base, item_id, info, source, route, owner_token, foreign_token,
+                                baseline, input_digest):
+    created = {p: size for p, size in transcode_cache_files(base).items() if p not in baseline}
+    if not any(p.suffix.lower() == ".ts" and size >= 188 for p, size in created.items()):
+        raise RuntimeError("No native MPEG-TS cache files observed before stop")
+    # Real Jellyfin playback session negotiated earlier. No arbitrary file
+    # deletion and no new daemon: invoke the ordinary client playback-stop API.
+    session = info.get("PlaySessionId") or next(
+        (v for k, v in parse_qsl(urlsplit(route).query) if k.lower() == "playsessionid"), None)
+    if not isinstance(session, str) or not session:
+        raise RuntimeError("Missing native play session for cache lifecycle check")
+    code, _ = request("POST", "/Sessions/Playing/Stopped", {
+        "ItemId": item_id, "PlaySessionId": session,
+        "MediaSourceId": source.get("Id"), "PositionTicks": 20000000,
+    }, token=owner_token)
+    if code not in (200, 204):
+        raise RuntimeError("Native playback stop failed: HTTP " + str(code))
+    for _ in range(50):
+        remaining = {p: size for p, size in transcode_cache_files(base).items() if p not in baseline}
+        if not remaining:
+            break
+        time.sleep(0.4)
+    if remaining:
+        raise RuntimeError("Native playback stop left synthetic transcode files: " +
+                           json.dumps({"files": len(remaining), "bytes": sum(remaining.values())}))
+    if hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest() != input_digest:
+        raise RuntimeError("Native cache cleanup changed the authorized synthetic source")
+    if request("GET", "/Users/Me", token=foreign_token)[0] != 200:
+        raise RuntimeError("Native cache cleanup affected the other account")
+    print("JELLYFIN_NATIVE_SERVER_CACHE_CLEANUP=" + json.dumps({
+        "generated_files": len(created), "generated_bytes": sum(created.values()),
+        "remaining_files": len(remaining), "native_stop_status": code,
+        "synthetic_source_unchanged": True, "other_session_preserved": True,
+        "scope": "disposable synthetic playback stop, not long running or abandoned sessions"
+    }, sort_keys=True))
+    print("JELLYFIN_NATIVE_SERVER_CACHE_CLEANUP_ON_STOP=PASS")
+
+
 def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider, mock):
+    cache_baseline = transcode_cache_files(base)
+    input_digest = hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest()
     profile = {
         "Name": "CI server HLS H264 AAC",
         "MaxStreamingBitrate": 2000000, "MaxStaticBitrate": 2000000,
@@ -461,6 +518,8 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     if require_native_owner(first_segment, owner_token, "renewed_segment")[0] != 0x47:
         raise RuntimeError("Renewed fixture could not access its own segment")
     print("JELLYFIN_NATIVE_SERVER_ACTIVE_SESSION_RESTORED=PASS")
+    verify_native_cache_cleanup(base, item_id, info, ready[0], master_route,
+                                owner_token, foreign_token, cache_baseline, input_digest)
 
 
 def request_png(uri, *, token):
