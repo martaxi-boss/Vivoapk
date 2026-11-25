@@ -739,7 +739,7 @@ def verify_parallel_cache_recovery(base, first_item, first_owner, first_token,
             if not proc.name.isdecimal():
                 continue
             try:
-                args = (proc / "cmdline").read_bytes().split(b"\\0")
+                args = (proc / "cmdline").read_bytes().split(bytes([0]))
                 if not args or Path(os.fsdecode(args[0])).name != "ffmpeg" or expected not in args:
                     continue
                 start_ticks = (proc / "stat").read_text().rsplit(") ", 1)[1].split()[19]
