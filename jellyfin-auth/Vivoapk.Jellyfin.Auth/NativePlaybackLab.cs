@@ -44,6 +44,10 @@ internal static class NativePlaybackLab
             Protocol = MediaProtocol.Http,
             IsRemote = true,
             IsInfiniteStream = infinite,
+            // The controlled MPEG-TS fixture has known codecs and frequent keyframes.
+            // Do not inherit the 200-second analysis default for this live fixture.
+            // All existing finite tests and all real provider sources are unchanged.
+            AnalyzeDurationMs = infinite ? 5000 : null,
             Container = "mpegts",
             // The extended fixture remains a finite, generated loopback asset.
             RunTimeTicks = infinite ? null : TimeSpan.FromSeconds(

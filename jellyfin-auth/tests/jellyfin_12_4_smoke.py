@@ -915,7 +915,10 @@ def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
     print("JELLYFIN_INFINITE_SOURCE=" + json.dumps({
         "infinite": source.get("IsInfiniteStream"),
         "runtime_ticks": source.get("RunTimeTicks"),
+        "analyze_duration_ms": source.get("AnalyzeDurationMs"),
     }), flush=True)
+    if source.get("AnalyzeDurationMs") != 5000:
+        raise RuntimeError("Synthetic per-source analysis setting did not survive negotiation")
     if source.get("IsInfiniteStream") is not True or source.get("RunTimeTicks") not in (None, 0):
         raise RuntimeError("Negotiated source is not genuinely open-ended")
     session = info.get("PlaySessionId") or next(
@@ -967,7 +970,22 @@ def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
     if not is_live_route:
         raise RuntimeError("Unknown-duration source did not negotiate Jellyfin live.m3u8")
 
-    initial = require_native_owner(playlist, owner_token, "infinite_playlist")
+    startup_begin = time.monotonic()
+    try:
+        initial = require_native_owner(playlist, owner_token, "infinite_playlist")
+    except (TimeoutError, RuntimeError):
+        print("JELLYFIN_INFINITE_STARTUP_FAILED=" + json.dumps({
+            "elapsed_seconds": round(time.monotonic() - startup_begin, 2),
+            "origin_bytes": sum(t["bytes"] for t in provider.live_transfers),
+            "active_origins": sum(not t["ended"] for t in provider.live_transfers),
+            "cache_files": len(native_cache_delta(base, baseline))
+        }, sort_keys=True), flush=True)
+        raise
+    print("JELLYFIN_INFINITE_STARTUP=" + json.dumps({
+        "elapsed_seconds": round(time.monotonic() - startup_begin, 2),
+        "origin_bytes": sum(t["bytes"] for t in provider.live_transfers),
+        "analysis_ms": source.get("AnalyzeDurationMs")
+    }, sort_keys=True), flush=True)
     timed = parse_timed_segments(initial)
     if b"#EXT-X-ENDLIST" in initial or not timed:
         raise RuntimeError("Native live playlist is closed or empty")
