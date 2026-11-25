@@ -898,15 +898,18 @@ def main():
             raise RuntimeError("Administrator login not working")
         token = admin["AccessToken"]
         if LONG_CACHE:
-            code, options = request("GET", "/System/Configuration/Encoding", token=token)
+            # Jellyfin v12.4 caches named configuration keys case-sensitively,
+            # although its XML paths and store lookup are case-insensitive.
+            # Use the exact key read by GetEncodingOptions / the segment cleaner.
+            code, options = request("GET", "/System/Configuration/encoding", token=token)
             if code != 200 or not isinstance(options, dict) or "EnableSegmentDeletion" not in options:
                 raise RuntimeError("Native encoding settings unavailable")
             options.update({"EnableSegmentDeletion": True, "SegmentKeepSeconds": 20,
                             "EnableThrottling": False})
-            code, _ = request("POST", "/System/Configuration/Encoding", options, token=token)
+            code, _ = request("POST", "/System/Configuration/encoding", options, token=token)
             if code not in (200, 204):
                 raise RuntimeError("Disposable native encoding settings rejected")
-            code, actual = request("GET", "/System/Configuration/Encoding", token=token)
+            code, actual = request("GET", "/System/Configuration/encoding", token=token)
             if code != 200 or not actual.get("EnableSegmentDeletion") or actual.get("SegmentKeepSeconds") != 20:
                 raise RuntimeError("Disposable native encoding settings not verified")
             print("JELLYFIN_NATIVE_LONG_CACHE_CONFIG=PASS", flush=True)
