@@ -53,20 +53,82 @@ internal sealed class PrivateLiveRecovery
         http.Response.ContentLength = 0;
     }
 
+    // The pinned Jellyfin live controller emits hls/<playlist-stem>/
+    // <playlist-stem><index>.ts WITHOUT PlaySessionId in the query. The
+    // legacy segment controller resolves files from the segment filename.
+    // Bind BOTH path components to the exact already observed native job,
+    // not merely the authenticated item or a client-supplied playlist id.
+    private static bool MatchesLegacySegment(string[] parts, TranscodingJob? job)
+    {
+        if (parts.Length != 5 || job is null || string.IsNullOrEmpty(job.Path)
+            || !parts[0].Equals("Videos", StringComparison.OrdinalIgnoreCase)
+            || !parts[2].Equals("hls", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var stem = Path.GetFileNameWithoutExtension(job.Path);
+        if (string.IsNullOrEmpty(stem) || !stem.All(char.IsAsciiHexDigit)
+            || !string.Equals(parts[3], stem, StringComparison.Ordinal)
+            || !parts[4].StartsWith(stem, StringComparison.Ordinal)
+            || !parts[4].EndsWith(".ts", StringComparison.Ordinal))
+            return false;
+        var indexLength = parts[4].Length - stem.Length - 3;
+        return indexLength is > 0 and <= 10
+            && parts[4].AsSpan(stem.Length, indexLength).ToArray().All(char.IsAsciiDigit);
+    }
+
     internal async Task HandleAsync(HttpContext http, RequestDelegate downstream,
         Guid owner, Guid item, ILogger logger)
     {
         var values = http.Request.Query["PlaySessionId"];
         var device = http.User.FindFirst("Jellyfin-DeviceId")?.Value;
-        if (values.Count != 1 || !Guid.TryParse(values[0], out _) ||
-            string.IsNullOrEmpty(device) ||
-            !_states.TryGetValue(values[0]!, out var state) ||
-            state.Owner != owner || state.Item != item || state.Device != device)
+        var parts = (http.Request.Path.Value ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var legacy = parts.Length == 5 && parts[2].Equals("hls", StringComparison.OrdinalIgnoreCase);
+        var nativePlaylist = parts.Length == 3 && parts[0].Equals("Videos", StringComparison.OrdinalIgnoreCase)
+            && (parts[2].Equals("master.m3u8", StringComparison.OrdinalIgnoreCase)
+                || parts[2].Equals("live.m3u8", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrEmpty(device) || (!legacy && !nativePlaylist))
         {
             Deny(http);
             return;
         }
-        var session = values[0]!;
+        string session;
+        State state;
+        if (legacy && values.Count == 0)
+        {
+            // Select a unique previously negotiated identity. Never derive
+            // ownership from the untrusted cache filename alone.
+            var matches = _states.Where(p => p.Value.Owner == owner && p.Value.Item == item
+                && p.Value.Device == device).Take(2).ToArray();
+            if (matches.Length != 1)
+            {
+                Deny(http);
+                return;
+            }
+            session = matches[0].Key;
+            state = matches[0].Value;
+        }
+        else
+        {
+            if (values.Count != 1 || !Guid.TryParse(values[0], out _)
+                || !_states.TryGetValue(values[0]!, out var bound)
+                || bound.Owner != owner || bound.Item != item || bound.Device != device)
+            {
+                Deny(http);
+                return;
+            }
+            session = values[0]!;
+            state = bound;
+        }
+        // If present, native caller-controlled device/source selectors must
+        // agree with the already authenticated identity.
+        var devices = http.Request.Query["DeviceId"];
+        var sources = http.Request.Query["MediaSourceId"];
+        if (devices.Count > 1 || (devices.Count == 1 && devices[0] != device)
+            || sources.Count > 1 || (sources.Count == 1
+                && (!Guid.TryParse(sources[0], out var sourceItem) || sourceItem != item)))
+        {
+            Deny(http);
+            return;
+        }
         var services = http.RequestServices;
         var manager = services.GetRequiredService<ITranscodeManager>();
         var lab = services.GetRequiredService<PrivateHlsNativeLab>();
@@ -80,7 +142,9 @@ internal sealed class PrivateLiveRecovery
         lock (state.Gate)
         {
             if (state.Recovering || (state.Job is not null &&
-                    !ReferenceEquals(state.Job, existing)))
+                    !ReferenceEquals(state.Job, existing))
+                || (legacy && (!ReferenceEquals(state.Job, existing)
+                    || !MatchesLegacySegment(parts, existing))))
             {
                 Deny(http);
                 return;
@@ -92,6 +156,8 @@ internal sealed class PrivateLiveRecovery
             await downstream(http).ConfigureAwait(false);
             if (http.Response.StatusCode != 200)
                 return;
+            if (legacy && values.Count == 0)
+                logger.LogDebug("VIVOAPK_PRIVATE_NATIVE_QUERYLESS_SEGMENT=PASS");
             var job = manager.GetTranscodingJob(session);
             if (job is null || job.Type != TranscodingJobType.Hls ||
                 string.IsNullOrEmpty(job.Path) ||

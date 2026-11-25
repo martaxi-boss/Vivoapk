@@ -1313,6 +1313,32 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
         if not files_for(a["job"]) or not files_for(b["job"]) or (
                 files_for(a["job"]).keys() & files_for(b["job"]).keys()):
             raise RuntimeError("Parallel live cache namespaces not independent")
+        if private_backend is not None:
+            for own, other in ((a, b), (b, a)):
+                own_uri = urlsplit(safe_fixture_route(own["last_route"], own["token"]))
+                other_uri = urlsplit(safe_fixture_route(other["last_route"], other["token"]))
+                own_parts = own_uri.path.split("/")
+                other_parts = other_uri.path.split("/")
+                assert len(own_parts) == len(other_parts) == 6 and own_parts[3].lower() == "hls"
+                assert not any(k.lower() == "playsessionid" for k, _ in parse_qsl(own_uri.query))
+                # Even an authenticated user using their OWN item id must not
+                # be allowed to read a foreign playlist or segment filename.
+                for forged in (
+                    own_parts[:4] + other_parts[4:],
+                    own_parts[:5] + other_parts[5:],
+                    own_parts[:4] + [other_parts[4], own_parts[5]],
+                ):
+                    route = urlunsplit(("", "", "/".join(forged), "", ""))
+                    require_denied_response(native_bytes(route, own["token"]),
+                                            "private_live_foreign_cache", "own_item_forged_path")
+                # An explicitly supplied contradictory play-session is denied;
+                # the ordinary native segment works without this parameter.
+                route = urlunsplit(("", "", own_uri.path,
+                                     urlencode({"PlaySessionId": other["session"]}), ""))
+                require_denied_response(native_bytes(route, own["token"]),
+                                        "private_live_foreign_session", "own_item_forged_session")
+                require_native_owner(own["last_route"], own["token"], "queryless_native_live_segment")
+            print("JELLYFIN_PRIVATE_NATIVE_QUERYLESS_SEGMENT_AND_EXACT_CACHE=PASS", flush=True)
         for own, other in ((a, b), (b, a)):
             for key in ("master", "route", "last_route"):
                 require_native_denial(own[key], own["token"], other["token"], "parallel_live_" + key)
