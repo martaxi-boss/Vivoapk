@@ -387,7 +387,11 @@ def transcode_cache_files(base):
                 if candidate.is_symlink():
                     raise RuntimeError("Unexpected symlink in synthetic transcode cache")
                 if candidate.is_file() and candidate.suffix.lower() in (".ts", ".m3u8", ".m4s", ".mp4", ".aac"):
-                    files[candidate] = candidate.stat().st_size
+                    try:
+                        files[candidate] = candidate.stat().st_size
+                    except FileNotFoundError:
+                        # Native cleaner may remove a segment between enumeration and stat.
+                        continue
     return files
 
 
@@ -636,7 +640,169 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
     print("JELLYFIN_NATIVE_LONG_CACHE_AND_IDLE_CLEANUP=PASS", flush=True)
 
 
-def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider, mock):
+def verify_parallel_cache_recovery(base, first_item, first_owner, first_token,
+                                   second_item, second_owner, second_token, input_digest):
+    """Two real overlapping FFmpeg jobs on this disposable synthetic server."""
+    if not LONG_CACHE or not SERVER_PLAYBACK or not second_item or not second_owner:
+        raise RuntimeError("Parallel cache test requires two synthetic accounts and long lab")
+    if first_owner == second_owner or first_item == second_item:
+        raise RuntimeError("Parallel fixture accounts/items are not distinct")
+    baseline = transcode_cache_files(base)
+
+    def start(item, owner, token, client):
+        profile = {
+            "Name": "CI parallel native HLS",
+            "MaxStreamingBitrate": 2000000, "MaxStaticBitrate": 2000000,
+            "DirectPlayProfiles": [],
+            "TranscodingProfiles": [{
+                "Type": "Video", "Container": "ts", "Protocol": "hls",
+                "VideoCodec": "h264", "AudioCodec": "aac", "Context": "Streaming",
+            }],
+        }
+        code, info = request("POST", "/Items/" + item + "/PlaybackInfo?UserId=" + owner,
+            {"DeviceProfile": profile, "AutoOpenLiveStream": True,
+             "EnableDirectPlay": False, "EnableDirectStream": False,
+             "EnableTranscoding": True, "AllowVideoStreamCopy": False,
+             "AllowAudioStreamCopy": False, "MaxStreamingBitrate": 2000000},
+            token=token, client_name=client)
+        sources = [x for x in (info or {}).get("MediaSources", [])
+                   if x.get("SupportsTranscoding") is True and x.get("TranscodingUrl")]
+        session = (info or {}).get("PlaySessionId")
+        if code != 200 or len(sources) != 1 or not session:
+            raise RuntimeError("Parallel native profile negotiation failed")
+        source = sources[0]
+        route = native_route("/", source["TranscodingUrl"], item)
+        body = require_native_owner(route, token, "parallel_master")
+        if not body.startswith(b"#EXTM3U"):
+            raise RuntimeError("Parallel fixture has no HLS master")
+        if b"#EXT-X-STREAM-INF" in body:
+            variants = [x.strip() for x in body.decode().splitlines()
+                        if x.strip() and not x.startswith("#")]
+            if not variants:
+                raise RuntimeError("Parallel fixture has no media playlist")
+            route = native_route(route, variants[0], item)
+            body = require_native_owner(route, token, "parallel_playlist")
+        segments = parse_timed_segments(body)
+        if len(segments) < 40:
+            raise RuntimeError("Parallel fixture has insufficient media duration")
+        state = {"item": item, "owner": owner, "token": token, "client": client,
+                 "info": info, "source": source, "session": session,
+                 "route": route, "segments": segments, "index": 0, "seconds": 0.0}
+        report(state, "/Sessions/Playing")
+        return state
+
+    def report(state, endpoint):
+        code, _ = request("POST", endpoint, {
+            "ItemId": state["item"], "MediaSourceId": state["source"].get("Id"),
+            "PlaySessionId": state["session"],
+            "PositionTicks": int(state["seconds"] * 10000000),
+            "PlayMethod": "Transcode", "IsPaused": False,
+        }, token=state["token"], client_name=state["client"])
+        if code not in (200, 204):
+            raise RuntimeError("Parallel client playback report rejected: HTTP " + str(code))
+
+    def consume(state):
+        duration, relative = state["segments"][state["index"]]
+        route = native_route(state["route"], relative, state["item"])
+        query = {k.lower(): v for k, v in parse_qsl(urlsplit(route).query)}
+        if query.get("playsessionid") != state["session"]:
+            raise RuntimeError("Parallel media route has a different play session")
+        payload = require_native_owner(route, state["token"], "parallel_segment")
+        if len(payload) < 188 or payload[0] != 0x47:
+            raise RuntimeError("Parallel native segment unavailable")
+        state["last_route"] = route
+        state["seconds"] += duration
+        state["index"] += 1
+        report(state, "/Sessions/Playing/Progress")
+
+    def find_playlist(excluded):
+        candidates = [p for p in native_cache_delta(base, excluded)
+                      if p.suffix.lower() == ".m3u8" and len(p.stem) == 32
+                      and all(c in "0123456789abcdef" for c in p.stem.lower())]
+        if len(candidates) != 1:
+            raise RuntimeError("Cannot prove a unique native playlist for parallel job")
+        return candidates[0]
+
+    def namespace(playlist):
+        return {p: size for p, size in native_cache_delta(base, baseline).items()
+                if p.parent == playlist.parent and (p == playlist or
+                    (p.stem.startswith(playlist.stem) and
+                     p.stem[len(playlist.stem):].isascii() and
+                     p.stem[len(playlist.stem):].isdecimal()))}
+
+    def ffmpeg_identity(playlist):
+        # Linux disposable runner only. Read process metadata; never log argv,
+        # send a signal, or touch processes/files outside the fixture.
+        expected = os.fsencode(str(playlist))
+        found = []
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdecimal():
+                continue
+            try:
+                args = (proc / "cmdline").read_bytes().split(b"\\0")
+                if not args or Path(os.fsdecode(args[0])).name != "ffmpeg" or expected not in args:
+                    continue
+                start_ticks = (proc / "stat").read_text().rsplit(") ", 1)[1].split()[19]
+                found.append((proc.name, start_ticks))
+            except (OSError, ValueError, IndexError):
+                continue
+        return found
+
+    a = start(first_item, first_owner, first_token, "VivoAPK-CI")
+    for _ in range(4):
+        consume(a)
+    pa = find_playlist(baseline)
+    before_b = transcode_cache_files(base)
+    b = start(second_item, second_owner, second_token, "Jellyfin for Tizen")
+    for _ in range(2):
+        consume(b)
+    pb = find_playlist(before_b)
+    if pa == pb or a["session"] == b["session"]:
+        raise RuntimeError("Parallel native jobs share cache or play session")
+    ids_a, ids_b = ffmpeg_identity(pa), ffmpeg_identity(pb)
+    if len(ids_a) != 1 or len(ids_b) != 1 or ids_a == ids_b:
+        raise RuntimeError("Two simultaneous native FFmpeg processes not proven")
+    if not namespace(pa) or not namespace(pb):
+        raise RuntimeError("Parallel job cache namespaces not both observed")
+    print("JELLYFIN_NATIVE_PARALLEL_TWO_PROCESSES=PASS", flush=True)
+    require_native_denial(a["last_route"], first_token, second_token, "parallel_a")
+    require_native_denial(b["last_route"], second_token, first_token, "parallel_b")
+    abandoned_at = time.monotonic()
+    peak = sum(native_cache_delta(base, baseline).values())
+    # A receives no further media/progress and never sends a stop. B reads
+    # fresh sequential media and real progress at approximately playback pace.
+    while time.monotonic() - abandoned_at < 110:
+        if not namespace(pa) and not ffmpeg_identity(pa):
+            break
+        if ffmpeg_identity(pb) != ids_b:
+            raise RuntimeError("Second native FFmpeg job stopped or restarted during first recovery")
+        time.sleep(2.8)
+        consume(b)
+        peak = max(peak, sum(native_cache_delta(base, baseline).values()))
+        if peak > 64 * 1024 * 1024:
+            raise RuntimeError("Parallel synthetic cache exceeded 64 MiB test bound")
+    if namespace(pa) or ffmpeg_identity(pa):
+        raise RuntimeError("Abandoned first job was not reclaimed during second playback")
+    if ffmpeg_identity(pb) != ids_b or not namespace(pb):
+        raise RuntimeError("Second job did not survive first recovery")
+    prior_index = b["index"]
+    consume(b)
+    if b["index"] != prior_index + 1 or ffmpeg_identity(pb) != ids_b:
+        raise RuntimeError("Second job failed to continue after first recovery")
+    print("JELLYFIN_NATIVE_PARALLEL_ABANDONED_RECOVERY=" + json.dumps({
+        "distinct_jobs": True, "first_remaining_files": 0,
+        "first_process_absent": True, "second_process_unchanged": True,
+        "second_segments_served": b["index"], "second_media_seconds": b["seconds"],
+        "first_stop_sent": False, "peak_sampled_cache_bytes": peak,
+        "observed_seconds": round(time.monotonic() - abandoned_at, 1),
+    }, sort_keys=True), flush=True)
+    verify_native_cache_cleanup(base, second_item, b["info"], b["source"],
+                                b["last_route"], second_token, first_token, baseline, input_digest)
+    print("JELLYFIN_NATIVE_PARALLEL_RECOVERY_ISOLATION=PASS", flush=True)
+
+
+def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider, mock,
+                         second_item=None, second_owner=None):
     cache_baseline = transcode_cache_files(base)
     input_digest = hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest()
     profile = {
@@ -664,6 +830,8 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     if LONG_CACHE:
         verify_long_cache(base, item_id, route, owner_token, foreign_token,
                           cache_baseline, input_digest, provider, info, ready[0])
+        verify_parallel_cache_recovery(base, item_id, owner, owner_token,
+                                       second_item, second_owner, foreign_token, input_digest)
         return
     # Report only alias key names, never a URI, identifier or token value.
     print("JELLYFIN_NATIVE_ROUTE_AUTH_QUERY_KEYS=" + json.dumps(sorted(
@@ -1135,7 +1303,8 @@ def main():
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
         if SERVER_PLAYBACK:
             verify_native_ffmpeg(pilot_item_id, account_a, customer["AccessToken"],
-                                 customer_b["AccessToken"], base, provider, mock)
+                                 customer_b["AccessToken"], base, provider, mock,
+                                 second_item=item_id_b, second_owner=account_b)
             log.flush()
             for folder in (DATAROOT, base / "logs"):
                 for candidate in folder.rglob("*"):
