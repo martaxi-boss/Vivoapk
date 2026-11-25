@@ -195,7 +195,9 @@ class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
             "-f", "mpegts", "pipe:1",
         ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.connection.settimeout(15)
-        burst = 220 * 75000  # same bounded startup probing allowance as finite CI
+        # Do not consume a large synthetic startup backlog through a short live window.
+        # A bounded 18-second probing allowance, followed by real-time pacing.
+        burst = 18 * 75000
         tail_started = None
         try:
             self.send_response(200)
@@ -969,9 +971,25 @@ def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
     timed = parse_timed_segments(initial)
     if b"#EXT-X-ENDLIST" in initial or not timed:
         raise RuntimeError("Native live playlist is closed or empty")
-    # Start close to the live edge, never replay the startup probing backlog.
-    seen = {relative for _, relative in timed[:-2]}
+    def media_sequence(payload):
+        values = [line.split(":", 1)[1] for line in payload.decode().splitlines()
+                  if line.startswith("#EXT-X-MEDIA-SEQUENCE:")]
+        if len(values) != 1 or not values[0].isdigit():
+            raise RuntimeError("Missing native HLS media sequence")
+        return int(values[0])
+
+    # Start close to the live edge; every subsequently consumed segment must
+    # have the next sequence number, even as old entries disappear.
+    initial_sequence = media_sequence(initial)
+    next_sequence = initial_sequence + max(0, len(timed) - 2)
+    initial_read_sequence = next_sequence
+    previous_playlist_sequence = initial_sequence
     first_files = set()
+    first_route = None
+    first_digest = None
+    delayed_segment_ok = False
+    max_playlist_entries = 0
+    peak_segment_count = 0
     served = 0.0
     count = 0
     peak = 0
@@ -983,38 +1001,64 @@ def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
     failure = None
     rolling = False
     try:
-        # Bounded 75 seconds of real observation, not 75 seconds downloaded at once.
-        while time.monotonic() - begin < 75:
+        # Observe more than one full 12+12 segment retention window.
+        # The stream remains open; no fake duration is provided to Jellyfin.
+        while time.monotonic() - begin < 115:
             body = require_native_owner(playlist, owner_token, "infinite_playlist_refresh")
             if b"#EXT-X-ENDLIST" in body:
                 raise RuntimeError("End marker appeared in continuous live playlist")
-            for duration, relative in parse_timed_segments(body):
-                if relative in seen:
+            entries = parse_timed_segments(body)
+            sequence = media_sequence(body)
+            if sequence < previous_playlist_sequence:
+                raise RuntimeError("Live playlist media sequence moved backwards")
+            if sequence > next_sequence:
+                raise RuntimeError("Live playlist skipped unread media segments")
+            previous_playlist_sequence = sequence
+            max_playlist_entries = max(max_playlist_entries, len(entries))
+            if len(entries) > 12 or b"#EXT-X-PLAYLIST-TYPE:EVENT" in body:
+                raise RuntimeError("Native live playlist is not a bounded sliding window")
+            if (first_route is not None and not delayed_segment_ok
+                    and sequence > initial_read_sequence):
+                delayed = require_native_owner(first_route, owner_token, "live_recently_unlisted")
+                if hashlib.sha256(delayed).hexdigest() != first_digest:
+                    raise RuntimeError("Recently unlisted live segment changed")
+                delayed_segment_ok = True
+                print("JELLYFIN_LIVE_DELAYED_SEGMENT=PASS", flush=True)
+            for offset, (duration, relative) in enumerate(entries):
+                number = sequence + offset
+                if number < next_sequence:
                     continue
+                if number != next_sequence:
+                    raise RuntimeError("Discontinuous live media sequence")
                 route = native_route(playlist, relative, item_id)
                 data = require_native_owner(route, owner_token, "infinite_segment")
                 if len(data) < 188 or data[0] != 0x47:
                     raise RuntimeError("Live MPEG-TS segment invalid")
-                seen.add(relative)
+                next_sequence += 1
                 served += duration
                 count += 1
                 last_segment, last_route = data, route
                 if count == 1:
                     require_native_denial(route, owner_token, foreign_token, "infinite_segment")
                     decode(data, "start")
+                    first_route = route
+                    first_digest = hashlib.sha256(data).hexdigest()
                 if count <= 3:
                     filename = Path(urlsplit(route).path).name
                     first_files.update(p for p in native_cache_delta(base, baseline) if p.name == filename)
                 report("/Sessions/Playing/Progress", served)
             files = native_cache_delta(base, baseline)
             peak = max(peak, sum(files.values()))
-            rolling = bool(first_files.difference(files)) and bool(files)
+            rolling = len(first_files) == 3 and first_files.isdisjoint(files) and bool(files)
+            peak_segment_count = max(peak_segment_count, sum(p.suffix == ".ts" for p in files))
+            if peak_segment_count > 26:
+                raise RuntimeError("Live disk segment count exceeded sliding-window allowance")
             if peak > 64 * 1024 * 1024:
                 raise RuntimeError("Live cache exceeded 64 MiB sampled laboratory bound")
             if any(t["generator_failed"] for t in provider.live_transfers):
                 raise RuntimeError("Continuous source generator ended unexpectedly")
             time.sleep(0.75)
-        if last_segment is None or served < 45 or count < 10:
+        if last_segment is None or served < 90 or count < 30:
             raise RuntimeError("Insufficient advancing live media")
         decode(last_segment, "end")
         require_native_denial(last_route, owner_token, foreign_token, "infinite_latest_segment")
@@ -1029,10 +1073,15 @@ def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
             "observed_early_files": len(first_files), "removed_early_files": removed,
             "cache_files_at_end": len(files), "origin_bytes_advanced": final_bytes - first_bytes,
             "origin_still_open": True, "rolling_pass": rolling,
+            "max_playlist_entries": max_playlist_entries,
+            "peak_disk_segments": peak_segment_count,
+            "media_sequence_advanced": previous_playlist_sequence > initial_sequence,
+            "delayed_segment_preserved": delayed_segment_ok,
+            "gap_free_sequence": True,
         }, sort_keys=True), flush=True)
         print("JELLYFIN_INFINITE_LIVE_PLAYBACK=PASS", flush=True)
-        if not first_files or not rolling:
-            failure = RuntimeError("Continuous live cache rolling deletion not demonstrated")
+        if not rolling or not delayed_segment_ok or previous_playlist_sequence <= initial_sequence:
+            failure = RuntimeError("Continuous live rolling deletion or delayed-reader retention not demonstrated")
     except Exception as exc:
         failure = exc
     finally:

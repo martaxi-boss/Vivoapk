@@ -101,6 +101,34 @@ jobs:
           install -m 0644 "$candidate" "$runtime_dir/Jellyfin.LiveTv.dll"
           sha256sum "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
           echo JELLYFIN_UPSTREAM_18231_LAB_BUILD=PASS
+      - name: Compile and verify native live HLS sliding window (disposable server only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/jellyfin-catalog-source"
+          runtime_dir="$(dirname "$(realpath "$JELLYFIN_TEST_BINARY")")"
+          case "$runtime_dir/" in "$RUNNER_TEMP"/jellyfin-test-bin/*) ;; *) exit 1 ;; esac
+          original="$runtime_dir/Jellyfin.Api.dll"
+          test -s "$original"
+          identity_tool="$RUNNER_TEMP/jellyfin-assembly-identity/bin/Release/net10.0/AssemblyIdentity.dll"
+          assembly_version="$(dotnet "$identity_tool" version "$original")"
+          file_version="$(dotnet "$identity_tool" file-version "$original")"
+          python3 "$GITHUB_WORKSPACE/jellyfin-auth/tests/prepare_live_window.py" "$source_dir" "$assembly_version" "$file_version"
+          git -C "$source_dir" diff --check
+          (
+            cd "$source_dir"
+            dotnet test tests/Jellyfin.Api.Tests/Jellyfin.Api.Tests.csproj -c Release --filter 'FullyQualifiedName~DynamicHlsControllerTests'
+          )
+          candidate="$source_dir/Jellyfin.Api/bin/Release/net10.0/Jellyfin.Api.dll"
+          tested="$source_dir/tests/Jellyfin.Api.Tests/bin/Release/net10.0/Jellyfin.Api.dll"
+          test -s "$candidate"
+          test -s "$tested"
+          cmp "$candidate" "$tested"
+          dotnet "$identity_tool" verify "$original" "$candidate" "$runtime_dir"
+          cp "$original" "$RUNNER_TEMP/Jellyfin.Api.original.dll"
+          install -m 0644 "$candidate" "$original"
+          sha256sum "$RUNNER_TEMP/Jellyfin.Api.original.dll" "$original"
+          echo JELLYFIN_LIVE_WINDOW_LAB_BUILD=PASS
       - name: Compare official Jellyfin FFmpeg 8.1.3 on disposable runner
         shell: bash
         run: |
@@ -146,6 +174,7 @@ jobs:
             fi
           }
           # Independent open-ended synthetic probe; preserve the approved five-gate branch.
+          # The patch is compiled and verified only in the disposable runner.
           dotnet build jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj -c Release -t:Rebuild -p:NativePlaybackLabBuild=true
           run_gate native-infinite-live env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_INFINITE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           exit "$failed"
