@@ -1250,6 +1250,8 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                 ("/vivoapk/", "private-hls-fixture", "fixture-private-password", "media.example.com")):
             raise RuntimeError("Private native playback exposed its internal origin")
         source = sources[0]
+        if private_backend is not None:
+            verify_observed_hls_metadata(source, infinite=True)
         if (source.get("IsInfiniteStream") is not True or source.get("RunTimeTicks") not in (None, 0)
                 or source.get("AnalyzeDurationMs") != 5000):
             raise RuntimeError("Parallel live source not open-ended")
@@ -1490,6 +1492,7 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                 raise RuntimeError("Private live final cleanup left resources")
             private_backend.check_cleanup()
             print("JELLYFIN_PRIVATE_LIVE_WATCHDOG_AND_ISOLATION=PASS", flush=True)
+            print("JELLYFIN_PRIVATE_NATIVE_HLS_ROLLING_PROBE_AND_RECOVERY=PASS", flush=True)
             return
         # Revoke A while B remains authorized, including already-issued live URLs.
         # Use only the synthetic entitlement map; no real subscriber is modified.
@@ -1704,6 +1707,35 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
                                 owner_token, foreign_token, cache_baseline, input_digest)
 
 
+def verify_observed_hls_metadata(source, *, infinite):
+    """Check actual negotiated FFprobe metadata, never just a success marker."""
+    streams = source.get("MediaStreams") or []
+    video = [s for s in streams if s.get("Type") == "Video"]
+    audio = [s for s in streams if s.get("Type") == "Audio"]
+    if (len(streams) != 2 or len(video) != 1 or len(audio) != 1
+            or source.get("Container") != "mpegts"
+            or video[0].get("Codec") != "mpeg2video"
+            or video[0].get("Width") != 160 or video[0].get("Height") != 90
+            or abs((video[0].get("AverageFrameRate") or 0) - 25) > .1
+            or audio[0].get("Codec") != "mp2" or audio[0].get("Channels") != 2
+            or audio[0].get("SampleRate") != 48000
+            or source.get("IsInfiniteStream") is not infinite):
+        raise RuntimeError("Observed HLS metadata differs from the synthetic input")
+    duration = source.get("RunTimeTicks")
+    if infinite:
+        if duration not in (None, 0) or source.get("AnalyzeDurationMs") != 5000:
+            raise RuntimeError("Rolling HLS was assigned a finite runtime")
+    elif not isinstance(duration, int) or not 14.8 <= duration / 10000000 <= 15.2:
+        raise RuntimeError("Ended HLS did not retain its observed finite runtime")
+    print("JELLYFIN_PRIVATE_NATIVE_HLS_OBSERVED_METADATA=" + json.dumps({
+        "infinite": infinite, "video_codec": video[0]["Codec"],
+        "width": video[0]["Width"], "height": video[0]["Height"],
+        "frame_rate": video[0]["AverageFrameRate"], "audio_codec": audio[0]["Codec"],
+        "audio_channels": audio[0]["Channels"], "sample_rate": audio[0]["SampleRate"],
+        "duration_ticks": duration,
+    }, sort_keys=True), flush=True)
+
+
 def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                           base, private_backend, mock):
     """Native authenticated Jellyfin endpoints, real UDS backend and native FFmpeg."""
@@ -1732,6 +1764,8 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         if code != 200 or len(sources) != 1:
             raise RuntimeError("Private native negotiation failed: HTTP " + str(code))
         source = sources[0]
+        if not PRIVATE_FILE:
+            verify_observed_hls_metadata(source, infinite=False)
         master = native_route("/", source["TranscodingUrl"], item)
         # The native master (finite HLS) parses MediaSourceId as a GUID to
         # obtain trickplay resolutions. Preserve the actual channel item ID,
@@ -1827,6 +1861,8 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
     private_backend.check_cleanup()
     print("JELLYFIN_PRIVATE_NATIVE_STOP_CACHE_AND_BACKEND_CLEANUP=PASS", flush=True)
     print("JELLYFIN_PRIVATE_NATIVE_PLAYBACKINFO_NO_INTERNAL_ORIGIN=PASS", flush=True)
+    if not PRIVATE_FILE:
+        print("JELLYFIN_PRIVATE_NATIVE_HLS_FINITE_PROBE_AND_DECODE=PASS", flush=True)
 
 
 def request_png(uri, *, token):

@@ -41,12 +41,8 @@ internal static class PrivateHlsNativeLab
             var finite = NativePlaybackLab.CreateSource(origin, "live", "42");
             if (finite is null)
                 return null;
-            string? verifiedFfmpeg = Environment.GetEnvironmentVariable("VIVOAPK_EXPECTED_FFMPEG");
-            if (verifiedFfmpeg is null || !Path.IsPathFullyQualified(verifiedFfmpeg))
-                return null;
-            var executable = Path.Combine(Path.GetDirectoryName(verifiedFfmpeg)!, "ffprobe");
-            return await transport.BindProbedSourceAsync(owner, token, category, asset, platform,
-                executable, ct, kind, series).ConfigureAwait(false);
+            return await BindObservedAsync(transport, owner, token, category, asset, platform,
+                ct, kind, series).ConfigureAwait(false);
         }
         if ((username == "synthetic-mega-user" ? category != "10" : category != "20")
             || kind != "live" || asset != "42" || series is not null)
@@ -54,9 +50,23 @@ internal static class PrivateHlsNativeLab
         var source = NativePlaybackLab.CreateSource(origin, kind, asset);
         if (source is null)
             return null;
-        source.Name = "Synthetic private HLS native fixture";
-        return await transport.BindSourceAsync(owner, token, category, asset, platform, source, ct)
-            .ConfigureAwait(false);
+        // The fixed fixture descriptor above only validates the disposable
+        // resolver origin. Both finite and rolling HLS must now use observed
+        // stream metadata, with no fallback to its hard-coded codecs.
+        return await BindObservedAsync(transport, owner, token, category, asset, platform,
+            ct, kind, series).ConfigureAwait(false);
+    }
+
+    private static async Task<MediaSourceInfo?> BindObservedAsync(PrivateNativeHls transport,
+        Guid owner, string token, string category, string asset, string platform,
+        CancellationToken ct, string kind, string? series)
+    {
+        string? verifiedFfmpeg = Environment.GetEnvironmentVariable("VIVOAPK_EXPECTED_FFMPEG");
+        if (verifiedFfmpeg is null || !Path.IsPathFullyQualified(verifiedFfmpeg))
+            return null;
+        var executable = Path.Combine(Path.GetDirectoryName(verifiedFfmpeg)!, "ffprobe");
+        return await transport.BindProbedSourceAsync(owner, token, category, asset, platform,
+            executable, ct, kind, series).ConfigureAwait(false);
     }
 }
 #endif

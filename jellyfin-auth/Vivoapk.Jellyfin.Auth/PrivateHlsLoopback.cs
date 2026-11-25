@@ -184,10 +184,48 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             throw new InvalidOperationException("Private media identity mismatch");
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
             ct, entry.Retired.Token, _stopping.Token);
+        bool ended = false;
+        if (!finite)
+        {
+            // Duration reported by a demuxer may be the available sliding
+            // window, not a channel's total runtime. Determine ENDLIST from
+            // the same strictly sanitized, authorized playlist first.
+            // Hold the grant lock for just this bounded backend operation.
+            var token = lifetime.Token;
+            if (!await entry.Gate.WaitAsync(TimeSpan.FromSeconds(10), token).ConfigureAwait(false))
+                throw new InvalidOperationException("Private media session busy");
+            try
+            {
+                if (!_entries.TryGetValue(lease.Id, out var active)
+                    || !ReferenceEquals(active, entry)
+                    || Environment.TickCount64 - entry.LastUse >= 90000)
+                    throw new InvalidOperationException("Private media session unavailable");
+                await RenewIfNeededAsync(entry, token).ConfigureAwait(false);
+                var manifest = await _backend.PlaylistAsync(entry.Token, entry.SessionId, token)
+                    .ConfigureAwait(false);
+                if (!SafePlaylist(manifest))
+                    throw new InvalidOperationException("Unsafe private playlist");
+                ended = Encoding.UTF8.GetString(manifest).Split('\n').Contains("#EXT-X-ENDLIST",
+                    StringComparer.Ordinal);
+                entry.LastUse = Environment.TickCount64;
+            }
+            finally { entry.Gate.Release(); }
+        }
         // Do not hold the backend grant lock: the probe must consume its
         // ordinary authenticated HTTP windows through the existing bridge.
-        return await PrivateMediaProbe.ReadAsync(executable, exact, finite, lifetime.Token)
+        var metadata = await PrivateMediaProbe.ReadAsync(executable, exact, finite, lifetime.Token)
             .ConfigureAwait(false);
+        if (!finite)
+        {
+            if (!ended)
+                metadata = metadata with { DurationTicks = null };
+            else if (metadata.DurationTicks is null)
+                throw new InvalidOperationException("Private ended playlist duration unavailable");
+        }
+        lifetime.Token.ThrowIfCancellationRequested();
+        if (!_entries.TryGetValue(lease.Id, out var current) || !ReferenceEquals(current, entry))
+            throw new InvalidOperationException("Private media session unavailable");
+        return metadata;
     }
 
     internal async Task CloseAsync(Guid owner, Lease lease, CancellationToken ct)
