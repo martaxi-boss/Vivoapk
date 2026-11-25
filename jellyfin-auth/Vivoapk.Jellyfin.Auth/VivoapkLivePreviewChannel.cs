@@ -562,8 +562,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         }
         if (snapshot is null)
             return Array.Empty<MediaSourceInfo>();
+        var requireGrant = Plugin.Instance?.Configuration.RequireAuthorizedPlaybackGrant == true;
         if (!snapshot.CategoryNavigation)
         {
+            if (requireGrant)
+                return Array.Empty<MediaSourceInfo>();
             // Legacy bounded one-subscriber preview remains unchanged.
             var pilot = snapshot.Streams.FirstOrDefault(x =>
                 string.Equals(x.ExternalId, id, StringComparison.Ordinal));
@@ -614,33 +617,50 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         if (session is null)
             return Array.Empty<MediaSourceInfo>();
 
+        AuthorizedPlaybackGrant? grant;
         if (kind == "series")
         {
             var detail = await _resolver.SeriesDetailAsync(
                 session.Value.Token, categoryId, seriesId!, platform,
-                cancellationToken).ConfigureAwait(false);
-            if (detail is null || !detail.Episodes.Any(ep =>
+                cancellationToken, requestPlaybackGrant: requireGrant).ConfigureAwait(false);
+            var episode = detail?.Episodes.FirstOrDefault(ep =>
                     string.Equals(ep.Id, providerId, StringComparison.Ordinal) &&
                     string.Equals(ValidExtension(ep.Extension), extension,
-                        StringComparison.OrdinalIgnoreCase)))
+                        StringComparison.OrdinalIgnoreCase));
+            if (episode is null)
                 return Array.Empty<MediaSourceInfo>();
+            grant = episode.PlaybackGrant;
         }
         else
         {
             var entries = await _resolver.CategoryItemsAsync(
                 session.Value.Token, categoryId, cancellationToken,
-                platform, kind).ConfigureAwait(false);
-            if (entries is null || !entries.Any(entry =>
-                    string.Equals(entry.Id, providerId, StringComparison.Ordinal) &&
+                platform, kind, requestPlaybackGrant: requireGrant).ConfigureAwait(false);
+            var entry = entries?.FirstOrDefault(item =>
+                    string.Equals(item.Id, providerId, StringComparison.Ordinal) &&
                     (kind == "live" ||
-                     string.Equals(ValidExtension(entry.Extension), extension,
-                         StringComparison.OrdinalIgnoreCase))))
+                     string.Equals(ValidExtension(item.Extension), extension,
+                         StringComparison.OrdinalIgnoreCase)));
+            if (entry is null)
+                return Array.Empty<MediaSourceInfo>();
+            grant = entry.PlaybackGrant;
+        }
+
+        // The experimental secure mode uses an explicit, independently
+        // authorized playback grant instead of building a login/password URL.
+        string? authorizedPath = null;
+        if (requireGrant)
+        {
+            authorizedPath = grant?.GetValidatedUrl(providerId, kind,
+                session.Value.Origin, snapshot.Username, snapshot.Password, DateTimeOffset.UtcNow);
+            if (authorizedPath is null)
                 return Array.Empty<MediaSourceInfo>();
         }
 
         // The URL is passed to the client's own Jellyfin player. It is NOT a
         // Jellyfin relay/transcode URL and never lands in the item database.
-        var direct = DirectSource(snapshot, session.Value.Origin, providerId, kind, extension);
+        var direct = DirectSource(snapshot, session.Value.Origin, providerId, kind, extension,
+            authorizedPath);
         return kind == "live" ? LiveSourceVariants(direct, id) : new[] { direct };
     }
 
@@ -678,7 +698,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     private static MediaSourceInfo DirectSource(
         PilotSnapshot snapshot, string origin, string providerId,
-        string kind, string? extension)
+        string kind, string? extension, string? authorizedPath = null)
     {
         var folder = kind switch
         {
@@ -687,10 +707,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             _ => "live"
         };
         var ext = kind == "live" ? "m3u8" : extension!;
-        var uri = origin.TrimEnd('/') + "/" + folder + "/"
+        var uri = authorizedPath ?? (origin.TrimEnd('/') + "/" + folder + "/"
             + Uri.EscapeDataString(snapshot.Username) + "/"
             + Uri.EscapeDataString(snapshot.Password) + "/"
-            + Uri.EscapeDataString(providerId) + "." + ext;
+            + Uri.EscapeDataString(providerId) + "." + ext);
         var mp4 = string.Equals(ext, "mp4", StringComparison.OrdinalIgnoreCase);
         var isLive = kind == "live";
         return new MediaSourceInfo

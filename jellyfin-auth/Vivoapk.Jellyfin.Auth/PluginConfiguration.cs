@@ -23,6 +23,11 @@ public sealed class PluginConfiguration : BasePluginConfiguration
     // Opt-in only. Categories appear as native Jellyfin folders; no global IPTV list.
     public bool CategoryNavigation { get; set; } = false;
 
+    // Experimental provider-issued grant mode. Do not enable in production
+    // until the private backend supports the authorized grant contract.
+    // When enabled, absence of a valid grant never falls back to password URLs.
+    public bool RequireAuthorizedPlaybackGrant { get; set; } = false;
+
     // Owner GUIDs only (never passwords or DNS): reserving a Jellyfin ChannelId
     // prevents old indexed media items from being reassigned to a different
     // subscriber after the in-RAM snapshot expires or the server restarts.

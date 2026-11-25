@@ -90,7 +90,45 @@ using (var handler = new SyntheticHandler("{\"code\":\"SUCCESS\"}", HttpStatusCo
         throw new InvalidOperationException("Unsupported client platform reached backend.");
     passed++;
 }
-Console.WriteLine($"VivoAPK Jellyfin auth and monitor synthetic checks: {passed}/{passed} PASS");
+// The secure playback contract is separate from the login password.
+// No real provider, account or media is contacted by these cases.
+var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+foreach (var (url, asset, kind, expiry, origin, expected) in new (string, string, string, DateTimeOffset, string, bool)[]
+{
+    ("https://media.example.org/media/demo.mp4", "501", "vod", now.AddSeconds(30), "https://media.example.org", true),
+    ("https://media.example.org/media/demo.m3u8", "501", "vod", now.AddSeconds(30), "https://media.example.org/", true),
+    ("http://media.example.org/media/demo.mp4", "501", "vod", now.AddSeconds(30), "https://media.example.org", false),
+    ("https://other.example.org/media/demo.mp4", "501", "vod", now.AddSeconds(30), "https://media.example.org", false),
+    ("https://media.example.org/media/demo.mp4", "502", "vod", now.AddSeconds(30), "https://media.example.org", false),
+    ("https://media.example.org/media/demo.mp4", "501", "series", now.AddSeconds(30), "https://media.example.org", false),
+    ("https://media.example.org/media/demo.mp4", "501", "vod", now, "https://media.example.org", false),
+    ("https://media.example.org/media/demo.mp4", "501", "vod", now.AddMinutes(3), "https://media.example.org", false),
+    ("https://media.example.org/media/fixture-secret-123/demo.mp4", "501", "vod", now.AddSeconds(30), "https://media.example.org", false),
+    ("https://media.example.org/media/fixture-user/demo.mp4", "501", "vod", now.AddSeconds(30), "https://media.example.org", false),
+    ("https://media.example.org/media/%66ixture-secret-123/demo.mp4", "501", "vod", now.AddSeconds(30), "https://media.example.org", false),
+    ("https://media.example.org/media/demo.mp4", "501", "vod", now.AddSeconds(30), "http://media.example.org", false),
+})
+{
+    using var doc = JsonDocument.Parse(JsonSerializer.Serialize(new
+    {
+        playback_grant = new { url, asset_id = asset, kind, expires_at = expiry }
+    }));
+    var grant = AuthorizedPlaybackGrant.Read(doc.RootElement);
+    if (grant is null || grant.ToString().Contains(url, StringComparison.Ordinal))
+        throw new InvalidOperationException("Grant parsing or redaction failed.");
+    var accepted = grant.GetValidatedUrl("501", "vod", origin, "fixture-user",
+        "fixture-secret-123", now);
+    if ((accepted is not null) != expected)
+        throw new InvalidOperationException("Secure playback grant validation regression.");
+    passed++;
+}
+using (var doc = JsonDocument.Parse("{}"))
+{
+    if (AuthorizedPlaybackGrant.Read(doc.RootElement) is not null)
+        throw new InvalidOperationException("Missing grant was accepted.");
+    passed++;
+}
+Console.WriteLine($"VivoAPK Jellyfin auth, monitor and playback grant synthetic checks: {passed}/{passed} PASS");
 
 internal sealed class SyntheticHandler(string body, HttpStatusCode status, string expectedPlatform = "android") : HttpMessageHandler
 {

@@ -11,10 +11,12 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 public enum EntitlementState { Active, Expired, Disabled, Unavailable }
 
 internal sealed record MegaResolvedSession(string? SessionToken, string? Origin);
-internal sealed record MegaPreviewEntry(string Id, string Title, string? Extension = null);
+internal sealed record MegaPreviewEntry(string Id, string Title, string? Extension = null,
+    AuthorizedPlaybackGrant? PlaybackGrant = null);
 internal sealed record MegaSeasonEntry(string Id, string Title);
 internal sealed record MegaEpisodeEntry(
-    string Id, string SeasonId, string Title, string? EpisodeNumber, string? Extension);
+    string Id, string SeasonId, string Title, string? EpisodeNumber, string? Extension,
+    AuthorizedPlaybackGrant? PlaybackGrant = null);
 internal sealed record MegaSeriesInfo(
     string SeriesId, string? Title,
     IReadOnlyList<MegaSeasonEntry> Seasons,
@@ -217,12 +219,12 @@ public sealed class MegaResolverClient
 
     internal Task<IReadOnlyList<MegaPreviewEntry>?> CategoryItemsAsync(
         string? token, string categoryId, CancellationToken cancellationToken = default,
-        string platform = "android", string kind = "live")
-        => FetchCategoryMetadataAsync(token, categoryId, platform, kind, cancellationToken);
+        string platform = "android", string kind = "live", bool requestPlaybackGrant = false)
+        => FetchCategoryMetadataAsync(token, categoryId, platform, kind, cancellationToken, requestPlaybackGrant);
 
     private async Task<IReadOnlyList<MegaPreviewEntry>?> FetchCategoryMetadataAsync(
         string? token, string? categoryId, string platform, string kindRequested,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool requestPlaybackGrant = false)
     {
         if (string.IsNullOrEmpty(token) || token.Length > 4096 ||
             !IsSupportedPlatform(platform) ||
@@ -236,7 +238,9 @@ public sealed class MegaResolverClient
                 ? "v1/catalog/categories" : "v1/catalog/category-items";
             object payload = categoryId is null
                 ? new { kind = kindRequested, platform }
-                : new { kind = kindRequested, platform, category_id = categoryId };
+                : requestPlaybackGrant
+                    ? new { kind = kindRequested, platform, category_id = categoryId, request_playback_grant = true }
+                    : new { kind = kindRequested, platform, category_id = categoryId };
             using var request = new HttpRequestMessage(HttpMethod.Post, path)
             {
                 Content = new StringContent(
@@ -306,7 +310,8 @@ public sealed class MegaResolverClient
                         rawExtension.All(char.IsAsciiLetterOrDigit))
                         extension = rawExtension.ToLowerInvariant();
                 }
-                items.Add(new MegaPreviewEntry(id, title, extension));
+                items.Add(new MegaPreviewEntry(id, title, extension,
+                    requestPlaybackGrant && categoryId is not null ? AuthorizedPlaybackGrant.Read(row) : null));
             }
             return items;
         }
@@ -320,7 +325,8 @@ public sealed class MegaResolverClient
 
     internal async Task<MegaSeriesInfo?> SeriesDetailAsync(
         string? token, string categoryId, string seriesId,
-        string platform = "android", CancellationToken cancellationToken = default)
+        string platform = "android", CancellationToken cancellationToken = default,
+        bool requestPlaybackGrant = false)
     {
         if (string.IsNullOrWhiteSpace(token) || token.Length > 4096 ||
             !IsSupportedPlatform(platform) ||
@@ -334,7 +340,8 @@ public sealed class MegaResolverClient
             {
                 Content = new StringContent(
                     JsonSerializer.Serialize(new { category_id = categoryId,
-                        series_id = seriesId, platform }),
+                        series_id = seriesId, platform,
+                        request_playback_grant = requestPlaybackGrant }),
                     Encoding.UTF8, "application/json")
             };
             request.Headers.Authorization =
@@ -418,7 +425,8 @@ public sealed class MegaResolverClient
                 var epNum = row.TryGetProperty("episode_number", out var ep)
                     && ep.ValueKind == JsonValueKind.String ? ep.GetString() : null;
                 episodeRows.Add(new MegaEpisodeEntry(
-                    idString, seasonString, episodeTitle, epNum, ext));
+                    idString, seasonString, episodeTitle, epNum, ext,
+                    requestPlaybackGrant ? AuthorizedPlaybackGrant.Read(row) : null));
             }
             var nameValue = root.TryGetProperty("title", out var seriesTitle)
                 && seriesTitle.ValueKind == JsonValueKind.String
