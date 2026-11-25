@@ -297,6 +297,56 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         }
     }
 
+    // A ping carries no item ID; resolve only an existing binding. The
+    // caller still authenticates and rechecks ownership before forwarding.
+    internal Guid ItemForSession(string session) =>
+        Guid.TryParse(session, out _) && _states.TryGetValue(session, out var state)
+            ? state.Item : Guid.Empty;
+
+    internal async Task ReportAsync(HttpContext http, RequestDelegate downstream,
+        Guid owner, Guid item, string session)
+    {
+        var device = http.User.FindFirst("Jellyfin-DeviceId")?.Value;
+        if (owner == Guid.Empty || string.IsNullOrEmpty(device)
+            || !_states.TryGetValue(session, out var state)
+            || state.Owner != owner || state.Item != item || state.Device != device)
+        {
+            Deny(http);
+            return;
+        }
+        var manager = http.RequestServices.GetRequiredService<ITranscodeManager>();
+        var lab = http.RequestServices.GetRequiredService<PrivateNativeHls>();
+        var job = manager.GetTranscodingJob(session);
+        if (job is not null && (job.MediaSource?.Path != state.SourcePath ||
+            !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted)
+                .ConfigureAwait(false)))
+        {
+            Deny(http);
+            return;
+        }
+        lock (state.Gate)
+        {
+            if (state.Recovering || !_states.TryGetValue(session, out var active)
+                || !ReferenceEquals(active, state)
+                || !ReferenceEquals(manager.GetTranscodingJob(session), job))
+            {
+                Deny(http);
+                return;
+            }
+            state.InFlight++;
+        }
+        try
+        {
+            await downstream(http).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Playback reports are not evidence of media consumption.
+            lock (state.Gate)
+                state.InFlight--;
+        }
+    }
+
     // Explicit stop must retire the same observed native job and lease.
     // Hold the state closed to media requests while native Stop is in flight.
     // A stale stop must never close the next playback for the same owner.

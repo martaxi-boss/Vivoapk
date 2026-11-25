@@ -239,12 +239,43 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 var info = parts.Length >= 3 &&
                     parts[0].Equals("Items", StringComparison.OrdinalIgnoreCase) &&
                     parts[2].Equals("PlaybackInfo", StringComparison.OrdinalIgnoreCase);
-                if (PrivateHlsNativeLab.Enabled && HttpMethods.IsPost(http.Request.Method)
-                    && (http.Request.Path.Value ?? "").Equals("/Sessions/Playing/Stopped",
-                        StringComparison.OrdinalIgnoreCase))
+                if (PrivateHlsNativeLab.Enabled)
                 {
-                    await StopPrivateFixtureAsync(http, downstream).ConfigureAwait(false);
-                    return;
+                    var route = "/" + string.Join("/", parts);
+                    var log = http.RequestServices.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
+                    if (route.Equals("/Sessions/Playing/Ping", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var ids = http.Request.Query["PlaySessionId"];
+                        var item = ids.Count == 1 ? _privateLive.ItemForSession(ids[0]!) : Guid.Empty;
+                        if (!HttpMethods.IsPost(http.Request.Method) || item == Guid.Empty)
+                        {
+                            Reject(http, log);
+                            return;
+                        }
+                        var pingOwner = await NativePlaybackAuthorization.AuthorizeAsync(
+                            http, item, NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+                        await _privateLive.ReportAsync(http, downstream, pingOwner, item, ids[0]!)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+                    var stopped = route.Equals("/Sessions/Playing/Stopped", StringComparison.OrdinalIgnoreCase);
+                    if (stopped || route.Equals("/Sessions/Playing", StringComparison.OrdinalIgnoreCase)
+                        || route.Equals("/Sessions/Playing/Progress", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!HttpMethods.IsPost(http.Request.Method))
+                            Reject(http, log);
+                        else
+                            await PrivateFixtureReportAsync(http, downstream, stopped).ConfigureAwait(false);
+                        return;
+                    }
+                    // Alternate legacy controllers are not certified for
+                    // private playback; keep them fail-closed in this lab.
+                    if (parts.Any(p => p.Equals("PlayingItems", StringComparison.OrdinalIgnoreCase))
+                        || route.Equals("/Videos/ActiveEncodings", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Reject(http, log);
+                        return;
+                    }
                 }
                 if (!media && !info)
                 {
@@ -389,7 +420,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         }
     }
 
-    private async Task StopPrivateFixtureAsync(HttpContext http, RequestDelegate downstream)
+    private async Task PrivateFixtureReportAsync(HttpContext http, RequestDelegate downstream, bool stopped)
     {
         var logger = http.RequestServices.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
         if (http.Request.ContentLength is not long length || length is < 1 or > 16384)
@@ -399,6 +430,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         }
         Guid item = Guid.Empty;
         string? session = null;
+        string? source = null;
         http.Request.EnableBuffering();
         try
         {
@@ -413,6 +445,15 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                     Guid.TryParse(prop.Value.GetString(), out item);
                 if (prop.Name.Equals("PlaySessionId", StringComparison.OrdinalIgnoreCase))
                     session = prop.Value.GetString();
+                if (prop.Name.Equals("MediaSourceId", StringComparison.OrdinalIgnoreCase))
+                    source = prop.Value.GetString();
+                if ((prop.Name.Equals("Item", StringComparison.OrdinalIgnoreCase)
+                    || prop.Name.Equals("NowPlayingQueue", StringComparison.OrdinalIgnoreCase))
+                    && prop.Value.ValueKind != JsonValueKind.Null)
+                    throw new InvalidOperationException("Uncertified embedded playback identity");
+                if (prop.Name.Equals("LiveStreamId", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrEmpty(prop.Value.GetString()))
+                    throw new InvalidOperationException("Alternate playback source");
             }
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
@@ -421,7 +462,8 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
             return;
         }
         finally { http.Request.Body.Position = 0; }
-        if (item == Guid.Empty || session is null || !Guid.TryParse(session, out _))
+        if (item == Guid.Empty || session is null || !Guid.TryParse(session, out _)
+            || (!string.IsNullOrEmpty(source) && (!Guid.TryParse(source, out var sourceItem) || sourceItem != item)))
         {
             Reject(http, logger);
             return;
@@ -435,7 +477,10 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 Reject(http, logger);
                 return;
             }
-            await _privateLive.StopAsync(http, downstream, owner, item, session).ConfigureAwait(false);
+            if (stopped)
+                await _privateLive.StopAsync(http, downstream, owner, item, session).ConfigureAwait(false);
+            else
+                await _privateLive.ReportAsync(http, downstream, owner, item, session).ConfigureAwait(false);
             return;
         }
         var lab = http.RequestServices.GetRequiredService<PrivateNativeHls>();

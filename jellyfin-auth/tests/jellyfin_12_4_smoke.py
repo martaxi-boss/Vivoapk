@@ -1862,6 +1862,34 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             {"ItemId": state["item"], "PlaySessionId": state["session"],
              "MediaSourceId": state["source"], "PositionTicks": 20000000}, token=token)[0]
 
+    # Exercise the real native session-report endpoints with generated media
+    # and two synthetic accounts. Auxiliary reports must not cross bindings.
+    def playback_report(state, token, endpoint, **overrides):
+        payload = {"ItemId": state["item"], "MediaSourceId": state["source"],
+                   "PlaySessionId": state["session"], "PositionTicks": 20000000,
+                   "PlayMethod": "Transcode", "IsPaused": False}
+        payload.update(overrides)
+        return request("POST", endpoint, payload, token=token)[0]
+
+    def ping(state, token):
+        return request("POST", "/Sessions/Playing/Ping?PlaySessionId=" +
+                       state["session"], token=token)[0]
+
+    for endpoint in ("/Sessions/Playing", "/Sessions/Playing/Progress"):
+        if playback_report(a, token_a, endpoint) not in (200, 204):
+            raise RuntimeError("Authorized playback report rejected")
+        if playback_report(a, token_b, endpoint) != 404:
+            raise RuntimeError("Cross-account playback report accepted")
+        if playback_report(a, token_a, endpoint, PlaySessionId=b["session"]) != 404:
+            raise RuntimeError("Cross-session playback report accepted")
+        if playback_report(a, token_a, endpoint, MediaSourceId=b["source"]) != 404:
+            raise RuntimeError("Cross-source playback report accepted")
+    if ping(a, token_a) not in (200, 204) or ping(a, token_b) != 404:
+        raise RuntimeError("Private ping binding failed")
+    if private_backend.count() != 2:
+        raise RuntimeError("Playback reports changed private lease count")
+    print("JELLYFIN_PRIVATE_NATIVE_AUXILIARY_REPORT_ISOLATION=PASS", flush=True)
+
     if stop(a, token_b) != 404 or private_backend.count() != 2:
         raise RuntimeError("Foreign native stop was not isolated")
     mock.statuses["synthetic-mega-user"] = "EXPIRED"
@@ -1885,6 +1913,8 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                                 "private_finite_retired_route", key)
     if stop(a, token_a) != 404 or private_backend.count() != 2:
         raise RuntimeError("Retired finite stop affected current playback")
+    if ping(a, token_a) != 404 or playback_report(a, token_a, "/Sessions/Playing/Progress") != 404:
+        raise RuntimeError("Retired auxiliary report affected current playback")
     require_native_owner(reopened["segment"], token_a, "private_finite_reopened_segment")
     require_native_owner(b["segment"], token_b, "private_finite_survivor_after_reopen")
     if stop(reopened, token_a) not in (200, 204) or private_backend.count() != 1:
