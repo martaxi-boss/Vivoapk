@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Lock
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -30,6 +31,7 @@ from app.services.catalog import CatalogDenied, CatalogService, mapping_id_for_t
 from app.services.media_body import MediaReadError
 from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.private_hls import PrivateHlsSession
+from app.services.private_file import MAX_FILE_BYTES, MAX_WINDOW_BYTES, PrivateFileSession
 
 _NO_STORE = {"Cache-Control": "no-store"}
 _MAX_SESSIONS = 2
@@ -44,6 +46,11 @@ class OpenLiveRequest(BaseModel):
     platform: ClientPlatform
 
 
+class OpenFileRequest(OpenLiveRequest):
+    kind: Literal["vod", "series"]
+    series_id: str | None = Field(default=None, pattern=r"^[0-9]{1,64}$")
+
+
 class SessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session_id: str = Field(pattern=r"^[A-Za-z0-9_-]{32}$")
@@ -53,6 +60,11 @@ class SegmentRequest(SessionRequest):
     segment_id: str = Field(pattern=r"^[A-Za-z0-9_-]{32}$")
 
 
+class FileReadRequest(SessionRequest):
+    start: int = Field(strict=True, ge=0, lt=MAX_FILE_BYTES)
+    length: int = Field(strict=True, ge=1, le=MAX_WINDOW_BYTES)
+
+
 @dataclass(slots=True, repr=False)
 class _Entry:
     owner: int
@@ -60,7 +72,8 @@ class _Entry:
     seen: float
     busy: bool = True
     source: AuthorizedMediaOrigin | None = None
-    player: PrivateHlsSession | None = None
+    player: PrivateHlsSession | PrivateFileSession | None = None
+    media_kind: Literal["hls", "file"] = "hls"
     grant_digest: bytes = b""
     grant_expires: float = 0.0
 
@@ -126,7 +139,8 @@ class PrivateHlsRegistry:
         return {"media_token": grant, "valid_for_seconds": self._ttl}
 
     @contextmanager
-    def reserve(self, owner: int, platform: ClientPlatform) -> Iterator[tuple[str, _Entry]]:
+    def reserve(self, owner: int, platform: ClientPlatform,
+                media_kind: Literal["hls", "file"] = "hls") -> Iterator[tuple[str, _Entry]]:
         with self._lock:
             self._prune()
             if (len(self._entries) >= _MAX_SESSIONS
@@ -135,7 +149,7 @@ class PrivateHlsRegistry:
             key = secrets.token_urlsafe(24)
             if key in self._entries:
                 raise _http(503)
-            entry = _Entry(owner, platform, time.monotonic())
+            entry = _Entry(owner, platform, time.monotonic(), media_kind=media_kind)
             self._entries[key] = entry
         committed = False
         try:
@@ -153,10 +167,10 @@ class PrivateHlsRegistry:
                     self._entries.pop(key, None)
                     self._dispose(entry)
 
-    def _match(self, key: str, grant: str) -> _Entry:
+    def _match(self, key: str, grant: str, media_kind: Literal["hls", "file"]) -> _Entry:
         self._prune()
         entry = self._entries.get(key)
-        if (entry is None or len(grant) != 43 or not entry.grant_digest
+        if (entry is None or entry.media_kind != media_kind or len(grant) != 43 or not entry.grant_digest
                 or not hmac.compare_digest(entry.grant_digest, _digest(grant))
                 or time.monotonic() >= entry.grant_expires):
             raise _http(404)
@@ -167,9 +181,10 @@ class PrivateHlsRegistry:
         return entry
 
     @contextmanager
-    def borrow(self, key: str, grant: str) -> Iterator[_Entry]:
+    def borrow(self, key: str, grant: str,
+               media_kind: Literal["hls", "file"] = "hls") -> Iterator[_Entry]:
         with self._lock:
-            entry = self._match(key, grant)
+            entry = self._match(key, grant, media_kind)
             entry.busy = True
         success = False
         try:
@@ -185,9 +200,9 @@ class PrivateHlsRegistry:
                         self._entries.pop(key, None)
                         self._dispose(entry)
 
-    def close(self, key: str, grant: str) -> None:
+    def close(self, key: str, grant: str, media_kind: Literal["hls", "file"] = "hls") -> None:
         with self._lock:
-            entry = self._match(key, grant)
+            entry = self._match(key, grant, media_kind)
             del self._entries[key]
             self._dispose(entry)
 
@@ -198,6 +213,7 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
     app.state.private_hls_factory = lambda source: PrivateHlsSession(
         source, entitlement=lambda: EntitlementState.UNAVAILABLE,
     )
+    app.state.private_file_factory = PrivateFileSession
 
     def credential(request: Request) -> str:
         key = settings.private_media_key
@@ -279,7 +295,7 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
         db: Session = Depends(get_db),
     ):
         with registry.borrow(payload.session_id, grant) as entry:
-            assert entry.player is not None
+            assert isinstance(entry.player, PrivateHlsSession)
             try:
                 body = entry.player.refresh(
                     entitlement=entitlement(catalogue(request, db), entry),
@@ -294,7 +310,7 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
         db: Session = Depends(get_db),
     ):
         with registry.borrow(payload.session_id, grant) as entry:
-            assert entry.player is not None
+            assert isinstance(entry.player, PrivateHlsSession)
             try:
                 body = entry.player.read_segment(
                     payload.segment_id,
@@ -307,4 +323,64 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
     @app.post("/_internal/media/hls/close", include_in_schema=False)
     def close(payload: SessionRequest, grant: str = Depends(credential)):
         registry.close(payload.session_id, grant)
+        return Response(status_code=204, headers=_NO_STORE)
+
+
+    # Finite media stays on the existing opt-in private service, using the same
+    # account JWT admission, independent media key, grant lifecycle and shared
+    # limit. No external URL or raw provider data is accepted or returned.
+    @app.post("/_internal/media/file/open", include_in_schema=False)
+    def open_file(payload: OpenFileRequest, request: Request, token: str = Depends(credential),
+                  db: Session = Depends(get_db)):
+        try:
+            asset = MediaAsset(CatalogKind(payload.kind), payload.category_id,
+                               payload.asset_id, payload.series_id)
+        except ValueError:
+            raise _http(422) from None
+        try:
+            owner = mapping_id_for_token(token, settings)
+        except CatalogDenied:
+            raise _http(401) from None
+        with registry.reserve(owner, payload.platform, "file") as (key, entry):
+            try:
+                service = catalogue(request, db)
+                entry.source = service.authorize_media_origin(
+                    token=token, asset=asset, platform=payload.platform,
+                )
+                entry.player = request.app.state.private_file_factory(entry.source)
+                grant = registry.rotate(entry)
+                info = entry.player.probe(entitlement=entitlement(service, entry))
+            except CatalogDenied:
+                raise _http(404) from None
+            except (CatalogUnavailable, MediaReadError, ValueError):
+                raise _http(503) from None
+        return JSONResponse({"session_id": key, **grant, "length": info.length,
+                             "content_type": info.content_type}, headers=_NO_STORE)
+
+    @app.post("/_internal/media/file/read", include_in_schema=False)
+    def read_file(payload: FileReadRequest, request: Request, grant: str = Depends(credential),
+                  db: Session = Depends(get_db)):
+        with registry.borrow(payload.session_id, grant, "file") as entry:
+            assert isinstance(entry.player, PrivateFileSession)
+            try:
+                window = entry.player.read(payload.start, payload.length,
+                    entitlement=entitlement(catalogue(request, db), entry))
+            except MediaReadError:
+                raise _http(404) from None
+        return Response(window.data, status_code=206, media_type=window.content_type,
+                        headers={**_NO_STORE, "Accept-Ranges": "bytes",
+                                 "Content-Range": f"bytes {window.start}-{window.end}/{window.total}"})
+
+    @app.post("/_internal/media/file/renew", include_in_schema=False)
+    def renew_file(payload: SessionRequest, request: Request, grant: str = Depends(credential),
+                   db: Session = Depends(get_db)):
+        with registry.borrow(payload.session_id, grant, "file") as entry:
+            if entitlement(catalogue(request, db), entry)() is not EntitlementState.ACTIVE:
+                raise _http(404)
+            rotated = registry.rotate(entry)
+        return JSONResponse(rotated, headers=_NO_STORE)
+
+    @app.post("/_internal/media/file/close", include_in_schema=False)
+    def close_file(payload: SessionRequest, grant: str = Depends(credential)):
+        registry.close(payload.session_id, grant, "file")
         return Response(status_code=204, headers=_NO_STORE)

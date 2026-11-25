@@ -47,6 +47,7 @@ class MediaBody:
     content_length: int | None
     content_range: str | None
     chunks: Iterator[bytes]
+    etag: str | None = None
 
 
 def _default_pool(target: ResolvedOutboundTarget) -> httpcore.ConnectionPool:
@@ -96,6 +97,7 @@ def open_media_body(
     source: AuthorizedMediaOrigin,
     *,
     range_header: str | None = None,
+    if_match: str | None = None,
     max_bytes: int = 64 * 1024 * 1024,
     max_seconds: float = 60.0,
     resolver: Resolver = system_resolver,
@@ -116,6 +118,12 @@ def open_media_body(
     headers = [(b"Accept", b"video/*"), (b"Accept-Encoding", b"identity")]
     if range_header is not None:
         headers.append((b"Range", range_header.encode("ascii")))
+    # Only the server-owned, previously observed strong validator is passed
+    # by the bounded file reader. Never forward a caller-supplied header.
+    if if_match is not None:
+        if not re.fullmatch(r'"[\x21\x23-\x7e]{1,240}"', if_match):
+            raise MediaReadError("Invalid private media validator")
+        headers.append((b"If-Match", if_match.encode("ascii")))
     begin = time.monotonic()
     try:
         target = resolve_dns_link_target(source.origin, resolver=resolver)
@@ -138,6 +146,12 @@ def open_media_body(
                     raise MediaReadError("Invalid media content length")
                 length = int(length_text) if length_text is not None else None
                 content_range = _header(response.headers, b"content-range")
+                validator = _header(response.headers, b"etag")
+                if validator is not None and not re.fullmatch(
+                        r'(?:W/)?"[\x21\x23-\x7e]{1,240}"', validator):
+                    raise MediaReadError("Invalid private media validator")
+                if if_match is not None and validator != if_match:
+                    raise MediaReadError("Private media representation changed")
                 if requested_range:
                     match = _CONTENT_RANGE.fullmatch(content_range or "")
                     if match is None:
@@ -169,7 +183,7 @@ def open_media_body(
                     if not received or (length is not None and received != length):
                         raise MediaReadError("Incomplete media body")
 
-                yield MediaBody(mime.lower(), length, content_range, chunks())
+                yield MediaBody(mime.lower(), length, content_range, chunks(), validator)
     except (UnsafeOutboundURL, DNSResolutionFailure, httpcore.NetworkError,
             httpcore.TimeoutException, httpcore.ProtocolError, ValueError, OSError):
         raise MediaReadError("Private media read unavailable") from None
