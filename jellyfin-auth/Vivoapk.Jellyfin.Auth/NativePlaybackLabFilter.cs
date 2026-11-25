@@ -18,6 +18,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Caching.Memory;
+using System.Text.RegularExpressions;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
@@ -284,13 +286,41 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
 
     private async Task PrivatePlaybackInfoAsync(HttpContext http, RequestDelegate downstream, Guid owner, Guid item)
     {
-        // Only the synthetic PlaybackInfo response is buffered. The native
-        // MediaSource and cache retain the private source for server FFmpeg.
+        // ChannelManager v12.4 caches dynamic sources for five minutes under
+        // the exact ExternalId. The old source is a retired private capability.
+        // Admit a single new negotiation BEFORE evicting that one entry.
+        // Authorization already confirmed the exact visible item and owner.
+        bool reserved = false;
+        bool bound = false;
+        string? cacheKey = null;
+        IMemoryCache? cache = null;
+        var services = http.RequestServices;
+        var logger = services.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
+        if (PrivateHlsNativeLab.LiveRecoveryEnabled)
+        {
+            var user = services.GetRequiredService<IUserManager>().GetUserById(owner);
+            var entity = user is null ? null :
+                services.GetRequiredService<ILibraryManager>().GetItemById<BaseItem>(item, user);
+            cacheKey = entity?.ExternalId;
+            if (cacheKey is null ||
+                !Regex.IsMatch(cacheKey, @"\Aslot:[0-9]{1,3}:(?:general|tv):live:(?:10|20):42\z",
+                    RegexOptions.CultureInvariant) ||
+                !_privateLive.TryBeginNegotiation(owner))
+            {
+                Reject(http, logger);
+                return;
+            }
+            reserved = true;
+            cache = services.GetRequiredService<IMemoryCache>();
+        }
+        // Only the synthetic PlaybackInfo response is buffered.
         var original = http.Response.Body;
         await using var buffer = new MemoryStream();
         http.Response.Body = buffer;
         try
         {
+            if (reserved)
+                cache!.Remove(cacheKey!);
             await downstream(http).ConfigureAwait(false);
             if (buffer.Length > 512 * 1024)
                 throw new InvalidOperationException("Oversized fixture playback response");
@@ -300,9 +330,16 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 var node = await JsonNode.ParseAsync(buffer, cancellationToken: http.RequestAborted)
                     .ConfigureAwait(false) ?? throw new InvalidOperationException("Missing playback response");
                 PrivateHlsNativeLab.SanitizePlaybackInfo(node);
-                if (PrivateHlsNativeLab.LiveRecoveryEnabled && !_privateLive.Bind(node, owner, item,
-                        http.User.FindFirst("Jellyfin-DeviceId")?.Value))
-                    throw new InvalidOperationException("Private fixture play session not bound");
+                if (reserved)
+                {
+                    if (node is not JsonObject response || response["MediaSources"] is not JsonArray sources
+                        || sources.Count != 1 || sources[0] is not JsonObject media
+                        || media["TranscodingUrl"] is not JsonValue url || !url.TryGetValue<string>(out var route)
+                        || string.IsNullOrEmpty(route) || !_privateLive.Bind(node, owner, item,
+                            http.User.FindFirst("Jellyfin-DeviceId")?.Value))
+                        throw new InvalidOperationException("Private fixture play session not bound");
+                    bound = true;
+                }
                 var content = JsonSerializer.SerializeToUtf8Bytes(node);
                 http.Response.ContentLength = content.Length;
                 http.Response.Body = original;
@@ -326,10 +363,31 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 http.Response.ContentLength = 0;
             }
         }
-        finally { http.Response.Body = original; }
+        finally
+        {
+            http.Response.Body = original;
+            if (reserved)
+            {
+                try
+                {
+                    if (!bound)
+                    {
+                        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                        await services.GetRequiredService<PrivateHlsNativeLab>()
+                            .ReleaseUnstartedAsync(owner, deadline.Token).ConfigureAwait(false);
+                        cache!.Remove(cacheKey!);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning("VIVOAPK_PRIVATE_NEGOTIATION_RELEASE=FAIL ({Type})", ex.GetType().Name);
+                }
+                finally { _privateLive.EndNegotiation(owner); }
+            }
+        }
     }
 
-    private static async Task StopPrivateFixtureAsync(HttpContext http, RequestDelegate downstream)
+    private async Task StopPrivateFixtureAsync(HttpContext http, RequestDelegate downstream)
     {
         var logger = http.RequestServices.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
         if (http.Request.ContentLength is not long length || length is < 1 or > 16384)
@@ -344,8 +402,11 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         {
             using var json = await JsonDocument.ParseAsync(http.Request.Body,
                 cancellationToken: http.RequestAborted).ConfigureAwait(false);
+            var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var prop in json.RootElement.EnumerateObject())
             {
+                if (!fields.Add(prop.Name))
+                    throw new InvalidOperationException("Duplicate stop field");
                 if (prop.Name.Equals("ItemId", StringComparison.OrdinalIgnoreCase))
                     Guid.TryParse(prop.Value.GetString(), out item);
                 if (prop.Name.Equals("PlaySessionId", StringComparison.OrdinalIgnoreCase))
@@ -365,6 +426,16 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         }
         var owner = await NativePlaybackAuthorization.AuthorizeAsync(http, item,
             NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+        if (PrivateHlsNativeLab.LiveRecoveryEnabled)
+        {
+            if (owner == Guid.Empty)
+            {
+                Reject(http, logger);
+                return;
+            }
+            await _privateLive.StopAsync(http, downstream, owner, item, session).ConfigureAwait(false);
+            return;
+        }
         var lab = http.RequestServices.GetRequiredService<PrivateHlsNativeLab>();
         var jobs = http.RequestServices.GetRequiredService<ITranscodeManager>();
         if (owner == Guid.Empty || !await lab.MatchesJobAsync(owner, jobs.GetTranscodingJob(session),

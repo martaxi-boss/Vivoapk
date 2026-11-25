@@ -1420,6 +1420,63 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                 "first_lease_absent": True, "second_process_unchanged": True,
                 "second_segments_during_recovery": b["count"] - before_count,
             }, sort_keys=True), flush=True)
+            # Reopen the very same item immediately after abandonment
+            # (well inside ChannelManager's old five-minute source TTL).
+            # Require a fresh job, namespace and play-session, not a retry
+            # of the old private URL. B remains active across both reopens.
+            def assert_retired(previous, current):
+                if (previous["session"] == current["session"]
+                        or previous["identity"] == current["identity"]
+                        or previous["job"]["playlist"] == current["job"]["playlist"]):
+                    raise RuntimeError("Reopened playback reused a retired identity or cache")
+                if private_backend.count() != 2 or b["identity"] not in jobs():
+                    raise RuntimeError("Reopen did not preserve the second active account")
+                for key in ("master", "route", "last_route"):
+                    require_denied_response(native_bytes(safe_fixture_route(previous[key], first_token),
+                                                         first_token), "private_reopen_old_route", key)
+                status, _ = request("POST", "/Sessions/Playing/Stopped", {
+                    "ItemId": previous["item"], "MediaSourceId": previous["source"].get("Id"),
+                    "PlaySessionId": previous["session"], "PositionTicks": 0,
+                }, token=first_token)
+                if status != 404 or current["identity"] not in jobs() or b["identity"] not in jobs():
+                    raise RuntimeError("Stale stop affected a current playback")
+                require_native_owner(current["last_route"], first_token, "private_reopen_current_segment")
+                decode(current, "reopen")
+
+            first_reopened = start(first_item, first_owner, first_token)
+            assert_retired(a, first_reopened)
+            for _ in range(4):
+                consume(first_reopened)
+                consume(b)
+                if first_reopened["identity"] not in jobs() or b["identity"] not in jobs():
+                    raise RuntimeError("Reopened playback interrupted an active job")
+                time.sleep(.75)
+            stop(first_reopened)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                consume(b)
+                if (first_reopened["identity"] not in jobs() and not files_for(first_reopened["job"])
+                        and private_backend.count() == 1):
+                    break
+                time.sleep(.4)
+            if (first_reopened["identity"] in jobs() or files_for(first_reopened["job"])
+                    or private_backend.count() != 1):
+                raise RuntimeError("Explicit stop did not release reopened playback")
+            second_reopened = start(first_item, first_owner, first_token)
+            assert_retired(first_reopened, second_reopened)
+            assert_retired(a, second_reopened)
+            for _ in range(4):
+                consume(second_reopened)
+                consume(b)
+                if second_reopened["identity"] not in jobs() or b["identity"] not in jobs():
+                    raise RuntimeError("Second reopening interrupted an active job")
+                time.sleep(.75)
+            stop(second_reopened)
+            consume(b)
+            if b["identity"] not in jobs() or private_backend.count() != 1:
+                raise RuntimeError("Stopping the reopened job affected the surviving account")
+            print("JELLYFIN_PRIVATE_LIVE_REOPEN_AFTER_ABANDON_AND_STOP=PASS", flush=True)
+            print("JELLYFIN_PRIVATE_LIVE_REOPEN_OLD_ROUTES_AND_STOP_DENIED=PASS", flush=True)
             stop(b)
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:

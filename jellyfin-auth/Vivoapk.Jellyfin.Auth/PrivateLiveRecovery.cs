@@ -18,6 +18,30 @@ internal sealed class PrivateLiveRecovery
     private const long IdleMs = 80000;
     private readonly ConcurrentDictionary<string, State> _states = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _bindGate = new();
+    private readonly HashSet<Guid> _negotiating = new();
+
+    internal bool TryBeginNegotiation(Guid owner)
+    {
+        lock (_bindGate)
+        {
+            if (owner == Guid.Empty || _states.Values.Any(s => s.Owner == owner)
+                || _states.Count + _negotiating.Count >= 2)
+                return false;
+            return _negotiating.Add(owner);
+        }
+    }
+
+    internal void EndNegotiation(Guid owner)
+    {
+        lock (_bindGate)
+            _negotiating.Remove(owner);
+    }
+
+    private bool Retire(string session, State state)
+    {
+        lock (_bindGate)
+            return _states.TryRemove(new KeyValuePair<string, State>(session, state));
+    }
     private sealed class State(Guid owner, Guid item, string device)
     {
         internal readonly Guid Owner = owner;
@@ -39,8 +63,11 @@ internal sealed class PrivateLiveRecovery
             return false;
         lock (_bindGate)
         {
-            // Fixed lab accounts; retired IDs stay denied for this process.
-            return _states.Count < 2 && !_states.Values.Any(s => s.Owner == owner)
+            // Only an admitted negotiation can publish a new native GUID.
+            // Retired IDs have no binding; their old cache stems do not match
+            // the new random private source and observed job.
+            return _negotiating.Contains(owner) && _states.Count < 2
+                && !_states.Values.Any(s => s.Owner == owner)
                 && _states.TryAdd(session, new State(owner, item, device));
         }
     }
@@ -195,7 +222,67 @@ internal sealed class PrivateLiveRecovery
         }
     }
 
-    private static async Task RecoverAsync(ITranscodeManager manager, ISessionManager sessions,
+    // Explicit stop must retire the same observed native job and lease.
+    // Hold the state closed to media requests while native Stop is in flight.
+    // A stale stop must never close the next playback for the same owner.
+    internal async Task StopAsync(HttpContext http, RequestDelegate downstream,
+        Guid owner, Guid item, string session)
+    {
+        var device = http.User.FindFirst("Jellyfin-DeviceId")?.Value;
+        if (string.IsNullOrEmpty(device) || !_states.TryGetValue(session, out var state)
+            || state.Owner != owner || state.Item != item || state.Device != device)
+        {
+            Deny(http);
+            return;
+        }
+        var services = http.RequestServices;
+        var manager = services.GetRequiredService<ITranscodeManager>();
+        var lab = services.GetRequiredService<PrivateHlsNativeLab>();
+        var job = manager.GetTranscodingJob(session);
+        if (job is null || !ReferenceEquals(job, state.Job) ||
+            string.IsNullOrEmpty(job.MediaSource?.Path) ||
+            !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted).ConfigureAwait(false))
+        {
+            Deny(http);
+            return;
+        }
+        lock (state.Gate)
+        {
+            if (state.Recovering || state.InFlight != 0 || !ReferenceEquals(state.Job, job))
+            {
+                Deny(http);
+                return;
+            }
+            state.Recovering = true;
+        }
+        // The native controller awaits KillTranscodingJobs. Do not release
+        // the lease until that exact job is gone. Cancellation or ambiguous
+        // completion leaves the binding fail-closed for the watchdog.
+        try
+        {
+            await downstream(http).ConfigureAwait(false);
+            if (http.Response.StatusCode is not (200 or 204))
+                return;
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var released = await lab.RecoverAsync(owner, job.MediaSource!.Path!,
+                () => Task.FromResult(manager.GetTranscodingJob(session) is null),
+                deadline.Token).ConfigureAwait(false);
+            if (!released || !Retire(session, state))
+                return;
+            services.GetRequiredService<ILogger<PrivateLiveRecovery>>()
+                .LogInformation("VIVOAPK_PRIVATE_NATIVE_STOP_RETIRED=PASS");
+        }
+        finally
+        {
+            // If native stop was interrupted, the original binding remains
+            // fail-closed with respect to negotiation and retains its watchdog.
+            if (_states.TryGetValue(session, out var retained) && ReferenceEquals(retained, state))
+                lock (state.Gate)
+                    state.Recovering = false;
+        }
+    }
+
+    private async Task RecoverAsync(ITranscodeManager manager, ISessionManager sessions,
         PrivateHlsNativeLab lab, string session, State state, ILogger logger,
         CancellationToken stopping)
     {
@@ -204,6 +291,8 @@ internal sealed class PrivateLiveRecovery
             while (true)
             {
                 await Task.Delay(1000, stopping).ConfigureAwait(false);
+                if (!_states.TryGetValue(session, out var currentState) || !ReferenceEquals(currentState, state))
+                    return;
                 var job = state.Job;
                 if (job is null || string.IsNullOrEmpty(job.Path) ||
                     string.IsNullOrEmpty(job.MediaSource?.Path))
@@ -251,6 +340,8 @@ internal sealed class PrivateLiveRecovery
                 }, stopping).ConfigureAwait(false);
                 if (released)
                 {
+                    if (!Retire(session, state))
+                        throw new InvalidOperationException("Private recovery binding changed");
                     logger.LogInformation("VIVOAPK_PRIVATE_NATIVE_RECOVERY_LEASE=PASS");
                     return;
                 }

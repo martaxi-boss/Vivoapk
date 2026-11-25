@@ -107,6 +107,22 @@ internal sealed class PrivateHlsNativeLab : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    // Only a reserved, not-yet-published negotiation can call this. No
+    // native job or other owner's lease can be retired by a failed response.
+    internal async Task ReleaseUnstartedAsync(Guid owner, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_bridge is not null && _leases.TryGetValue(owner, out var bound))
+            {
+                await _bridge.ReleaseRecoveredAsync(owner, bound.Lease, ct).ConfigureAwait(false);
+                _leases.Remove(owner);
+            }
+        }
+        finally { _gate.Release(); }
+    }
+
     internal static bool LiveRecoveryEnabled => Enabled &&
         Environment.GetEnvironmentVariable("VIVOAPK_CI_PRIVATE_LIVE") == "1";
 
