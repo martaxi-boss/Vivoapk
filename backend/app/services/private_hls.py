@@ -289,11 +289,11 @@ class PrivateHlsSession:
         self._root = ""
         raise MediaReadError("Private HLS session unavailable")
 
-    def _check(self) -> None:
+    def _check(self, entitlement: Callable[[], EntitlementState] | None = None) -> None:
         if self._closed:
             self._deny()
         try:
-            active = self._entitlement() is EntitlementState.ACTIVE
+            active = (entitlement or self._entitlement)() is EntitlementState.ACTIVE
         except Exception:
             active = False
         if not active:
@@ -340,22 +340,22 @@ class PrivateHlsSession:
                 httpcore.TimeoutException, httpcore.ProtocolError, ValueError, OSError):
             raise MediaReadError("Private HLS read unavailable") from None
 
-    def refresh(self) -> str:
+    def refresh(self, *, entitlement: Callable[[], EntitlementState] | None = None) -> str:
         with self._lock:
-            self._check()
+            self._check(entitlement)
             uri = self._variant or self._root
             lines = _lines(self._fetch(uri, manifest=True))
             if any(line.startswith("#EXT-X-STREAM-INF:") for line in lines):
                 if self._variant is not None:
                     raise _reject()
                 uri = _master_variant(lines, uri, self._source.origin)
-                self._check()
+                self._check(entitlement)
                 lines = _lines(self._fetch(uri, manifest=True))
                 variant = uri
             else:
                 variant = self._variant
             window = _media_window(lines, uri, self._source.origin)
-            self._check()
+            self._check(entitlement)
             if self._sequence is not None and window.sequence < self._sequence:
                 raise _reject()
             now = time.monotonic()
@@ -386,9 +386,10 @@ class PrivateHlsSession:
             self._entries, self._sequence, self._variant = kept, window.sequence, variant
             return "\n".join(result) + "\n"
 
-    def read_segment(self, handle: str) -> bytes:
+    def read_segment(self, handle: str, *,
+                     entitlement: Callable[[], EntitlementState] | None = None) -> bytes:
         with self._lock:
-            self._check()
+            self._check(entitlement)
             if not isinstance(handle, str) or not _HANDLE.fullmatch(handle):
                 raise _reject()
             entry = next((e for e in self._entries.values() if e.handle == handle), None)
@@ -399,7 +400,7 @@ class PrivateHlsSession:
             if len(body) < 188 * 3 or len(body) % 188 or any(
                     body[i] != 0x47 for i in range(0, len(body), 188)):
                 raise _reject()
-            self._check()
+            self._check(entitlement)
             return body
 
     def close(self) -> None:

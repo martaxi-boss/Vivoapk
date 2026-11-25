@@ -13,6 +13,7 @@ from app.clients.xtream import XtreamClient
 from app.config import Settings, get_settings
 from app.db import build_session_factory, get_db
 from app.logging_config import configure_logging
+from app.private_media_api import install_private_hls_routes
 from app.schemas import (
     CatalogCategoryItemsRequest,
     CatalogListRequest,
@@ -285,6 +286,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=503, detail="Catalogue temporarily unavailable",
                 headers={"Cache-Control": "no-store"},
             ) from None
+
+    if runtime_settings.private_hls_enabled:
+        install_private_hls_routes(app, runtime_settings)
 
     return app
 
