@@ -1,5 +1,8 @@
 #if VIVOAPK_NATIVE_PLAYBACK_LAB
+using System.Collections.Concurrent;
 using MediaBrowser.Controller.Channels;
+using MediaBrowser.Controller.MediaEncoding;
+using Microsoft.Extensions.Hosting;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Library;
@@ -23,6 +26,107 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
     // Uses the existing private entitlement endpoint; no new backend or cache.
     // Only compiled in the disposable synthetic laboratory.
     private static readonly MegaResolverClient Entitlements = new();
+    // The experiment is compiled only into the disposable fixture plugin.
+    // No filesystem sweep, global cache deletion, external process or service.
+    private const long FixtureIdleMilliseconds = 80000;
+    private readonly ConcurrentDictionary<string, FixtureRecovery> _recoveries = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class FixtureRecovery(TranscodingJob job)
+    {
+        internal readonly TranscodingJob Job = job;
+        internal long LastMediaRequest = Environment.TickCount64;
+    }
+
+    private static bool MatchesFixtureJob(TranscodingJob? job, string device, string session)
+    {
+        return job is not null && !string.IsNullOrWhiteSpace(job.Path) &&
+            string.Equals(job.DeviceId, device, StringComparison.Ordinal) &&
+            string.Equals(job.PlaySessionId, session, StringComparison.OrdinalIgnoreCase) &&
+            Uri.TryCreate(job.MediaSource?.Path, UriKind.Absolute, out var origin) &&
+            origin.IsLoopback && origin.Scheme == "http" && origin.Port >= 1024 &&
+            origin.AbsolutePath == "/fixture/native.ts" &&
+            origin.UserInfo.Length == 0 && origin.Query.Length == 0 && origin.Fragment.Length == 0;
+    }
+
+    private void ObserveFixtureSegment(HttpContext http, ILogger logger)
+    {
+        if (Environment.GetEnvironmentVariable("VIVOAPK_CI_LONG_CACHE") != "1" ||
+            !HttpMethods.IsGet(http.Request.Method) || http.Response.StatusCode != 200 ||
+            !(http.Request.Path.Value ?? "").Contains("/hls1/", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var values = http.Request.Query["PlaySessionId"];
+        var device = http.User.FindFirst("Jellyfin-DeviceId")?.Value;
+        if (values.Count != 1 || !Guid.TryParse(values[0], out _) ||
+            string.IsNullOrWhiteSpace(device))
+            return;
+
+        var session = values[0]!;
+        var manager = http.RequestServices.GetRequiredService<ITranscodeManager>();
+        var job = manager.GetTranscodingJob(session);
+        if (!MatchesFixtureJob(job, device, session))
+            return;
+
+        var state = new FixtureRecovery(job!);
+        var existing = _recoveries.GetOrAdd(session, state);
+        if (!ReferenceEquals(existing.Job, job))
+            return; // Ambiguous or replaced job: never recover.
+        Interlocked.Exchange(ref existing.LastMediaRequest, Environment.TickCount64);
+        if (!ReferenceEquals(existing, state))
+            return;
+
+        logger.LogInformation("Native fixture job observed: cleaner={Cleaner}, downloadTicks={DownloadTicks}, active={Active}",
+            job!.TranscodingSegmentCleaner is not null, job.DownloadPositionTicks, job.ActiveRequestCount);
+        var stopping = http.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+        _ = RecoverCompletedFixtureAsync(manager, session, device, state, logger, stopping);
+    }
+
+    private async Task RecoverCompletedFixtureAsync(ITranscodeManager manager, string session,
+        string device, FixtureRecovery state, ILogger logger, CancellationToken stopping)
+    {
+        try
+        {
+            // Bounded observation of this exact finite fixture, not a general
+            // playback watchdog. Do not interrupt a running or paused transcode.
+            var started = Environment.TickCount64;
+            while (Environment.TickCount64 - started < 240000)
+            {
+                await Task.Delay(1000, stopping).ConfigureAwait(false);
+                var job = manager.GetTranscodingJob(session);
+                if (!ReferenceEquals(job, state.Job) || !MatchesFixtureJob(job, device, session))
+                    return;
+                if (Environment.TickCount64 - Interlocked.Read(ref state.LastMediaRequest) < FixtureIdleMilliseconds ||
+                    !job!.HasExited || job.IsUserPaused || job.ActiveRequestCount > 0 ||
+                    (DateTime.UtcNow - job.LastPingDate).TotalMilliseconds < FixtureIdleMilliseconds)
+                    continue;
+
+                // The native operation is scoped to the observed job's own
+                // play-session ID and exact native playlist. No other path is
+                // authorized for deletion. This is intentionally lab-only.
+                var path = job.Path!;
+                if (!ReferenceEquals(manager.GetTranscodingJob(session), state.Job))
+                    return;
+                await manager.KillTranscodingJobs(device, session,
+                    candidate => string.Equals(candidate, path, StringComparison.Ordinal)).ConfigureAwait(false);
+                logger.LogInformation("VIVOAPK_LAB_NATIVE_COMPLETED_SESSION_RECOVERY=PASS");
+                return;
+            }
+            logger.LogInformation("VIVOAPK_LAB_NATIVE_COMPLETED_SESSION_RECOVERY=NOT_ELIGIBLE");
+        }
+        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // Do not print exception text that might contain paths or tokens.
+            logger.LogWarning("VIVOAPK_LAB_NATIVE_COMPLETED_SESSION_RECOVERY=FAIL ({ErrorType})", ex.GetType().Name);
+        }
+        finally
+        {
+            _recoveries.TryRemove(session, out _);
+        }
+    }
+
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
     {
         return app =>
@@ -126,6 +230,8 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 http.Response.Headers.CacheControl = "no-store";
                 http.Response.Headers["X-Vivoapk-Lab-Guard"] = "allowed";
                 await downstream(http).ConfigureAwait(false);
+                if (media)
+                    ObserveFixtureSegment(http, logger);
             });
             next(app);
         };
