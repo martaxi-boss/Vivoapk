@@ -449,8 +449,24 @@ def parse_timed_segments(body):
 
 
 def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
-                      baseline, input_digest, provider):
+                      baseline, input_digest, provider, info, source):
     # Only the generated finite loopback fixture. No provider/customer stream.
+    # Match an ordinary player's start/progress reports, not only its HLS GETs.
+    session = info.get("PlaySessionId") or next(
+        (v for k, v in parse_qsl(urlsplit(master_route).query)
+         if k.lower() == "playsessionid"), None)
+    if not isinstance(session, str) or not session:
+        raise RuntimeError("No native play session for long cache fixture")
+
+    def report_progress(endpoint, seconds):
+        status, _ = request("POST", endpoint, {
+            "ItemId": item_id, "MediaSourceId": source.get("Id"),
+            "PlaySessionId": session, "PositionTicks": int(seconds * 10000000),
+            "PlayMethod": "Transcode", "IsPaused": False,
+        }, token=owner_token)
+        if status not in (200, 204):
+            raise RuntimeError("Synthetic client playback report rejected: HTTP " + str(status))
+
     begin = time.monotonic()
     requests_before = provider.requests
     require_native_denial(master_route, owner_token, foreign_token, "long_master")
@@ -468,6 +484,7 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
     timed = parse_timed_segments(body)
     if not timed:
         raise RuntimeError("Long native fixture had no timed segments")
+    report_progress("/Sessions/Playing", 0)
     served = 0.0
     fetched = 0
     early = set()
@@ -494,6 +511,7 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
         served += duration
         fetched += 1
         last_route = route
+        report_progress("/Sessions/Playing/Progress", served)
         observed = native_cache_delta(base, baseline)
         peak = max(peak, sum(observed.values()))
         max_files = max(max_files, len(observed))
@@ -503,10 +521,12 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
             raise RuntimeError("Synthetic cache exceeded the 32 MiB test limit")
     if served < 60 or not early or fetched < 5:
         raise RuntimeError("Insufficient sequential media for cache window test")
-    # Native segment cleaner runs periodically. Observe deletion of early
-    # files while later generated segments remain, without deleting anything.
+    # Give the native cleaner multiple observation opportunities while a
+    # normal playback session is still active. Keep the two acceptance gates
+    # independent: rolling retention failure must not hide idle cleanup.
     rolling = {}
-    for _ in range(50):
+    observed_begin = time.monotonic()
+    for i in range(100):
         rolling = native_cache_delta(base, baseline)
         peak = max(peak, sum(rolling.values()))
         max_files = max(max_files, len(rolling))
@@ -514,10 +534,18 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
             raise RuntimeError("Synthetic cache exceeded the 32 MiB test limit")
         if early.difference(rolling) and any(p.suffix.lower() == ".ts" for p in rolling):
             break
+        if i % 20 == 0:
+            report_progress("/Sessions/Playing/Progress", served)
         time.sleep(0.5)
     removed_early = len(early.difference(rolling))
-    if not removed_early or not rolling:
-        raise RuntimeError("Native rolling cache deletion not observed")
+    rolling_pass = bool(removed_early and any(p.suffix.lower() == ".ts" for p in rolling))
+    print("JELLYFIN_NATIVE_LONG_CACHE_ROLLING_STATUS=" + json.dumps({
+        "passed": rolling_pass, "early_files_observed": len(early),
+        "early_files_removed": removed_early, "files_remaining": len(rolling),
+        "seconds_observed": round(time.monotonic() - observed_begin, 1),
+        "media_seconds_served": round(served, 3),
+        "native_progress_reports": True,
+    }, sort_keys=True), flush=True)
     require_native_denial(last_route, owner_token, foreign_token, "long_cached_segment")
     # Final owner request proves current segment still plays. Then cease all
     # playback requests: do NOT send a stop event or manually remove files.
@@ -528,6 +556,7 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
     if not at_disconnect:
         raise RuntimeError("No native cache existed before simulated disconnect")
     print("JELLYFIN_NATIVE_LONG_CACHE_ROLLING=" + json.dumps({
+        "rolling_pass": rolling_pass,
         "fixture_duration_seconds": 360, "served_media_seconds": round(served, 3),
         "segments_served": fetched, "early_segments_removed": removed_early,
         "peak_sampled_cache_bytes": peak, "peak_sampled_file_count": max_files,
@@ -560,6 +589,9 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
         "playback_stop_sent": False, "source_unchanged": True,
         "other_session_preserved": True
     }, sort_keys=True), flush=True)
+    print("JELLYFIN_NATIVE_LONG_IDLE_CLEANUP=PASS", flush=True)
+    if not rolling_pass:
+        raise RuntimeError("Native rolling cache deletion not observed; independent idle cleanup passed")
     print("JELLYFIN_NATIVE_LONG_CACHE_AND_IDLE_CLEANUP=PASS", flush=True)
 
 
@@ -590,7 +622,7 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     route = native_route("/", ready[0]["TranscodingUrl"], item_id)
     if LONG_CACHE:
         verify_long_cache(base, item_id, route, owner_token, foreign_token,
-                          cache_baseline, input_digest, provider)
+                          cache_baseline, input_digest, provider, info, ready[0])
         return
     # Report only alias key names, never a URI, identifier or token value.
     print("JELLYFIN_NATIVE_ROUTE_AUTH_QUERY_KEYS=" + json.dumps(sorted(
