@@ -1,0 +1,3 @@
+# Native Jellyfin + FFmpeg experiment
+
+Non-deployable laboratory for the new server-side processing decision. Requires a dedicated compile symbol, environment and config flags, two synthetic identities and generated loopback media. Normal release builds preserve the installed policy. Disposable Jellyfin 12.4 must convert MPEG-2/MP2 to HLS H264/AAC and decode its native output, deny anonymous/foreign clients, and check password absence in bounded fixture logs/storage. It is not a production input implementation or physical client test. Never deploy the lab DLL. Production source integration needs a protected server-only input, real authorization, safe redirects, bounded sessions, revocation and temporary cleanup.

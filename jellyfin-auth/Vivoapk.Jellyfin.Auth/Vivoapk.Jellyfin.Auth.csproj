@@ -9,6 +9,9 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <Version>0.1.0</Version>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(NativePlaybackLabBuild)' == 'true'">
+    <DefineConstants>$(DefineConstants);VIVOAPK_NATIVE_PLAYBACK_LAB</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Jellyfin.Controller" Version="12.4.0" ExcludeAssets="runtime" />

@@ -10,12 +10,15 @@ import socketserver
 import subprocess
 import threading
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin, urlsplit, parse_qsl, urlunsplit
 from urllib.request import urlopen
 
 PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
 MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
 CATEGORY_MODE = os.environ.get("VIVOAPK_CI_CATEGORY_MODE") == "1"
+SERVER_PLAYBACK = os.environ.get("VIVOAPK_CI_SERVER_PLAYBACK") == "1"
+if SERVER_PLAYBACK and not CATEGORY_MODE:
+    raise RuntimeError("Native lab requires category mode")
 
 class BackendHandler(socketserver.StreamRequestHandler):
     def handle(self):
@@ -172,6 +175,14 @@ class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.requests += 1
+        if self.path == "/fixture/native.ts" and SERVER_PLAYBACK:
+            payload = (self.server.media_root / "native.ts").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path.startswith("/live/") and self.path.endswith(".m3u8"):
             self.send_response(302)
             self.send_header("Location", "/authorized/42.m3u8")
@@ -199,11 +210,11 @@ class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
 
 class Connection(http.client.HTTPConnection):
     def __init__(self, path):
-        super().__init__("localhost", timeout=8)
+        super().__init__("localhost", timeout=45 if SERVER_PLAYBACK else 8)
         self.path = str(path)
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(8)
+        self.sock.settimeout(45 if SERVER_PLAYBACK else 8)
         self.sock.connect(self.path)
 
 _SESSION_TEST_DEVICES = {}
@@ -239,6 +250,112 @@ def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
         _SESSION_TEST_DEVICES[parsed["AccessToken"]] = device_id
     return code, parsed
 
+def native_bytes(uri, token=None):
+    conn = Connection(DATAROOT / "run/jellyfin.sock")
+    headers = {"Accept": "*/*"}
+    if token:
+        headers["X-Emby-Token"] = token
+        headers["Authorization"] = ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
+            'DeviceId="' + _SESSION_TEST_DEVICES[token] + '", Version="1.0.0", Token="' + token + '"')
+    conn.request("GET", uri, headers=headers)
+    response = conn.getresponse()
+    result = response.status, response.read(8 * 1024 * 1024)
+    conn.close()
+    return result
+
+
+def native_route(current, relative, item_id):
+    parsed = urlsplit(urljoin("http://jellyfin.local" + current, relative))
+    parts = parsed.path.lower().split("/")
+    if (parsed.scheme != "http" or parsed.netloc != "jellyfin.local"
+            or len(parts) < 4 or parts[1] != "videos"
+            or parts[2].replace("-", "") != item_id.lower().replace("-", "")):
+        raise RuntimeError("Media route escaped disposable Jellyfin")
+    return urlunsplit(("", "", parsed.path, parsed.query, ""))
+
+
+def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider):
+    profile = {
+        "Name": "CI server HLS H264 AAC",
+        "MaxStreamingBitrate": 2000000, "MaxStaticBitrate": 2000000,
+        "DirectPlayProfiles": [],
+        "TranscodingProfiles": [{
+            "Type": "Video", "Container": "ts", "Protocol": "hls",
+            "VideoCodec": "h264", "AudioCodec": "aac", "Context": "Streaming",
+        }],
+    }
+    code, info = request("POST", "/Items/" + item_id + "/PlaybackInfo?UserId=" + owner,
+        {"DeviceProfile": profile, "AutoOpenLiveStream": True,
+         "EnableDirectPlay": False, "EnableDirectStream": False, "EnableTranscoding": True,
+         "AllowVideoStreamCopy": False, "AllowAudioStreamCopy": False,
+         "MaxStreamingBitrate": 2000000}, token=owner_token)
+    sources = (info or {}).get("MediaSources", [])
+    ready = [s for s in sources if s.get("SupportsTranscoding") is True
+             and s.get("SupportsDirectPlay") is False and s.get("TranscodingUrl")]
+    if code != 200 or len(ready) != 1:
+        raise RuntimeError("Native server profile not negotiated: " + json.dumps({
+            "status": code, "error": (info or {}).get("ErrorCode"),
+            "source_count": len(sources), "ready_count": len(ready)}))
+    route = native_route("/", ready[0]["TranscodingUrl"], item_id)
+    u = urlsplit(route)
+    safe = urlunsplit(("", "", u.path,
+        urlencode([(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
+                   if k.lower() not in ("api_key", "access_token", "token")]), ""))
+    for denied_token in (None, foreign_token):
+        status, _ = native_bytes(safe, denied_token)
+        if status not in (401, 403, 404):
+            raise RuntimeError("Native route did not deny anonymous/foreign client: " + str(status))
+    before = provider.requests
+    status, body = native_bytes(route, owner_token)
+    if status != 200 or not body.startswith(b"#EXTM3U"):
+        raise RuntimeError("Native HLS master failed: " + str(status))
+    lines = [x.strip() for x in body.decode().splitlines() if x.strip()]
+    if any(x.startswith("#EXT-X-STREAM-INF") for x in lines):
+        media = [x for x in lines if not x.startswith("#")]
+        if not media:
+            raise RuntimeError("Master playlist has no media playlist")
+        route = native_route(route, media[0], item_id)
+        status, body = native_bytes(route, owner_token)
+        if status != 200 or not body.startswith(b"#EXTM3U"):
+            raise RuntimeError("Native media playlist failed: " + str(status))
+    segments = [x.strip() for x in body.decode().splitlines()
+                if x.strip() and not x.startswith("#")]
+    if not segments:
+        raise RuntimeError("Native playlist has no segments")
+    out = base / "server-encoded-output.ts"
+    with out.open("wb") as dest:
+        for relative in segments[:2]:
+            segment = native_route(route, relative, item_id)
+            status, content = native_bytes(segment, owner_token)
+            if status != 200 or len(content) < 188 or content[0] != 0x47:
+                raise RuntimeError("Native MPEG-TS segment unavailable: " + str(status))
+            dest.write(content)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                            "stream=codec_type,codec_name", "-of", "json", str(out)],
+                           capture_output=True, text=True, check=True, timeout=30)
+    observed = {(s["codec_type"], s["codec_name"]) for s in json.loads(probe.stdout)["streams"]}
+    if not {("video", "h264"), ("audio", "aac")}.issubset(observed):
+        raise RuntimeError("Jellyfin output codecs were not H264/AAC")
+    decoded = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error",
+                              "-i", str(out), "-t", "2", "-map", "0:v:0", "-map", "0:a:0",
+                              "-f", "framemd5", "pipe:1"], capture_output=True,
+                             text=True, check=True, timeout=30)
+    video = sum(x.startswith("0,") for x in decoded.stdout.splitlines())
+    audio = sum(x.startswith("1,") for x in decoded.stdout.splitlines())
+    if video < 20 or audio < 20 or provider.requests <= before:
+        raise RuntimeError("Native output did not contain decoded video and audio")
+    print("JELLYFIN_NATIVE_SERVER_H264_AAC=" + json.dumps({
+        "input_video": "mpeg2video", "input_audio": "mp2",
+        "output_video": "h264", "output_audio": "aac",
+        "decoded_video_frames": video, "decoded_audio_frames": audio,
+        "provider_requests_during_native_playback": provider.requests - before,
+        "scope": "synthetic only, native server FFmpeg, not physical clients",
+    }, sort_keys=True))
+    out.unlink()
+    print("JELLYFIN_NATIVE_SERVER_TRANSCODE_VIDEO_AUDIO=PASS")
+    print("JELLYFIN_NATIVE_SERVER_FOREIGN_AND_ANONYMOUS_DENIAL=PASS")
+
+
 def request_png(uri, *, token):
     """Read only local disposable Jellyfin PNG bytes, never a provider URL."""
     conn = Connection(DATAROOT / "run/jellyfin.sock")
@@ -260,6 +377,7 @@ def request_png(uri, *, token):
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-native-ffmpeg-smoke" if SERVER_PLAYBACK else
         "vivo-jellyfin-12.4-category-smoke" if CATEGORY_MODE
         else "vivo-jellyfin-12.4-smoke")
     DATAROOT = base / "data"
@@ -300,6 +418,15 @@ def main():
         "-c:a", "aac", "-movflags", "+faststart",
         str(synthetic_media / "fixture.mp4"),
     ], check=True, timeout=30)
+    if SERVER_PLAYBACK:
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
+            "-f", "lavfi", "-i", "sine=frequency=650:sample_rate=48000",
+            "-t", "15", "-c:v", "mpeg2video", "-g", "25", "-threads", "1",
+            "-c:a", "mp2", "-ac", "2", "-b:a", "128k",
+            "-f", "mpegts", str(synthetic_media / "native.ts"),
+        ], check=True, timeout=30)
     provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SyntheticHlsHandler)
     provider.media_root = synthetic_media
     provider.requests = 0
@@ -323,6 +450,8 @@ def main():
         "--cachedir", str(base / "cache"), "--configdir", str(base / "config"),
         "--logdir", str(base / "logs"), "--webdir", os.environ["JELLYFIN_TEST_WEB"], "--service"
     ]
+    if SERVER_PLAYBACK:
+        cmd.extend(["--ffmpeg", shutil.which("ffmpeg")])
     jellyfin = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
         running = False
@@ -379,7 +508,8 @@ def main():
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
                           {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True,
                            "PilotLiveChannels": True, "FullLiveCatalog": not CATEGORY_MODE,
-                           "CategoryNavigation": CATEGORY_MODE}, token=token)
+                           "CategoryNavigation": CATEGORY_MODE,
+                           "NativeServerPlaybackLab": SERVER_PLAYBACK}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -425,9 +555,10 @@ def main():
             code, profile = request("GET", "/Users/" + customer_id, token=token)
             if code != 200 or not isinstance(profile, dict):
                 raise RuntimeError("Cannot read VivoAPK subscriber policy")
-            if any(profile.get("Policy", {}).get(k) is not False
-                   for k in media_policy_fields + no_download_share):
-                raise RuntimeError("Mega user still permits media forwarding or downloads")
+            expected = {k: SERVER_PLAYBACK for k in media_policy_fields[:3]}
+            expected.update({k: False for k in media_policy_fields[3:] + no_download_share})
+            if any(profile.get("Policy", {}).get(k) is not value for k, value in expected.items()):
+                raise RuntimeError("Unexpected subscriber media policy")
         code, admin_after = request("GET", "/Users/" + admin["User"]["Id"],
                                     token=token)
         if code != 200 or any(
@@ -435,7 +566,8 @@ def main():
             for k, old_value in admin_media_policy_before.items()
         ):
             raise RuntimeError("Mega plugin altered Jellyfin admin media policy")
-        print("JELLYFIN_MEGA_DIRECT_ONLY_USER_POLICY_AND_ADMIN=PASS")
+        print("JELLYFIN_SERVER_FFMPEG_USER_POLICY_AND_ADMIN=PASS" if SERVER_PLAYBACK
+              else "JELLYFIN_MEGA_DIRECT_ONLY_USER_POLICY_AND_ADMIN=PASS")
 
         # EXPERIMENT: stage two concurrent account catalogues and probe native
         # Jellyfin ChannelManager/PlaybackInfo authorization across both.
@@ -570,6 +702,18 @@ def main():
         item_id_b = pilot_items_b["Items"][0]["Id"]
         if pilot_item_id == item_id_b:
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
+        if SERVER_PLAYBACK:
+            verify_native_ffmpeg(pilot_item_id, account_a, customer["AccessToken"],
+                                 customer_b["AccessToken"], base, provider)
+            log.flush()
+            for folder in (DATAROOT, base / "logs"):
+                for candidate in folder.rglob("*"):
+                    if (candidate.is_file() and not candidate.is_symlink()
+                            and candidate.stat().st_size <= 8 * 1024 * 1024
+                            and b"synthetic-mega-password" in candidate.read_bytes()):
+                        raise RuntimeError("Native lab wrote fixture password to logs/storage")
+            print("JELLYFIN_NATIVE_SERVER_NO_FIXTURE_PASSWORD_IN_STORAGE_OR_LOGS=PASS")
+            return
         for foreign_user, foreign_token, victim_item in (
             (account_b, customer_b["AccessToken"], pilot_item_id),
             (account_a, customer["AccessToken"], item_id_b),

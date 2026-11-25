@@ -195,6 +195,8 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         }
     }
 
+    internal bool OwnsActiveSnapshot(Guid userId) => ForUser(userId) is not null;
+
     public string GetCacheKey(string? userId)
     {
         if (!Guid.TryParse(userId, out var id))
@@ -562,6 +564,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         }
         if (snapshot is null)
             return Array.Empty<MediaSourceInfo>();
+        if (NativePlaybackLab.Enabled &&
+            (!NativePlaybackLab.IsFixtureAccount(snapshot.Username) ||
+             NativePlaybackLab.AuthenticatedOwner(_httpContextAccessor?.HttpContext?.User) != snapshot.Owner ||
+             !snapshot.CategoryNavigation))
+            return Array.Empty<MediaSourceInfo>();
         if (!snapshot.CategoryNavigation)
         {
             // Legacy bounded one-subscriber preview remains unchanged.
@@ -640,6 +647,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
         // The URL is passed to the client's own Jellyfin player. It is NOT a
         // Jellyfin relay/transcode URL and never lands in the item database.
+        if (NativePlaybackLab.Enabled)
+        {
+            var fixture = NativePlaybackLab.CreateSource(session.Value.Origin, kind, providerId);
+            return fixture is null ? Array.Empty<MediaSourceInfo>() : new[] { fixture };
+        }
         var direct = DirectSource(snapshot, session.Value.Origin, providerId, kind, extension);
         return kind == "live" ? LiveSourceVariants(direct, id) : new[] { direct };
     }

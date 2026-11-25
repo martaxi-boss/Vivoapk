@@ -69,6 +69,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/vivoapk-ci-diagnostics"
           python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py | tee "$RUNNER_TEMP/vivoapk-ci-diagnostics/standard.log"
           VIVOAPK_CI_CATEGORY_MODE=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py | tee "$RUNNER_TEMP/vivoapk-ci-diagnostics/category.log"
+          # Separate test-only compilation, never a production artifact.
+          dotnet build jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj -c Release -t:Rebuild -p:NativePlaybackLabBuild=true
+          VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py | tee "$RUNNER_TEMP/vivoapk-ci-diagnostics/native-server-ffmpeg.log"
       - name: Save synthetic-only player compatibility observations
         if: always()
         uses: actions/upload-artifact@v4

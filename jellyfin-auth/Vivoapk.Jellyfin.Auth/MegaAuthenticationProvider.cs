@@ -90,26 +90,20 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             _logger.LogInformation("Created restricted VivoAPK Jellyfin identity.");
         }
 
-        // Jellyfin 12.4 MediaSourceManager overwrites plugin DirectStream/
-        // Transcoding flags using the authenticated user's permissions.
-        // Enforce direct-only media for every authenticated VivoAPK identity,
-        // including identities created by earlier versions. This never reaches
-        // Jellyfin administrators or accounts owned by another provider.
+        // Laboratory only. Normal builds preserve the current production policy.
+        var serverPlayback = NativePlaybackLab.Enabled &&
+            NativePlaybackLab.IsFixtureAccount(canonicalUsername);
         var mediaPolicyChanged = false;
-        if (user.HasPermission(PermissionKind.EnablePlaybackRemuxing))
+        foreach (var permission in new[] {
+            PermissionKind.EnablePlaybackRemuxing,
+            PermissionKind.EnableVideoPlaybackTranscoding,
+            PermissionKind.EnableAudioPlaybackTranscoding })
         {
-            user.SetPermission(PermissionKind.EnablePlaybackRemuxing, false);
-            mediaPolicyChanged = true;
-        }
-        if (user.HasPermission(PermissionKind.EnableVideoPlaybackTranscoding))
-        {
-            user.SetPermission(PermissionKind.EnableVideoPlaybackTranscoding, false);
-            mediaPolicyChanged = true;
-        }
-        if (user.HasPermission(PermissionKind.EnableAudioPlaybackTranscoding))
-        {
-            user.SetPermission(PermissionKind.EnableAudioPlaybackTranscoding, false);
-            mediaPolicyChanged = true;
+            if (user.HasPermission(permission) != serverPlayback)
+            {
+                user.SetPermission(permission, serverPlayback);
+                mediaPolicyChanged = true;
+            }
         }
         if (user.HasPermission(PermissionKind.ForceRemoteSourceTranscoding))
         {
