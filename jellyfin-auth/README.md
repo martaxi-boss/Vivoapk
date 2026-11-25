@@ -1,51 +1,15 @@
-# Integração nativa Jellyfin 12.4 → VivoAPK Mega OTT
+# Integração nativa Jellyfin 12.4 → VivoAPK
 
-**Etapa 1 — conector de autenticação, sem exposição de media na VPS.**
+Contrato: [BOOTSTRAP](../BOOTSTRAP.md). Plugin C#/.NET 10 instalado, usando o backend privado por socket Unix para validar o login Mega OTT e disponibilizar navegação por catálogo próprio. Preservar identidades existentes, administração, seleção DNS, expiração e isolamento.
 
-Esta pasta contém um plugin C# original que usa o contrato oficial de plugins
-Jellyfin 12.4/.NET 10, com `IAuthenticationProvider`, para validar o login
-do cliente no backend **já instalado** em
-`/srv/projects/Vivoapk/run/backend.sock` (socket Unix privado).
+## Estado instalado versus objetivo
 
-## Regra de funcionamento
+O plugin instalado oferece canais/pastas privadas TV, filmes, séries e episódios através de `IChannel`; não é tuner global nem EPG nativo certificado. A produção usa o caminho Direct Play histórico. O novo objetivo é permitir remux e transcodificação nativa Jellyfin/FFmpeg apenas para media autorizada, com guarda de rotas, isolamento por subscrição, revogação e cache temporária.
 
-- App oficial Jellyfin: configurar uma vez o único servidor
-  `https://serveriptv.duckdns.org`.
-- Ecrã normal Jellyfin: apenas username/password da subscrição Mega OTT.
-- A implementação consulta `POST /v1/session/resolve`, pelo socket privado,
-  através do mesmo motor que servia a APK PINK.
-- Subscrições não existentes em Jellyfin podem criar **uma identidade interna
-  restringida** sem nova palavra-passe local.
-- **Nunca sequestra identidades existentes**: `pink-admin` e contas de outros
-  fornecedores não são modificadas.
-- **Desativado por omissão na fonte**: `PluginConfiguration.Enabled=false`; a configuração privada de produção foi ativada após backup e inspeção do administrador, em [Ferrari #45090113991](https://github.com/martaxi-boss/VPS/actions/runs/45090113991).
-- Não grava credenciais Mega OTT em logs nem em ficheiros do Jellyfin.
-- Nenhum DNS Mega é introduzido pelo cliente ou incorporado na aplicação.
+A branch `vivoapk/native-ffmpeg-20261125` contém um laboratório sintético ainda não aprovado: o reteste [#45628159340](https://github.com/martaxi-boss/Vivoapk/actions/runs/45628159340) falhou no acesso anónimo/de outra conta. Não instalar a branch nem ativar transcodificação global como atalho. FFmpeg H.264/AAC sintético passou na identidade do serviço, mas reprodução via Jellyfin e clientes físicos ainda por validar.
 
-## Estado e limites atuais
+## Testes e implantação
 
-O teste com a aplicação servidora Jellyfin 12.4 real (descartável) passou em [GitHub Actions #45086626328](https://github.com/martaxi-boss/Vivoapk/actions/runs/45086626328): login de administrador preservado, criação automática de utilizador com credenciais Mega fictícias, rejeição de password errada. **Não é um teste com Mega OTT verdadeiro nem com a VPS de produção.**
+A CI compila contra Jellyfin.Controller 12.4.0, executa testes sintéticos e ensaios descartáveis do servidor. Exigir isolamento, autorização por sessão/segmento, descodificação de imagem e som, limpeza e rollback antes de ativação. Usar o instalador/atualizador protegido existente; não alterar o backend ou conta administrativa. Nenhuma credencial privada em testes públicos.
 
-**Estado de implantação:** instalado no diretório oficial de plugins da VPS ([Ferrari #45090003933](https://github.com/martaxi-boss/VPS/actions/runs/45090003933)), ativo ([#45090113991](https://github.com/martaxi-boss/VPS/actions/runs/45090113991)) e verificado novamente ([#45090435057](https://github.com/martaxi-boss/VPS/actions/runs/45090435057)). Ambos os sockets respondem e os serviços PINK/VivoAPK/Jellyfin permanecem ativos. O registo de `pink-admin` foi preservado, mas o login administrativo com a password original não foi testado separadamente.
-
-Este plugin **não apresenta** canais, filmes e séries no Jellyfin ainda.
-A obtenção de catálogo por utilizador e a revogação de sessões ativas quando
-a assinatura termina exigem uma segunda integração segura. Não é correto usar
-uma playlist Xtream global: Jellyfin indexa canais globalmente e isso pode
-misturar subscrições.
-
-A reprodução sem retransmissão de media pela VPS, exigida pelo proprietário,
-também continua por confirmar em testes reais. Alguns clientes Jellyfin
-precisam que a origem seja acessível diretamente; endereços `http://` do
-Mega OTT podem falhar em clientes `https://` ou expor URLs diretas.
-
-## Testes e compilação
-
-CI: `.github/workflows/vivoapk-jellyfin-auth-ci.yml` prepara .NET SDK 10,
-compila contra `Jellyfin.Controller==12.4.0`, e executa testes sintéticos
-com `HttpMessageHandler` artificial sem usar a API Mega ou credenciais.
-O plugin foi instalado e ativado na VPS com backup e salvaguardas de rollback. **Isto não valida o serviço completo**: a autenticação positiva com cliente Mega OTT real, a segregação de catálogo e a reprodução continuam por testar.
-
-As referências públicas de API foram contrastadas com os plugins oficiais
-Jellyfin LDAP e o exemplo MIT Jellyfin/Authelia, sem copiar o código
-dos plugins, das suas credenciais ou da sua configuração.
+[Provas históricas](../docs/HISTORICO_BOOTSTRAP_20261125.md) · [Operação VPS](../infra/README.md).
