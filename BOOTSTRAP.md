@@ -1,6 +1,6 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
-**Regra vinculativa do produto, confirmada pelo proprietário em 23/11/2026.**
+**Regra vinculativa do produto, confirmada pelo proprietário em 23/11/2026 e atualizada com a sua autorização expressa em 25/11/2026.**
 Este documento é a fonte de verdade do funcionamento pretendido para clientes. Ler antes de qualquer alteração ao VivoAPK, ao plugin Jellyfin, aos DNS ou à VPS. O histórico de experiências com Pink IPTV e Vivo Player não altera este contrato.
 
 ## Objetivo único: entrada automática dos clientes no Jellyfin
@@ -24,10 +24,24 @@ Aplicação Jellyfin oficial
     → encontra o DNS oficial completo atribuído pela Mega à subscrição
     → cria/associa automaticamente a identidade restrita Jellyfin desse cliente
     → disponibiliza apenas o catálogo da subscrição (TV / filmes / séries / episódios / EPG)
+    → o VivoAPK pode indicar ao leitor a origem de reprodução por redirecionamento autorizado
     → o dispositivo reproduz do fornecedor diretamente, quando tecnicamente compatível
 ```
 
 **A VPS é o ponto de autenticação, controlo e apresentação de metadados Jellyfin; não deve armazenar vídeos nem retransmitir, converter, remultiplexar ou transcodificar media para os clientes.** Não introduzir proxy/relay de vídeo como solução automática. Se determinada app só funcionar com relay, reportar essa limitação e não declarar conformidade.
+
+## Redirecionamento autorizado — decisão do proprietário de 25/11/2026
+
+O proprietário autoriza expressamente a integração de um componente de ligação/redirecionamento no VivoAPK existente, na VPS, para permitir ao leitor Jellyfin compatível abrir diretamente a origem autorizada do fornecedor. Esta decisão clarifica a arquitetura original; não autoriza retransmissão de vídeo nem a instalação de outro sistema em paralelo.
+
+- Manter o DNS público único, o login existente, a descoberta automática, a validação da subscrição e a gestão exclusiva no painel Mega OTT.
+- A VPS pode autenticar, autorizar, apresentar metadados e devolver a indicação do destino de reprodução; não pode transportar o conteúdo multimédia, fazer proxy/relay, remux, transcodificação, descarregar ou armazenar canais, filmes, séries ou episódios. O catálogo contém apenas referências e metadados.
+- Privilegiar o Jellyfin oficial e os leitores compatíveis já existentes. A compatibilidade com Android, Android TV, iOS, Windows, Samsung Tizen e LG webOS é obrigatória como objetivo; não assumir que um redirecionamento elimina limitações dos clientes. Não impor nova aplicação, segundo login ou alteração do leitor sem validar a necessidade e obter autorização quando mudar o contrato do produto.
+- Utilizar exclusivamente origens e conteúdos para os quais existam autorização e direitos de reprodução. Proteger as credenciais no cofre privado, não publicar passwords, tokens ou URLs com segredos em GitHub, logs ou artefactos, não contornar DRM, permissões de acesso nem restrições de segurança. Usar apenas destinos autorizados e seguros, preservando o isolamento e a revogação das subscrições.
+- Testar primeiro com media sintéticos/autorizados em ambiente isolado; validar imagem e som, percurso efetivo do vídeo fora da VPS, ausência de armazenamento de media, isolamento entre clientes, renovação e expiração. A certificação final exige testes reais dos leitores nas plataformas de destino. Não alterar produção com base apenas num resultado sintético.
+- A execução Ferrari/REA [#45604691965](https://github.com/martaxi-boss/VPS/actions/runs/45604691965) foi concluída com sucesso no ambiente de ensaio de redirecionamento e não constitui prova de integração em produção nem de funcionamento em dispositivos físicos. A implementação final e os testes com a linha real permanecem pendentes.
+
+Esta autorização mantém todas as restantes regras de segurança e os requisitos do bootstrap.
 
 ## Gestão exclusiva pelo painel Mega OTT
 
@@ -130,6 +144,6 @@ A hipótese de qualidade «Automática» limitada a **1,5 Mbps** foi testada em 
 
 ## Critério final de aceitação
 
-Um cliente novo, sem instalação nem configuração adicional além do Jellyfin oficial, abre a app, introduz `https://serveriptv.duckdns.org`, username e password Mega OTT, vê **automaticamente só a sua subscrição**, reproduz conteúdos autorizados sem retransmissão pela VPS e perde/recupera acesso conforme o painel Mega OTT. Repetir com pelo menos duas contas diferentes e clientes de cada plataforma de destino.
+O redirecionamento autorizado pode integrar o fluxo de reprodução, desde que o servidor não transporte vídeo e a compatibilidade e os controlos de segurança sejam comprovados. Um cliente novo, sem instalação nem configuração adicional além do Jellyfin oficial, abre a app, introduz `https://serveriptv.duckdns.org`, username e password Mega OTT, vê **automaticamente só a sua subscrição**, reproduz conteúdos autorizados sem retransmissão pela VPS e perde/recupera acesso conforme o painel Mega OTT. Repetir com pelo menos duas contas diferentes e clientes de cada plataforma de destino.
 
 **NÃO DESVIAR DESTE OBJETIVO PARA CORREÇÕES APENAS ANDROID, PAINÉIS NOVOS OU REINSTALAÇÃO DO PINK IPTV.**
