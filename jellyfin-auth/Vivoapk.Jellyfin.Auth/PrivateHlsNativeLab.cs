@@ -58,7 +58,14 @@ internal sealed class PrivateHlsNativeLab : IAsyncDisposable
             if (lease.Category != category || lease.Asset != asset || lease.Platform != platform)
                 return null;
             source.Name = "Synthetic private HLS native fixture";
-            source.Id = "private-lab-" + owner.ToString("N");
+            // Keep Id unset: ChannelManager.NormalizeMediaSources assigns the
+            // actual item's native GUID (same contract as the passing finite
+            // MPEG-TS fixture). DynamicHlsHelper.GetMasterPlaylistInternal
+            // parses this ID as a Guid for finite-stream trickplay; an owner
+            // label is not a valid MediaSourceId and caused the 500 path.
+            // Isolation stays bound to the authenticated owner and private
+            // lease, not to a custom public source identifier.
+            source.Id = null;
             source.Path = lease.Lease.Playlist.AbsoluteUri;
             return source;
         }

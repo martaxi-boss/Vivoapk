@@ -11,6 +11,7 @@ import socketserver
 import subprocess
 import threading
 import time
+from uuid import UUID
 from urllib.parse import urlencode, urljoin, urlsplit, parse_qsl, urlunsplit, unquote
 from urllib.request import urlopen
 
@@ -1591,6 +1592,17 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             raise RuntimeError("Private native negotiation failed: HTTP " + str(code))
         source = sources[0]
         master = native_route("/", source["TranscodingUrl"], item)
+        # The native master (finite HLS) parses MediaSourceId as a GUID to
+        # obtain trickplay resolutions. Preserve the actual channel item ID,
+        # not an opaque owner label or the private loopback capability.
+        ids = [v for k, v in parse_qsl(urlsplit(master).query)
+               if k.lower() == "mediasourceid"]
+        try:
+            if len(ids) != 1 or UUID(source["Id"]) != UUID(item) or UUID(ids[0]) != UUID(item):
+                raise ValueError("Native media identity mismatch")
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise RuntimeError("Private source ID is not the native item GUID") from None
+        print("JELLYFIN_PRIVATE_NATIVE_GUID_CONTRACT=PASS", flush=True)
         require_native_denial(master, token, other, "private_master_before_owner")
         body = require_native_owner(master, token, "private_master")
         route = master
@@ -2941,6 +2953,32 @@ def main():
         log.flush()
         recent = (base / "logs/jellyfin-launch.log").read_text(errors="replace").splitlines()[-35:]
         if PRIVATE_HLS:
+            # Print only a fixed vocabulary and counts, not exception messages,
+            # addresses, credentials, tokens, FFmpeg command lines or stack text.
+            # Distinguish source selection, format parsing and encoder startup.
+            diagnostic = "\n".join(recent)
+            labels = {
+                "guid_format": "System.FormatException",
+                "argument_null": "System.ArgumentNullException",
+                "argument_invalid": "System.ArgumentException",
+                "source_not_found": "ResourceNotFoundException",
+                "invalid_operation": "System.InvalidOperationException",
+                "null_reference": "System.NullReferenceException",
+                "encoder_exit": "FFmpeg exited with code",
+                "encoder_start": "Error starting ffmpeg",
+                "master_helper": "DynamicHlsHelper.GetMasterPlaylistInternal",
+                "streaming_state": "StreamingHelpers.GetStreamingState",
+                "media_source_attach": "EncodingHelper.AttachMediaSourceInfo",
+            }
+            print("JELLYFIN_PRIVATE_NATIVE_SAFE_DIAGNOSTICS=" + json.dumps({
+                key: diagnostic.count(marker) for key, marker in labels.items()
+            }, sort_keys=True), flush=True)
+            if private_backend is not None:
+                print("JELLYFIN_PRIVATE_NATIVE_BACKEND_OBSERVATION=" + json.dumps({
+                    "active_sessions": private_backend.count(),
+                    "origin_calls": len(private_backend.upstream.calls),
+                    "cache_files": len(transcode_cache_files(base)),
+                }, sort_keys=True), flush=True)
             print("Private native fixture failed; raw local logs omitted", flush=True)
         else:
             print("Disposible CI Jellyfin errors:\n" + "\n".join(recent))

@@ -198,10 +198,15 @@ jobs:
           run_gate catalog-race env RUNNER_TEMP="$RUNNER_TEMP/catalog-race" VIVOAPK_CI_CATEGORY_MODE=1 python3 -u jellyfin-auth/tests/catalog_concurrency_probe.py
           dotnet build jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj -c Release -t:Rebuild -p:NativePlaybackLabBuild=true
           echo "SYNTHETIC_PLUGIN_SHA256=$(sha256sum "$plugin" | cut -d ' ' -f1)" | tee -a "$evidence"
+          # Exercise the previously failing gate first in the disposable native build.
+          run_gate native-private-hls env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
+          if (( failed != 0 )); then
+            echo "PRIVATE_HLS_GATE_FAILED_BEFORE_REMAINING_NATIVE_REGRESSION=1" | tee -a "$evidence"
+            exit "$failed"
+          fi
           run_gate native-server-ffmpeg env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           run_gate native-long-cache env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_LONG_CACHE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           run_gate native-infinite-live env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_INFINITE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          run_gate native-private-hls env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           echo "COMBINED_LAB_GATE_EXIT=$failed" | tee -a "$evidence"
           exit "$failed"
       - name: Save synthetic-only player compatibility observations
