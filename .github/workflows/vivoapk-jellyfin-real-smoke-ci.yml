@@ -56,16 +56,37 @@ jobs:
           git -C "$source_dir" apply --check "$patch"
           git -C "$source_dir" apply "$patch"
           git -C "$source_dir" diff --check
+          # Read the real installed assembly metadata before setting any version property.
+          runtime_dir="$(dirname "$(realpath "$JELLYFIN_TEST_BINARY")")"
+          case "$runtime_dir/" in "$RUNNER_TEMP"/jellyfin-test-bin/*) ;; *) exit 1 ;; esac
+          original="$runtime_dir/Jellyfin.LiveTv.dll"
+          test -s "$original"
+          identity_dir="$RUNNER_TEMP/jellyfin-assembly-identity"
+          dotnet new console --no-restore -n AssemblyIdentity -f net10.0 -o "$identity_dir"
+          cp "$GITHUB_WORKSPACE/jellyfin-auth/tests/assembly_identity.cs" "$identity_dir/Program.cs"
+          dotnet build "$identity_dir/AssemblyIdentity.csproj" -c Release --nologo
+          identity_tool="$identity_dir/bin/Release/net10.0/AssemblyIdentity.dll"
+          dotnet "$identity_tool" show "$original"
+          assembly_version="$(dotnet "$identity_tool" version "$original")"
+          file_version="$(dotnet "$identity_tool" file-version "$original")"
+          [[ "$assembly_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$file_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
           (
             cd "$source_dir"
             dotnet test tests/Jellyfin.LiveTv.Tests/Jellyfin.LiveTv.Tests.csproj -c Release --filter 'FullyQualifiedName~ChannelManagerTests'
-            dotnet build src/Jellyfin.LiveTv/Jellyfin.LiveTv.csproj -c Release -o "$output_dir"
+            # Observe the SDK's ordinary build before forcing the official identity.
+            default_assembly="src/Jellyfin.LiveTv/bin/Release/net10.0/Jellyfin.LiveTv.dll"
+            if test -s "$default_assembly"; then
+              echo "Unversioned build identity:"
+              dotnet "$identity_tool" show "$default_assembly"
+            fi
+            dotnet build src/Jellyfin.LiveTv/Jellyfin.LiveTv.csproj -c Release -t:Rebuild -o "$output_dir" \
+              -p:AssemblyVersion="$assembly_version" -p:FileVersion="$file_version"
           )
-          # Replace only the affected assembly in the disposable official binary tree.
-          runtime_dir="$(dirname "$(realpath "$JELLYFIN_TEST_BINARY")")"
-          case "$runtime_dir/" in "$RUNNER_TEMP"/jellyfin-test-bin/*) ;; *) exit 1 ;; esac
-          test -s "$runtime_dir/Jellyfin.LiveTv.dll"
+          # Never install even a test assembly until identity and changed references are verified.
           test -s "$output_dir/Jellyfin.LiveTv.dll"
+          dotnet "$identity_tool" verify "$original" "$output_dir/Jellyfin.LiveTv.dll" "$runtime_dir"
+          # Replace only the affected assembly in the disposable official binary tree.
           cp "$runtime_dir/Jellyfin.LiveTv.dll" "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll"
           install -m 0644 "$output_dir/Jellyfin.LiveTv.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
           sha256sum "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
