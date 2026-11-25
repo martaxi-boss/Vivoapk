@@ -1,6 +1,8 @@
 #if VIVOAPK_NATIVE_PLAYBACK_LAB
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.MediaEncoding;
@@ -233,6 +235,13 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 var info = parts.Length >= 3 &&
                     parts[0].Equals("Items", StringComparison.OrdinalIgnoreCase) &&
                     parts[2].Equals("PlaybackInfo", StringComparison.OrdinalIgnoreCase);
+                if (PrivateHlsNativeLab.Enabled && HttpMethods.IsPost(http.Request.Method)
+                    && (http.Request.Path.Value ?? "").Equals("/Sessions/Playing/Stopped",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    await StopPrivateFixtureAsync(http, downstream).ConfigureAwait(false);
+                    return;
+                }
                 if (!media && !info)
                 {
                     await downstream(http).ConfigureAwait(false);
@@ -258,12 +267,108 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
 
                 http.Response.Headers.CacheControl = "no-store";
                 http.Response.Headers["X-Vivoapk-Lab-Guard"] = "allowed";
-                await downstream(http).ConfigureAwait(false);
+                if (PrivateHlsNativeLab.Enabled && info)
+                    await PrivatePlaybackInfoAsync(http, downstream).ConfigureAwait(false);
+                else
+                    await downstream(http).ConfigureAwait(false);
                 if (media)
                     ObserveFixtureSegment(http, owner, id, logger);
             });
             next(app);
         };
+    }
+
+    private static async Task PrivatePlaybackInfoAsync(HttpContext http, RequestDelegate downstream)
+    {
+        // Only the synthetic PlaybackInfo response is buffered. The native
+        // MediaSource and cache retain the private source for server FFmpeg.
+        var original = http.Response.Body;
+        await using var buffer = new MemoryStream();
+        http.Response.Body = buffer;
+        try
+        {
+            await downstream(http).ConfigureAwait(false);
+            if (buffer.Length > 512 * 1024)
+                throw new InvalidOperationException("Oversized fixture playback response");
+            if (http.Response.StatusCode == 200)
+            {
+                buffer.Position = 0;
+                var node = await JsonNode.ParseAsync(buffer, cancellationToken: http.RequestAborted)
+                    .ConfigureAwait(false) ?? throw new InvalidOperationException("Missing playback response");
+                PrivateHlsNativeLab.SanitizePlaybackInfo(node);
+                var content = JsonSerializer.SerializeToUtf8Bytes(node);
+                http.Response.ContentLength = content.Length;
+                http.Response.Body = original;
+                await original.WriteAsync(content, http.RequestAborted).ConfigureAwait(false);
+            }
+            else
+            {
+                buffer.Position = 0;
+                http.Response.Body = original;
+                await buffer.CopyToAsync(original, http.RequestAborted).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or JsonException)
+        {
+            http.Response.Body = original;
+            if (http.Response.HasStarted)
+                http.Abort();
+            else
+            {
+                http.Response.StatusCode = 404;
+                http.Response.ContentLength = 0;
+            }
+        }
+        finally { http.Response.Body = original; }
+    }
+
+    private static async Task StopPrivateFixtureAsync(HttpContext http, RequestDelegate downstream)
+    {
+        var logger = http.RequestServices.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
+        if (http.Request.ContentLength is not long length || length is < 1 or > 16384)
+        {
+            Reject(http, logger);
+            return;
+        }
+        Guid item = Guid.Empty;
+        string? session = null;
+        http.Request.EnableBuffering();
+        try
+        {
+            using var json = await JsonDocument.ParseAsync(http.Request.Body,
+                cancellationToken: http.RequestAborted).ConfigureAwait(false);
+            foreach (var prop in json.RootElement.EnumerateObject())
+            {
+                if (prop.Name.Equals("ItemId", StringComparison.OrdinalIgnoreCase))
+                    Guid.TryParse(prop.Value.GetString(), out item);
+                if (prop.Name.Equals("PlaySessionId", StringComparison.OrdinalIgnoreCase))
+                    session = prop.Value.GetString();
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            Reject(http, logger);
+            return;
+        }
+        finally { http.Request.Body.Position = 0; }
+        if (item == Guid.Empty || session is null || !Guid.TryParse(session, out _))
+        {
+            Reject(http, logger);
+            return;
+        }
+        var owner = await NativePlaybackAuthorization.AuthorizeAsync(http, item,
+            NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+        var lab = http.RequestServices.GetRequiredService<PrivateHlsNativeLab>();
+        var jobs = http.RequestServices.GetRequiredService<ITranscodeManager>();
+        if (owner == Guid.Empty || !await lab.MatchesJobAsync(owner, jobs.GetTranscodingJob(session),
+                http.User.FindFirst("Jellyfin-DeviceId")?.Value, session, http.RequestAborted).ConfigureAwait(false))
+        {
+            Reject(http, logger);
+            return;
+        }
+        await downstream(http).ConfigureAwait(false);
+        if (http.Response.StatusCode is 200 or 204)
+            await lab.CloseAsync(owner, http.RequestAborted).ConfigureAwait(false);
     }
 
     private static void Reject(HttpContext http, ILogger logger)

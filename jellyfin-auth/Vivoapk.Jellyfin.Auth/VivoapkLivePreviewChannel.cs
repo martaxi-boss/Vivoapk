@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -665,6 +666,17 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         // Jellyfin relay/transcode URL and never lands in the item database.
         if (NativePlaybackLab.Enabled)
         {
+#if VIVOAPK_NATIVE_PLAYBACK_LAB
+            if (PrivateHlsNativeLab.Enabled)
+            {
+                var privateLab = _httpContextAccessor?.HttpContext?.RequestServices
+                    .GetRequiredService<PrivateHlsNativeLab>();
+                var privateSource = privateLab is null ? null : await privateLab.CreateSourceAsync(
+                    snapshot.Owner, snapshot.Username, session.Value.Token, session.Value.Origin,
+                    kind, categoryId, providerId, platform, cancellationToken).ConfigureAwait(false);
+                return privateSource is null ? Array.Empty<MediaSourceInfo>() : new[] { privateSource };
+            }
+#endif
             var fixture = NativePlaybackLab.CreateSource(session.Value.Origin, kind, providerId);
             return fixture is null ? Array.Empty<MediaSourceInfo>() : new[] { fixture };
         }

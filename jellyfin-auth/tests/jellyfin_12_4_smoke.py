@@ -20,6 +20,9 @@ CATEGORY_MODE = os.environ.get("VIVOAPK_CI_CATEGORY_MODE") == "1"
 SERVER_PLAYBACK = os.environ.get("VIVOAPK_CI_SERVER_PLAYBACK") == "1"
 LONG_CACHE = os.environ.get("VIVOAPK_CI_LONG_CACHE") == "1"
 INFINITE_LIVE = os.environ.get("VIVOAPK_CI_INFINITE_LIVE") == "1"
+PRIVATE_HLS = os.environ.get("VIVOAPK_CI_PRIVATE_HLS") == "1"
+if PRIVATE_HLS and (not SERVER_PLAYBACK or LONG_CACHE or INFINITE_LIVE):
+    raise RuntimeError("Private HLS requires independent native lab gate")
 if INFINITE_LIVE and (not SERVER_PLAYBACK or LONG_CACHE):
     raise RuntimeError("Infinite live probe requires separate native lab mode")
 if LONG_CACHE and not SERVER_PLAYBACK:
@@ -57,8 +60,8 @@ class BackendHandler(socketserver.StreamRequestHandler):
             if route == b"/v1/catalog/category-items":
                 self.server.category_item_calls += 1
             auth = headers.get(b"authorization", b"")
-            is_a = auth == b"Bearer ci-session-a"
-            is_b = auth == b"Bearer ci-session-b"
+            is_a = auth == ("Bearer " + self.server.tokens["a"]).encode()
+            is_b = auth == ("Bearer " + self.server.tokens["b"]).encode()
             name = "Azul" if is_a else "Verde"
             kind = request.get("kind", "series" if route == b"/v1/catalog/series" else "live")
             if kind == "live":
@@ -122,11 +125,11 @@ class BackendHandler(socketserver.StreamRequestHandler):
                 }).encode()
         elif route in (b"/v1/catalog/preview", b"/v1/catalog/list"):
             auth = headers.get(b"authorization", b"")
-            if auth not in (b"Bearer ci-session-a", b"Bearer ci-session-b"):
+            if auth not in tuple(("Bearer " + t).encode() for t in self.server.tokens.values()):
                 response_code = b"401 Unauthorized"
                 body = b'{"detail":"Unauthorized"}'
             else:
-                name = "Canal CI Azul" if auth.endswith(b"-a") else "Canal CI Verde"
+                name = "Canal CI Azul" if auth == ("Bearer " + self.server.tokens["a"]).encode() else "Canal CI Verde"
                 response_code = b"200 OK"
                 expanded = [{"id": str(42 + i),
                              "title": name if i == 0 else name + " " + str(i),
@@ -160,8 +163,8 @@ class BackendHandler(socketserver.StreamRequestHandler):
             response_code = b"200 OK"
             body = json.dumps({
                 "code": "SUCCESS" if valid else "INVALID_CREDENTIALS",
-                "session_token": ("ci-session-b" if request.get("username") ==
-                                  "synthetic-mega-user-b" else "ci-session-a") if valid else None,
+                "session_token": self.server.tokens["b" if request.get("username") ==
+                                  "synthetic-mega-user-b" else "a"] if valid else None,
                 "xtream_base_url": (
                     self.server.provider_origin_tv if request.get("platform") in ("tizen", "webos")
                     else self.server.provider_origin) if valid else None,
@@ -1559,6 +1562,120 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
                                 owner_token, foreign_token, cache_baseline, input_digest)
 
 
+def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
+                          base, private_backend, mock):
+    """Native authenticated Jellyfin endpoints, real UDS backend and native FFmpeg."""
+    profile = {
+        "Name": "CI private HLS native server",
+        "MaxStreamingBitrate": 2000000, "MaxStaticBitrate": 2000000,
+        "DirectPlayProfiles": [],
+        "TranscodingProfiles": [{"Type": "Video", "Container": "ts", "Protocol": "hls",
+                                 "VideoCodec": "h264", "AudioCodec": "aac", "Context": "Streaming"}],
+    }
+    baseline = transcode_cache_files(base)
+
+    def negotiate(item, owner, token, other):
+        code, info = request("POST", "/Items/" + item + "/PlaybackInfo?UserId=" + owner,
+            {"DeviceProfile": profile, "AutoOpenLiveStream": True,
+             "EnableDirectPlay": False, "EnableDirectStream": False, "EnableTranscoding": True,
+             "AllowVideoStreamCopy": False, "AllowAudioStreamCopy": False,
+             "MaxStreamingBitrate": 2000000}, token=token)
+        serialized = json.dumps(info).lower()
+        if any(secret in serialized for secret in ("/vivoapk/", "private-hls-fixture",
+                                                   "fixture-private-password", "media.example.com")):
+            raise RuntimeError("Private origin exposed in native PlaybackInfo")
+        sources = [s for s in (info or {}).get("MediaSources", [])
+                   if s.get("SupportsTranscoding") and not s.get("SupportsDirectPlay")
+                   and s.get("TranscodingUrl")]
+        if code != 200 or len(sources) != 1:
+            raise RuntimeError("Private native negotiation failed: HTTP " + str(code))
+        source = sources[0]
+        master = native_route("/", source["TranscodingUrl"], item)
+        require_native_denial(master, token, other, "private_master_before_owner")
+        body = require_native_owner(master, token, "private_master")
+        route = master
+        if b"#EXT-X-STREAM-INF" in body:
+            media = next(line for line in body.decode().splitlines()
+                         if line and not line.startswith("#"))
+            route = native_route(master, media, item)
+            body = require_native_owner(route, token, "private_playlist")
+        segments = [native_route(route, line, item) for line in body.decode().splitlines()
+                    if line and not line.startswith("#")]
+        if not segments:
+            raise RuntimeError("Private native stream has no segments")
+        require_native_denial(segments[0], token, other, "private_segment_foreign")
+        segment = require_native_owner(segments[0], token, "private_segment")
+        if b"#EXTM3U" in segment or len(segment) < 188 or segment[0] != 0x47:
+            raise RuntimeError("Private native media not MPEG-TS")
+        session = info.get("PlaySessionId") or next(
+            (v for k, v in parse_qsl(urlsplit(master).query) if k.lower() == "playsessionid"), None)
+        if not session:
+            raise RuntimeError("Missing native private play session")
+        return {"item": item, "token": token, "session": session, "source": source["Id"],
+                "route": master, "segment": segments[0], "data": segment}
+
+    a = negotiate(item_a, owner_a, token_a, token_b)
+    b = negotiate(item_b, owner_b, token_b, token_a)
+    if private_backend.count() != 2 or a["session"] == b["session"]:
+        raise RuntimeError("Two private native sessions not independently admitted")
+    digests = []
+    for label, state in (("a", a), ("b", b)):
+        path = base / ("private-native-output-" + label + ".ts")
+        path.write_bytes(state["data"])
+        try:
+            probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                "stream=codec_type,codec_name", "-of", "json", str(path)],
+                capture_output=True, text=True, check=True, timeout=30)
+            codecs = {(s["codec_type"], s["codec_name"])
+                      for s in json.loads(probe.stdout)["streams"]}
+            if not {("video", "h264"), ("audio", "aac")}.issubset(codecs):
+                raise RuntimeError("Unexpected native private output codecs")
+            decoded = subprocess.run(["ffmpeg", "-hide_banner", "-v", "error", "-i", str(path),
+                "-map", "0:v:0", "-map", "0:a:0", "-f", "framemd5", "pipe:1"],
+                capture_output=True, text=True, check=True, timeout=30)
+            video = [line for line in decoded.stdout.splitlines() if line.startswith("0,")]
+            audio = [line for line in decoded.stdout.splitlines() if line.startswith("1,")]
+            if len(video) < 20 or len(audio) < 20:
+                raise RuntimeError("Private native output lacked decoded image/audio")
+            digests.append(video[0].split(",")[-1])
+            print("JELLYFIN_PRIVATE_NATIVE_DECODE=" + json.dumps({
+                "fixture": label, "video_frames": len(video), "audio_frames": len(audio),
+                "codecs": "h264/aac"}, sort_keys=True), flush=True)
+        finally:
+            path.unlink(missing_ok=True)
+    if digests[0] == digests[1]:
+        raise RuntimeError("Private native streams returned same picture")
+    print("JELLYFIN_PRIVATE_NATIVE_TWO_ACCOUNT_DECODE=PASS", flush=True)
+
+    def stop(state, token):
+        return request("POST", "/Sessions/Playing/Stopped",
+            {"ItemId": state["item"], "PlaySessionId": state["session"],
+             "MediaSourceId": state["source"], "PositionTicks": 20000000}, token=token)[0]
+
+    if stop(a, token_b) != 404 or private_backend.count() != 2:
+        raise RuntimeError("Foreign native stop was not isolated")
+    mock.statuses["synthetic-mega-user"] = "EXPIRED"
+    try:
+        require_denied_response(native_bytes(safe_fixture_route(a["segment"], token_a), token_a),
+                                "private_cached_segment", "expired")
+        require_native_owner(b["segment"], token_b, "private_surviving_segment")
+    finally:
+        mock.statuses["synthetic-mega-user"] = "ACTIVE"
+    if stop(a, token_a) not in (200, 204) or private_backend.count() != 1:
+        raise RuntimeError("Private native stop did not close exact backend session")
+    require_native_owner(b["segment"], token_b, "private_surviving_after_stop")
+    if stop(b, token_b) not in (200, 204) or private_backend.count() != 0:
+        raise RuntimeError("Second private native stop did not close backend")
+    deadline = time.monotonic() + 20
+    while transcode_cache_files(base).keys() - baseline.keys() and time.monotonic() < deadline:
+        time.sleep(.4)
+    if transcode_cache_files(base).keys() - baseline.keys():
+        raise RuntimeError("Private native stop left transcoding cache")
+    private_backend.check_cleanup()
+    print("JELLYFIN_PRIVATE_NATIVE_STOP_CACHE_AND_BACKEND_CLEANUP=PASS", flush=True)
+    print("JELLYFIN_PRIVATE_NATIVE_PLAYBACKINFO_NO_INTERNAL_ORIGIN=PASS", flush=True)
+
+
 def request_png(uri, *, token):
     """Read only local disposable Jellyfin PNG bytes, never a provider URL."""
     conn = Connection(DATAROOT / "run/jellyfin.sock")
@@ -1580,6 +1697,7 @@ def request_png(uri, *, token):
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-private-hls-smoke" if PRIVATE_HLS else
         "vivo-jellyfin-12.4-infinite-live-smoke" if INFINITE_LIVE else
         "vivo-jellyfin-12.4-native-long-cache-smoke" if LONG_CACHE else
         "vivo-jellyfin-12.4-native-ffmpeg-smoke" if SERVER_PLAYBACK else
@@ -1603,6 +1721,8 @@ def main():
     monitor_key_path.chmod(0o600)
     mock = BackendServer(str(MOCK), BackendHandler)
     mock.category_item_calls = 0
+    mock.tokens = {"a": "ci-session-a", "b": "ci-session-b"}
+    private_backend = None
     synthetic_media = base / "synthetic-provider"
     synthetic_media.mkdir()
     subprocess.run([
@@ -1647,6 +1767,10 @@ def main():
         "synthetic-mega-user": "ACTIVE",
         "synthetic-mega-user-b": "ACTIVE",
     }
+    if PRIVATE_HLS:
+        from private_backend_fixture import PrivateBackend
+        private_backend = PrivateBackend(base, mock.statuses)
+        mock.tokens = private_backend.tokens
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     env = os.environ.copy()
     env.update({
@@ -1947,6 +2071,11 @@ def main():
         if pilot_item_id == item_id_b:
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
         if SERVER_PLAYBACK:
+            if PRIVATE_HLS:
+                verify_private_native(pilot_item_id, account_a, customer["AccessToken"],
+                                      item_id_b, account_b, customer_b["AccessToken"],
+                                      base, private_backend, mock)
+                return
             verify_native_ffmpeg(pilot_item_id, account_a, customer["AccessToken"],
                                  customer_b["AccessToken"], base, provider, mock,
                                  second_item=item_id_b, second_owner=account_b)
@@ -2811,7 +2940,10 @@ def main():
     except Exception:
         log.flush()
         recent = (base / "logs/jellyfin-launch.log").read_text(errors="replace").splitlines()[-35:]
-        print("Disposible CI Jellyfin errors:\n" + "\n".join(recent))
+        if PRIVATE_HLS:
+            print("Private native fixture failed; raw local logs omitted", flush=True)
+        else:
+            print("Disposible CI Jellyfin errors:\n" + "\n".join(recent))
         raise
     finally:
         jellyfin.terminate()
@@ -2819,6 +2951,8 @@ def main():
             jellyfin.wait(timeout=10)
         except subprocess.TimeoutExpired:
             jellyfin.kill()
+        if private_backend is not None:
+            private_backend.close()
         mock.shutdown()
         mock.server_close()
         provider.live_stop.set()
