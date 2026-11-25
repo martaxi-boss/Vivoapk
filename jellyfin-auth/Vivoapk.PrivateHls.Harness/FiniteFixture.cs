@@ -32,6 +32,42 @@ internal static class FiniteFixture
             if (stats.Peak > 3 || stats.Timeouts != 0 || stats.Failures != 0)
                 throw new InvalidOperationException("Private reader operation failed");
         }
+        // Probe through the actual protected lease, not the original file,
+        // and check the generated fixture's real metadata. No fixture codec
+        // or dimensions are passed to the production candidate parser.
+        var probe = Path.Combine(Path.GetDirectoryName(get("ffmpeg"))!, "ffprobe");
+        var observed = await Task.WhenAll(bridge.ProbeAsync(ownerA, a, probe, ct),
+            bridge.ProbeAsync(ownerB, b, probe, ct));
+        foreach (var info in observed)
+        {
+            var video = info.Streams.Single(s => s.Video);
+            var audio = info.Streams.Single(s => !s.Video);
+            if (info.Container != "mp4" || info.DurationTicks is not long ticks
+                || Math.Abs(ticks - TimeSpan.FromSeconds(12).Ticks) > TimeSpan.FromMilliseconds(100).Ticks
+                || video.Codec != "h264" || video.Width != 640 || video.Height != 360
+                || video.FrameRate != 25 || audio.Codec != "aac" || audio.Channels != 1
+                || audio.SampleRate != 48000)
+                throw new InvalidOperationException("Private media metadata differs from fixture");
+        }
+        await Task.WhenAll(DrainReaders(ownerA, a, "movie_after_probe"),
+            DrainReaders(ownerB, b, "episode_after_probe"));
+        // Foreign ownership and arbitrary local URL must be rejected before
+        // launching a probe, independent of the caller's guessed media path.
+        try
+        {
+            await bridge.ProbeAsync(ownerB, a, probe, ct);
+            throw new Exception("Cross-owner probe accepted");
+        }
+        catch (InvalidOperationException) { }
+        try
+        {
+            var forged = new PrivateHlsLoopback.Lease(a.Id,
+                new Uri(a.Playlist, "file?unexpected=1"));
+            await bridge.ProbeAsync(ownerA, forged, probe, ct);
+            throw new Exception("Forged probe accepted");
+        }
+        catch (InvalidOperationException) { }
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_PROBED_METADATA_AND_DENIAL=PASS");
         var fixtures = new[] { (Lease: a, Reference: get("movie_reference"), Label: "movie"),
                               (Lease: b, Reference: get("episode_reference"), Label: "episode") };
         foreach (var item in fixtures)

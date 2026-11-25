@@ -9,6 +9,7 @@ on:
       - 'backend/tests/test_private_file_api.py'
       - 'backend/tests/private_loopback_fixture.py'
       - 'jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateHls*.cs'
+      - 'jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateMediaProbe.cs'
       - 'jellyfin-auth/Vivoapk.PrivateHls.Harness/**'
       - '.github/workflows/vivoapk-private-loopback-ci.yml'
   workflow_dispatch:

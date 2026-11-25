@@ -1,7 +1,5 @@
 #if VIVOAPK_NATIVE_PLAYBACK_LAB
 using MediaBrowser.Model.Dto;
-using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.MediaInfo;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
@@ -43,24 +41,12 @@ internal static class PrivateHlsNativeLab
             var finite = NativePlaybackLab.CreateSource(origin, "live", "42");
             if (finite is null)
                 return null;
-            // Matches the generated fixture's actual streams; never used
-            // for unprobed real media. The lease replaces the placeholder
-            // fixture URL before it is handed back to Jellyfin.
-            finite.Name = "Synthetic private finite native fixture";
-            finite.Container = "mp4";
-            finite.IsInfiniteStream = false;
-            finite.AnalyzeDurationMs = null;
-            finite.RunTimeTicks = TimeSpan.FromSeconds(12).Ticks;
-            finite.Bitrate = 12000000;
-            finite.MediaStreams = new List<MediaStream>
-            {
-                new() { Index = 0, Type = MediaStreamType.Video, Codec = "h264",
-                    Width = 640, Height = 360, AverageFrameRate = 25, BitRate = 11000000 },
-                new() { Index = 1, Type = MediaStreamType.Audio, Codec = "aac",
-                    Channels = 1, SampleRate = 48000, BitRate = 69000 }
-            };
-            return await transport.BindSourceAsync(owner, token, category, asset, platform,
-                finite, ct, kind, series).ConfigureAwait(false);
+            string? verifiedFfmpeg = Environment.GetEnvironmentVariable("VIVOAPK_EXPECTED_FFMPEG");
+            if (verifiedFfmpeg is null || !Path.IsPathFullyQualified(verifiedFfmpeg))
+                return null;
+            var executable = Path.Combine(Path.GetDirectoryName(verifiedFfmpeg)!, "ffprobe");
+            return await transport.BindProbedSourceAsync(owner, token, category, asset, platform,
+                executable, ct, kind, series).ConfigureAwait(false);
         }
         if ((username == "synthetic-mega-user" ? category != "10" : category != "20")
             || kind != "live" || asset != "42" || series is not null)

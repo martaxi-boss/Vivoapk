@@ -171,6 +171,25 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         finally { _admission.Release(); }
     }
 
+    internal async Task<PrivateMediaProbe.Observation> ProbeAsync(Guid owner, Lease lease,
+        string executable, CancellationToken ct)
+    {
+        if (!_entries.TryGetValue(lease.Id, out var entry) || entry.Owner != owner)
+            throw new InvalidOperationException("Private media session unavailable");
+        bool finite = entry.File is not null;
+        if (finite && entry.File!.Mime != "video/mp4")
+            throw new InvalidOperationException("Private media format not yet certified");
+        var exact = new Uri(_base, "/vivoapk/" + lease.Id + (finite ? "/file" : "/index.m3u8"));
+        if (lease.Playlist != exact)
+            throw new InvalidOperationException("Private media identity mismatch");
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            ct, entry.Retired.Token, _stopping.Token);
+        // Do not hold the backend grant lock: the probe must consume its
+        // ordinary authenticated HTTP windows through the existing bridge.
+        return await PrivateMediaProbe.ReadAsync(executable, exact, finite, lifetime.Token)
+            .ConfigureAwait(false);
+    }
+
     internal async Task CloseAsync(Guid owner, Lease lease, CancellationToken ct)
     {
         if (!_entries.TryGetValue(lease.Id, out var entry) || entry.Owner != owner)

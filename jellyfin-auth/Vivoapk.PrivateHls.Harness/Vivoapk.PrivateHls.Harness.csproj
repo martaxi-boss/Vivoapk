@@ -10,5 +10,6 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateHlsSocketClient.cs" Link="PrivateHlsSocketClient.cs" />
     <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateHlsLoopback.cs" Link="PrivateHlsLoopback.cs" />
+    <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateMediaProbe.cs" Link="PrivateMediaProbe.cs" />
   </ItemGroup>
 </Project>

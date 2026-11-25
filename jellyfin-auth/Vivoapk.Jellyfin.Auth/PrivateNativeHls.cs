@@ -1,5 +1,7 @@
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.MediaInfo;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
@@ -15,22 +17,32 @@ internal sealed class PrivateNativeHls(string socketPath, string keyPath) : IAsy
     private PrivateHlsLoopback? _bridge;
 
     private sealed record BoundLease(string Kind, string Category, string Asset, string? Series,
-        string Platform, PrivateHlsLoopback.Lease Lease);
+        string Platform, PrivateHlsLoopback.Lease Lease)
+    {
+        internal PrivateMediaProbe.Observation? Metadata { get; set; }
+    }
+
+    internal Task<MediaSourceInfo?> BindProbedSourceAsync(Guid owner, string token,
+        string category, string asset, string platform, string executable, CancellationToken ct,
+        string kind = "live", string? series = null)
+        => BindSourceAsync(owner, token, category, asset, platform, null, ct, kind, series, executable);
 
     internal async Task<MediaSourceInfo?> BindSourceAsync(Guid owner, string token,
-        string category, string asset, string platform, MediaSourceInfo source, CancellationToken ct,
-        string kind = "live", string? series = null)
+        string category, string asset, string platform, MediaSourceInfo? source, CancellationToken ct,
+        string kind = "live", string? series = null, string? probeExecutable = null)
     {
         // The metadata is supplied by the authorized host, not guessed from
         // the catalogue or an arbitrary client URL. The transport replaces
         // the input path with its own opaque, process-private capability.
-        if (owner == Guid.Empty || source.SupportsDirectPlay || !source.SupportsTranscoding
-            || source.RequiresOpening || source.RequiresClosing
+        if (owner == Guid.Empty || (source is null && string.IsNullOrEmpty(probeExecutable))
+            || (source is not null && (source.SupportsDirectPlay || !source.SupportsTranscoding
+                || source.RequiresOpening || source.RequiresClosing
+                || (kind != "live" && source.IsInfiniteStream)))
             || kind is not ("live" or "vod" or "series")
-            || (kind == "series" ? string.IsNullOrEmpty(series) : series is not null)
-            || (kind != "live" && source.IsInfiniteStream))
+            || (kind == "series" ? string.IsNullOrEmpty(series) : series is not null))
             return null;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
+        BoundLease? openedHere = null;
         try
         {
             if (_bridge is null)
@@ -49,10 +61,19 @@ internal sealed class PrivateNativeHls(string socketPath, string keyPath) : IAsy
                         .ConfigureAwait(false);
                 lease = new BoundLease(kind, category, asset, series, platform, opened);
                 _leases.Add(owner, lease);
+                openedHere = lease;
             }
             if (lease.Kind != kind || lease.Category != category || lease.Asset != asset
                 || lease.Series != series || lease.Platform != platform)
                 return null;
+            if (source is null)
+            {
+                // Probe only this admitted lease, never an origin supplied by
+                // a client. Cache typed observations for its exact lifetime.
+                lease.Metadata ??= await _bridge.ProbeAsync(owner, lease.Lease, probeExecutable!, ct)
+                    .ConfigureAwait(false);
+                source = FromObservation(lease.Metadata, kind);
+            }
             // Keep Id unset: ChannelManager.NormalizeMediaSources assigns the
             // actual item's native GUID (same contract as the passing finite
             // MPEG-TS fixture). DynamicHlsHelper.GetMasterPlaylistInternal
@@ -65,14 +86,56 @@ internal sealed class PrivateNativeHls(string socketPath, string keyPath) : IAsy
             return source;
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException
-            or UnauthorizedAccessException or OperationCanceledException)
+            or UnauthorizedAccessException or OperationCanceledException or System.Text.Json.JsonException
+            or System.ComponentModel.Win32Exception)
         {
+            // Never leave a newly opened, unpublished private capability
+            // behind after failed probing/negotiation. Do not touch any
+            // preexisting lease or another owner's session.
+            if (openedHere is not null && _bridge is not null
+                && _leases.TryGetValue(owner, out var current) && ReferenceEquals(current, openedHere))
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                try
+                {
+                    await _bridge.ReleaseRecoveredAsync(owner, openedHere.Lease, cleanup.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception failure) when (failure is InvalidOperationException or IOException
+                    or OperationCanceledException) { }
+                finally { _leases.Remove(owner); }
+            }
             return null;
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    private static MediaSourceInfo FromObservation(PrivateMediaProbe.Observation metadata, string kind)
+    {
+        bool infinite = kind == "live" && metadata.DurationTicks is null;
+        return new MediaSourceInfo
+        {
+            Name = "Private authorized media",
+            Protocol = MediaProtocol.Http,
+            IsRemote = true,
+            IsInfiniteStream = infinite,
+            AnalyzeDurationMs = infinite ? 5000 : null,
+            Container = metadata.Container,
+            RunTimeTicks = metadata.DurationTicks,
+            Bitrate = metadata.Bitrate,
+            MediaStreams = metadata.Streams.Select(s => new MediaStream
+            {
+                Index = s.Index, Type = s.Video ? MediaStreamType.Video : MediaStreamType.Audio,
+                Codec = s.Codec, Width = s.Width, Height = s.Height,
+                AverageFrameRate = s.FrameRate, Channels = s.Channels,
+                SampleRate = s.SampleRate, BitRate = s.Bitrate
+            }).ToList(),
+            SupportsDirectPlay = false, SupportsDirectStream = true, SupportsTranscoding = true,
+            SupportsProbing = false, RequiresOpening = false, RequiresClosing = false
+        };
     }
 
     internal async Task<bool> MatchesJobAsync(Guid owner, TranscodingJob? job, string? device,
