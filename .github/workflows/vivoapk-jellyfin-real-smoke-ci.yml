@@ -14,7 +14,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 18
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -39,6 +39,37 @@ jobs:
           echo "JELLYFIN_TEST_BINARY=$file" >> "$GITHUB_ENV"
           echo "JELLYFIN_TEST_WEB=$RUNNER_TEMP/jellyfin-test-web/usr/share/jellyfin/web" >> "$GITHUB_ENV"
           echo JELLYFIN_TEST_RUNTIME_READY=PASS
+      - name: Build proposed upstream catalogue fix on exact Jellyfin 12.4 source (lab only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/jellyfin-catalog-source"
+          output_dir="$RUNNER_TEMP/jellyfin-catalog-build"
+          mkdir -p "$source_dir" "$output_dir"
+          git -C "$source_dir" init -q
+          git -C "$source_dir" fetch --depth=1 https://github.com/jellyfin/jellyfin.git refs/tags/v12.4
+          test "$(git -C "$source_dir" rev-parse FETCH_HEAD)" = "83d0d0e7f76e23e2e085c8ff67d28b772d35967d"
+          git -C "$source_dir" checkout --detach FETCH_HEAD
+          test "$(git -C "$source_dir" hash-object src/Jellyfin.LiveTv/Channels/ChannelManager.cs)" = "256a652fd2b13f87d83049bfede12426013dce82"
+          # Reviewed upstream PR #18231 at 305190fced103cc9cba3f577c56ea607e6feea76.
+          patch="$GITHUB_WORKSPACE/jellyfin-auth/tests/upstream-jellyfin-18231.patch"
+          git -C "$source_dir" apply --check "$patch"
+          git -C "$source_dir" apply "$patch"
+          git -C "$source_dir" diff --check
+          (
+            cd "$source_dir"
+            dotnet test tests/Jellyfin.LiveTv.Tests/Jellyfin.LiveTv.Tests.csproj -c Release --filter 'FullyQualifiedName~ChannelManagerTests'
+            dotnet build src/Jellyfin.LiveTv/Jellyfin.LiveTv.csproj -c Release -o "$output_dir"
+          )
+          # Replace only the affected assembly in the disposable official binary tree.
+          runtime_dir="$(dirname "$(realpath "$JELLYFIN_TEST_BINARY")")"
+          case "$runtime_dir/" in "$RUNNER_TEMP"/jellyfin-test-bin/*) ;; *) exit 1 ;; esac
+          test -s "$runtime_dir/Jellyfin.LiveTv.dll"
+          test -s "$output_dir/Jellyfin.LiveTv.dll"
+          cp "$runtime_dir/Jellyfin.LiveTv.dll" "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll"
+          install -m 0644 "$output_dir/Jellyfin.LiveTv.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
+          sha256sum "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
+          echo JELLYFIN_UPSTREAM_18231_LAB_BUILD=PASS
       - name: Compare official Jellyfin FFmpeg 8.1.3 on disposable runner
         shell: bash
         run: |
@@ -83,7 +114,7 @@ jobs:
               failed=1
             fi
           }
-          # This isolated diagnostic branch runs only the cold-catalog probe.
+          # Compare against the unpatched baseline at d66a629; no production changes.
           run_gate catalog-race env VIVOAPK_CI_CATEGORY_MODE=1 python3 jellyfin-auth/tests/catalog_concurrency_probe.py
           exit "$failed"
       - name: Save synthetic-only player compatibility observations
