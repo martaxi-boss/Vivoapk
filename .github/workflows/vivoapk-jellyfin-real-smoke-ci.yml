@@ -83,12 +83,8 @@ jobs:
               failed=1
             fi
           }
-          run_gate standard python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          run_gate category env VIVOAPK_CI_CATEGORY_MODE=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          # Separate test-only compilation, never a production artifact.
-          dotnet build jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj -c Release -t:Rebuild -p:NativePlaybackLabBuild=true
-          run_gate native-server-ffmpeg env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          run_gate native-long-cache env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_LONG_CACHE=1 python3 jellyfin-auth/tests/jellyfin_12_4_smoke.py
+          # This isolated diagnostic branch runs only the cold-catalog probe.
+          run_gate catalog-race env VIVOAPK_CI_CATEGORY_MODE=1 python3 jellyfin-auth/tests/catalog_concurrency_probe.py
           exit "$failed"
       - name: Save synthetic-only player compatibility observations
         if: always()
