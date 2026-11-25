@@ -42,6 +42,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         internal long RenewAt = issued + grant.Seconds * 500L;
         internal readonly string SessionId = sessionId;
         internal readonly SemaphoreSlim Gate = new(1, 1);
+        // FFmpeg may open a second HTTP connection before closing its old
+        // connection when it seeks. Bound responses separately from the
+        // backend grant lock; never hold that lock during socket writes.
+        internal readonly SemaphoreSlim FileReaders = new(2, 2);
+        internal readonly CancellationTokenSource Retired = new();
         internal long LastUse = Environment.TickCount64;
     }
 
@@ -165,7 +170,13 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         {
             if (!_entries.TryRemove(new KeyValuePair<string, Entry>(lease.Id, entry)))
                 throw new InvalidOperationException("Private media session unavailable");
-            await _backend.CloseAsync(entry.Token, entry.SessionId, ct, finite: entry.File is not null).ConfigureAwait(false);
+            entry.Retired.Cancel();
+            try
+            {
+                await _backend.CloseAsync(entry.Token, entry.SessionId, ct, finite: entry.File is not null)
+                    .ConfigureAwait(false);
+            }
+            finally { entry.Token = ""; }
         }
         finally
         {
@@ -182,6 +193,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         {
             if (!_entries.TryRemove(new KeyValuePair<string, Entry>(lease.Id, entry)))
                 return;
+            entry.Retired.Cancel();
             try
             {
                 await _backend.CloseAsync(entry.Token, entry.SessionId, ct, finite: entry.File is not null).ConfigureAwait(false);
@@ -217,6 +229,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
                             continue;
                         if (!_entries.TryRemove(new KeyValuePair<string, Entry>(pair.Key, entry)))
                             continue;
+                        entry.Retired.Cancel();
                         if (now < entry.GrantExpires)
                         {
                             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stopping);
@@ -285,40 +298,69 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         return true;
     }
 
-    private async Task ServeFileAsync(HttpContext http, Entry entry, PrivateHlsSocketClient.FileInfo file,
-        long start, long end, bool partial)
+    private async Task<byte[]> ReadFileWindowAsync(string id, Entry entry,
+        PrivateHlsSocketClient.FileInfo file, long start, int length, CancellationToken ct)
     {
-        // Keep the existing bounded per-lease gate while streaming. The
-        // backend receives one bounded, authenticated window at a time;
-        // the client cannot submit an upstream URL or validator.
-        var ct = http.RequestAborted;
-        await RenewIfNeededAsync(entry, ct).ConfigureAwait(false);
-        if (HttpMethods.IsHead(http.Request.Method))
+        // Serialize exactly one backend operation and any grant rotation.
+        // A disconnected HTTP reader must not interrupt an already submitted
+        // bounded operation and lose the returned rotated grant. The socket
+        // client enforces its own 30-second deadline; cancellation prevents
+        // new operations and prevents delivery of a completed old window.
+        if (!await entry.Gate.WaitAsync(TimeSpan.FromSeconds(35), ct).ConfigureAwait(false))
+            throw new InvalidOperationException("Private file operation busy");
+        try
         {
-            // An actual one-byte authorized read ensures HEAD does not
-            // expose stale metadata after entitlement revocation.
-            _ = await _backend.ReadFileAsync(entry.Token, entry.SessionId, file, start, 1, ct)
-                .ConfigureAwait(false);
-            SetFileHeaders(http, file, start, end, partial);
+            ct.ThrowIfCancellationRequested();
+            if (!_entries.TryGetValue(id, out var current) || !ReferenceEquals(current, entry)
+                || Environment.TickCount64 - entry.LastUse >= 90000)
+                throw new InvalidOperationException("Private media session unavailable");
+            await RenewIfNeededAsync(entry, CancellationToken.None).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            var bytes = await _backend.ReadFileAsync(entry.Token, entry.SessionId, file,
+                start, length, CancellationToken.None).ConfigureAwait(false);
             entry.LastUse = Environment.TickCount64;
-            return;
+            ct.ThrowIfCancellationRequested();
+            return bytes;
         }
-        // Obtain the first window before sending any successful response.
-        // Later errors abort the response rather than delivering a truncated
-        // representation as if it were a complete file.
-        for (long offset = start; offset <= end;)
+        finally { entry.Gate.Release(); }
+    }
+
+    private async Task ServeFileAsync(HttpContext http, string id, Entry entry,
+        PrivateHlsSocketClient.FileInfo file, long start, long end, bool partial)
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            http.RequestAborted, entry.Retired.Token, _stopping.Token);
+        var ct = lifetime.Token;
+        if (!entry.FileReaders.Wait(0))
+            throw new InvalidOperationException("Private file reader limit");
+        try
         {
-            await RenewIfNeededAsync(entry, ct).ConfigureAwait(false);
-            int length = (int)Math.Min(PrivateHlsSocketClient.FileWindowBytes, end - offset + 1);
-            var body = await _backend.ReadFileAsync(entry.Token, entry.SessionId, file, offset, length, ct)
-                .ConfigureAwait(false);
-            if (offset == start)
+            if (HttpMethods.IsHead(http.Request.Method))
+            {
+                _ = await ReadFileWindowAsync(id, entry, file, start, 1, ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
                 SetFileHeaders(http, file, start, end, partial);
-            await http.Response.Body.WriteAsync(body, ct).ConfigureAwait(false);
-            await http.Response.Body.FlushAsync(ct).ConfigureAwait(false);
-            entry.LastUse = Environment.TickCount64;
-            offset += body.Length;
+                return;
+            }
+            for (long offset = start; offset <= end;)
+            {
+                int length = (int)Math.Min(PrivateHlsSocketClient.FileWindowBytes, end - offset + 1);
+                var body = await ReadFileWindowAsync(id, entry, file, offset, length, ct)
+                    .ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                if (offset == start)
+                    SetFileHeaders(http, file, start, end, partial);
+                // Gate is free here. A second authenticated range can open
+                // even while the first connection is blocked on backpressure.
+                // Bound a stalled response, and never buffer a whole file.
+                using var writeDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                writeDeadline.CancelAfter(TimeSpan.FromSeconds(20));
+                await http.Response.Body.WriteAsync(body, writeDeadline.Token).ConfigureAwait(false);
+                await http.Response.Body.FlushAsync(writeDeadline.Token).ConfigureAwait(false);
+                offset += body.Length;
+            }
         }
+        finally { entry.FileReaders.Release(); }
     }
 
     private static void SetFileHeaders(HttpContext http, PrivateHlsSocketClient.FileInfo file,
@@ -381,6 +423,12 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         bool locked = false;
         try
         {
+            if (entry.File is { } finiteFile)
+            {
+                await ServeFileAsync(http, parts[2], entry, finiteFile, start, end, partial)
+                    .ConfigureAwait(false);
+                return;
+            }
             locked = await entry.Gate.WaitAsync(TimeSpan.FromSeconds(10), http.RequestAborted)
                 .ConfigureAwait(false);
             if (!locked || !_entries.TryGetValue(parts[2], out var current)
@@ -388,11 +436,6 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
                 || Environment.TickCount64 - entry.LastUse >= 90000)
             {
                 http.Response.StatusCode = 404;
-                return;
-            }
-            if (entry.File is { } finiteFile)
-            {
-                await ServeFileAsync(http, entry, finiteFile, start, end, partial).ConfigureAwait(false);
                 return;
             }
             await RenewIfNeededAsync(entry, http.RequestAborted).ConfigureAwait(false);
@@ -441,7 +484,8 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             }
             catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException)
             {
-                _entries.TryRemove(pair.Key, out _);
+                if (_entries.TryRemove(pair.Key, out var retired))
+                    retired.Retired.Cancel();
             }
         }
         await _app.StopAsync().ConfigureAwait(false);

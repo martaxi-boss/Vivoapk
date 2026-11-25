@@ -110,7 +110,7 @@ def generate_file(ffmpeg, path, suffix, frequency):
     # An ordinary MP4 'free' box at the end makes the multi-window byte
     # contract deterministic without forcing an expensive encode.
     import struct
-    minimum = 4 * 1024 * 1024 + 8192
+    minimum = 16 * 1024 * 1024 + 8192
     size = path.stat().st_size
     if size < minimum:
         padding = minimum - size

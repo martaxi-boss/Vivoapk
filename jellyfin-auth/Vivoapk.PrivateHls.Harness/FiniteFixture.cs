@@ -54,6 +54,45 @@ internal static class FiniteFixture
         }
         Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_FILE_MULTIWINDOW_AND_RANDOM_RANGE=PASS");
 
+        // Reproduce the actual FFmpeg seek contract: it opens a new range
+        // connection while preserving its original socket until the seek
+        // succeeds. The original response is deliberately NOT consumed.
+        // The old whole-response gate deadlocks this pair under backpressure.
+        foreach (var item in fixtures)
+        {
+            long total = new FileInfo(item.Reference).Length;
+            using var stalledRequest = new HttpRequestMessage(HttpMethod.Get, item.Lease.Playlist);
+            stalledRequest.Headers.Range = new RangeHeaderValue(0, null);
+            using (var stalled = await http.SendAsync(stalledRequest,
+                HttpCompletionOption.ResponseHeadersRead, ct))
+            {
+                if (stalled.StatusCode != HttpStatusCode.PartialContent)
+                    throw new InvalidOperationException("Initial open-ended range failed");
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(TimeSpan.FromSeconds(8));
+                using var tailRequest = new HttpRequestMessage(HttpMethod.Get, item.Lease.Playlist);
+                tailRequest.Headers.Range = new RangeHeaderValue(total - 64, total - 1);
+                using var tail = await http.SendAsync(tailRequest, deadline.Token);
+                if (tail.StatusCode != HttpStatusCode.PartialContent)
+                    throw new InvalidOperationException("Overlapping seek blocked");
+                byte[] bytes = await tail.Content.ReadAsByteArrayAsync(deadline.Token);
+                await using var reference = File.OpenRead(item.Reference);
+                reference.Position = total - 64;
+                var expected = new byte[64];
+                await reference.ReadExactlyAsync(expected, deadline.Token);
+                if (!bytes.SequenceEqual(expected))
+                    throw new InvalidOperationException("Overlapping seek data differs");
+            }
+            // Disposing a partially read HTTP response is ordinary seek
+            // cancellation, not a request to revoke the backend grant.
+            using var next = new HttpRequestMessage(HttpMethod.Get, item.Lease.Playlist);
+            next.Headers.Range = new RangeHeaderValue(0, 63);
+            using var resumed = await http.SendAsync(next, ct);
+            if (resumed.StatusCode != HttpStatusCode.PartialContent)
+                throw new InvalidOperationException("Seek cancellation invalidated lease");
+        }
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_FILE_OVERLAPPING_SEEK_AND_CANCEL=PASS");
+
         async Task<string[]> Decode(string input, string label, bool local, string seek)
         {
             var info = new ProcessStartInfo(get("ffmpeg"))
@@ -77,7 +116,27 @@ internal static class FiniteFixture
                 var diagnostic = await errors;
                 int video = records.Count(x => x.StartsWith("0,", StringComparison.Ordinal));
                 int audio = records.Length - video;
-                Console.WriteLine($"VIVOAPK_PRIVATE_LOOPBACK_FILE_DECODE={label} seek={seek} local={local} exit={process.ExitCode} video={video} audio={audio} diagnostic_bytes={diagnostic.Length}");
+                // Fixed error vocabulary only; never print the URL/capability.
+                var known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["moov_missing"] = "moov atom not found",
+                    ["invalid_data"] = "Invalid data found",
+                    ["http_404"] = "404 Not Found",
+                    ["http_429"] = "429 Too Many Requests",
+                    ["http_500"] = "500 Internal Server Error",
+                    ["http_503"] = "503 Service Unavailable",
+                    ["partial_file"] = "partial file",
+                    ["premature_end"] = "Stream ends prematurely",
+                    ["protocol"] = "not on whitelist",
+                    ["extension"] = "Filename extension",
+                    ["connection"] = "Connection refused",
+                    ["timeout"] = "timed out",
+                    ["input_error"] = "Error opening input",
+                    ["seek_error"] = "seek",
+                };
+                var markers = string.Join(",", known.Where(pair => diagnostic.Contains(pair.Value,
+                    StringComparison.OrdinalIgnoreCase)).Select(pair => pair.Key));
+                Console.WriteLine($"VIVOAPK_PRIVATE_LOOPBACK_FILE_DECODE={label} seek={seek} local={local} exit={process.ExitCode} video={video} audio={audio} diagnostic_bytes={diagnostic.Length} markers={markers}");
                 if (process.ExitCode != 0 || video < 45 || audio < 40)
                     throw new InvalidOperationException("Finite decode failed");
                 // Compare frame payloads in stream order (PTS may differ
