@@ -44,23 +44,24 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         lock (_bindGate)
             return _states.TryRemove(new KeyValuePair<string, State>(session, state));
     }
-    private sealed class State(Guid owner, Guid item, string device, bool finite)
+    private sealed class State(Guid owner, Guid item, string device, bool finite, string sourcePath)
     {
         internal readonly Guid Owner = owner;
         internal readonly Guid Item = item;
         internal readonly string Device = device;
         internal readonly bool Finite = finite;
+        internal readonly string SourcePath = sourcePath;
         internal readonly SemaphoreSlim FiniteRequests = new(1, 1);
         internal readonly object Gate = new();
         internal long LastMedia = Environment.TickCount64;
         internal int InFlight;
         internal bool Recovering;
-        internal bool Watching;
         internal TranscodingJob? Job;
     }
 
-    internal bool Bind(JsonNode node, Guid owner, Guid item, string? device)
+    internal async Task<bool> BindAsync(JsonNode node, Guid owner, Guid item, HttpContext http)
     {
+        var device = http.User.FindFirst("Jellyfin-DeviceId")?.Value;
         if (string.IsNullOrEmpty(device) || node is not JsonObject response
             || response["PlaySessionId"] is not JsonValue value
             || !value.TryGetValue<string>(out var session) || !Guid.TryParse(session, out _)
@@ -68,15 +69,29 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
             || sources[0] is not JsonObject media || media["IsInfiniteStream"] is not JsonValue flag
             || !flag.TryGetValue<bool>(out var infinite))
             return false;
+        var services = http.RequestServices;
+        var lab = services.GetRequiredService<PrivateNativeHls>();
+        var source = await lab.GetBoundPathAsync(owner, http.RequestAborted).ConfigureAwait(false);
+        if (string.IsNullOrEmpty(source))
+            return false;
+        var manager = services.GetRequiredService<ITranscodeManager>();
+        var sessions = services.GetRequiredService<ISessionManager>();
+        var stopping = services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+        var logger = services.GetRequiredService<ILogger<PrivateLiveRecovery>>();
+        var state = new State(owner, item, device, !infinite, source);
         lock (_bindGate)
         {
-            // Only an admitted negotiation can publish a new native GUID.
-            // Retired IDs have no binding; their old cache stems do not match
-            // the new random private source and observed job.
-            return _negotiating.Contains(owner) && _states.Count < 2
-                && !_states.Values.Any(s => s.Owner == owner)
-                && _states.TryAdd(session, new State(owner, item, device, !infinite));
+            if (!_negotiating.Contains(owner) || _states.Count >= 2
+                || _states.Values.Any(s => s.Owner == owner)
+                || !_states.TryAdd(session, state))
+                return false;
         }
+        // Start the bounded observer at negotiation, not at the first
+        // successful segment. An unused PlaybackInfo must not reserve a
+        // slot forever. Only singleton services and immutable state escape
+        // the request; no HttpContext, response, credentials or raw data.
+        _ = RecoverAsync(manager, sessions, lab, session, state, logger, stopping);
+        return true;
     }
 
     private void Deny(HttpContext http)
@@ -253,7 +268,6 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
                     !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted)
                         .ConfigureAwait(false))
                     return;
-                bool watch = false;
                 lock (state.Gate)
                 {
                     if (state.Job is null)
@@ -264,17 +278,6 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
                     if (!ReferenceEquals(state.Job, job))
                         return;
                     state.LastMedia = Environment.TickCount64;
-                    if (!state.Watching)
-                    {
-                        state.Watching = true;
-                        watch = true;
-                    }
-                }
-                if (watch)
-                {
-                    var stopping = services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
-                    var sessions = services.GetRequiredService<ISessionManager>();
-                    _ = RecoverAsync(manager, sessions, lab, session, state, logger, stopping);
                 }
             }
             finally
@@ -311,16 +314,20 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         var manager = services.GetRequiredService<ITranscodeManager>();
         var lab = services.GetRequiredService<PrivateNativeHls>();
         var job = manager.GetTranscodingJob(session);
-        if (job is null || !ReferenceEquals(job, state.Job) ||
-            string.IsNullOrEmpty(job.MediaSource?.Path) ||
-            !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted).ConfigureAwait(false))
+        if (job is not null && (job.Type != TranscodingJobType.Hls
+            || job.MediaSource?.Path != state.SourcePath
+            || !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted)
+                .ConfigureAwait(false)))
         {
             Deny(http);
             return;
         }
         lock (state.Gate)
         {
-            if (state.Recovering || state.InFlight != 0 || !ReferenceEquals(state.Job, job))
+            if (state.Recovering || state.InFlight != 0
+                || !ReferenceEquals(manager.GetTranscodingJob(session), job)
+                || (job is not null && state.Job is not null && !ReferenceEquals(state.Job, job)
+                    && (!state.Finite || state.Job.Path != job.Path)))
             {
                 Deny(http);
                 return;
@@ -336,7 +343,7 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
             if (http.Response.StatusCode is not (200 or 204))
                 return;
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            var released = await lab.RecoverAsync(owner, job.MediaSource!.Path!,
+            var released = await lab.RecoverAsync(owner, state.SourcePath,
                 () => Task.FromResult(manager.GetTranscodingJob(session) is null),
                 deadline.Token).ConfigureAwait(false);
             if (!released || !Retire(session, state))
@@ -354,6 +361,23 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         }
     }
 
+    private static bool ClientInactive(ISessionManager sessions, State state, out bool missing)
+    {
+        // Exact owner/device/item. A different account or playing item
+        // cannot make this lease appear active or authorize its cleanup.
+        var candidates = sessions.Sessions.Where(s => s.UserId == state.Owner &&
+            string.Equals(s.DeviceId, state.Device, StringComparison.Ordinal) &&
+            s.NowPlayingItem?.Id == state.Item).Take(2).ToArray();
+        missing = candidates.Length == 0;
+        if (missing)
+            return true;
+        if (candidates.Length != 1)
+            return false;
+        var client = candidates[0];
+        return !client.PlayState.IsPaused && client.LastPlaybackCheckIn != default
+            && (DateTime.UtcNow - client.LastPlaybackCheckIn).TotalMilliseconds >= IdleMs;
+    }
+
     private async Task RecoverAsync(ITranscodeManager manager, ISessionManager sessions,
         PrivateNativeHls lab, string session, State state, ILogger logger,
         CancellationToken stopping)
@@ -365,64 +389,83 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
                 await Task.Delay(1000, stopping).ConfigureAwait(false);
                 if (!_states.TryGetValue(session, out var currentState) || !ReferenceEquals(currentState, state))
                     return;
-                var job = state.Job;
-                if (job is null || string.IsNullOrEmpty(job.Path) ||
-                    string.IsNullOrEmpty(job.MediaSource?.Path))
-                    return;
-                var current = manager.GetTranscodingJob(session);
-                if (current is not null && !ReferenceEquals(current, job))
+                lock (state.Gate)
                 {
-                    if (state.Finite)
-                        continue; // A serialized dynamic segment is replacing the observed job.
-                    return;
+                    if (state.Recovering || state.InFlight != 0
+                        || Environment.TickCount64 - state.LastMedia < IdleMs)
+                        continue;
                 }
-                var candidates = sessions.Sessions.Where(s => s.UserId == state.Owner &&
-                    string.Equals(s.DeviceId, state.Device, StringComparison.Ordinal) &&
-                    s.NowPlayingItem?.Id == state.Item).Take(2).ToArray();
-                if (candidates.Length != 1)
+                if (!ClientInactive(sessions, state, out _))
                     continue;
-                var client = candidates[0];
-                if (client.LastPlaybackCheckIn == default || client.PlayState.IsPaused ||
-                    job.IsUserPaused || job.ActiveRequestCount > 0 ||
-                    (DateTime.UtcNow - client.LastPlaybackCheckIn).TotalMilliseconds < IdleMs)
+                var current = manager.GetTranscodingJob(session);
+                if (current is not null &&
+                    (current.Type != TranscodingJobType.Hls || string.IsNullOrEmpty(current.Path)
+                        || current.MediaSource?.Path != state.SourcePath
+                        || current.IsUserPaused || current.ActiveRequestCount > 0
+                        || !await lab.MatchesJobAsync(state.Owner, current, state.Device, session, stopping)
+                            .ConfigureAwait(false)))
                     continue;
                 lock (state.Gate)
                 {
-                    if (state.Recovering || state.InFlight != 0 || !ReferenceEquals(state.Job, job) ||
-                        Environment.TickCount64 - state.LastMedia < IdleMs)
+                    // Recheck after awaiting the exact source/owner test.
+                    // Admission remains reserved throughout retirement.
+                    if (state.Recovering || state.InFlight != 0
+                        || Environment.TickCount64 - state.LastMedia < IdleMs
+                        || !ReferenceEquals(manager.GetTranscodingJob(session), current)
+                        || (current is not null && state.Job is not null
+                            && !ReferenceEquals(state.Job, current)
+                            && (!state.Finite || state.Job.Path != current.Path)))
                         continue;
                     state.Recovering = true;
                 }
-                var path = job.Path!;
-                var source = job.MediaSource!.Path!;
-                var released = await lab.RecoverAsync(state.Owner, source, async () =>
+                bool retired = false;
+                try
                 {
-                    var latest = manager.GetTranscodingJob(session);
-                    if (latest is not null && !ReferenceEquals(latest, job))
-                        return false;
-                    if (client.UserId != state.Owner || client.DeviceId != state.Device ||
-                        client.NowPlayingItem?.Id != state.Item || client.PlayState.IsPaused ||
-                        (DateTime.UtcNow - client.LastPlaybackCheckIn).TotalMilliseconds < IdleMs ||
-                        job.IsUserPaused || job.ActiveRequestCount > 0)
-                        return false;
-                    var wasRunning = latest is not null && !job.HasExited;
-                    if (latest is not null)
-                        await manager.KillTranscodingJobs(state.Device, session,
-                            candidate => string.Equals(candidate, path, StringComparison.Ordinal)).ConfigureAwait(false);
-                    var removed = manager.GetTranscodingJob(session) is null;
-                    logger.LogInformation("VIVOAPK_PRIVATE_NATIVE_RECOVERY_JOB runningBefore={Running} removed={Removed}",
-                        wasRunning, removed);
-                    return removed;
-                }, stopping).ConfigureAwait(false);
-                if (released)
-                {
-                    if (!Retire(session, state))
-                        throw new InvalidOperationException("Private recovery binding changed");
-                    logger.LogInformation("VIVOAPK_PRIVATE_NATIVE_RECOVERY_LEASE=PASS");
-                    return;
+                    var neverStarted = current is null && state.Job is null;
+                    bool missingClient = false;
+                    var released = await lab.RecoverAsync(state.Owner, state.SourcePath, async () =>
+                    {
+                        var latest = manager.GetTranscodingJob(session);
+                        // Refuse all ambiguous replacements. A native job
+                        // appearing after the unused-negotiation check
+                        // cannot be killed or have its source retired.
+                        if (!ReferenceEquals(latest, current)
+                            || !ClientInactive(sessions, state, out missingClient)
+                            || (latest is not null && (latest.IsUserPaused || latest.ActiveRequestCount > 0)))
+                            return false;
+                        if (latest is not null)
+                        {
+                            var path = latest.Path!;
+                            var wasRunning = !latest.HasExited;
+                            await manager.KillTranscodingJobs(state.Device, session,
+                                candidate => string.Equals(candidate, path, StringComparison.Ordinal))
+                                .ConfigureAwait(false);
+                            var removed = manager.GetTranscodingJob(session) is null;
+                            logger.LogInformation("VIVOAPK_PRIVATE_NATIVE_RECOVERY_JOB runningBefore={Running} removed={Removed}",
+                                wasRunning, removed);
+                            return removed;
+                        }
+                        return manager.GetTranscodingJob(session) is null;
+                    }, stopping).ConfigureAwait(false);
+                    if (released)
+                    {
+                        if (!Retire(session, state))
+                            throw new InvalidOperationException("Private recovery binding changed");
+                        retired = true;
+                        if (neverStarted)
+                            logger.LogInformation("VIVOAPK_PRIVATE_NATIVE_UNUSED_NEGOTIATION=PASS");
+                        else if (missingClient)
+                            logger.LogInformation("VIVOAPK_PRIVATE_NATIVE_MISSING_CLIENT_RECOVERY=PASS");
+                        logger.LogInformation("VIVOAPK_PRIVATE_NATIVE_RECOVERY_LEASE=PASS");
+                        return;
+                    }
                 }
-                lock (state.Gate)
-                    state.Recovering = false;
+                finally
+                {
+                    if (!retired)
+                        lock (state.Gate)
+                            state.Recovering = false;
+                }
             }
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }

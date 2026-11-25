@@ -337,8 +337,8 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                     if (node is not JsonObject response || response["MediaSources"] is not JsonArray sources
                         || sources.Count != 1 || sources[0] is not JsonObject media
                         || media["TranscodingUrl"] is not JsonValue url || !url.TryGetValue<string>(out var route)
-                        || string.IsNullOrEmpty(route) || !_privateLive.Bind(node, owner, item,
-                            http.User.FindFirst("Jellyfin-DeviceId")?.Value))
+                        || string.IsNullOrEmpty(route) || !await _privateLive.BindAsync(node, owner, item, http)
+                            .ConfigureAwait(false))
                         throw new InvalidOperationException("Private fixture play session not bound");
                     bound = true;
                 }

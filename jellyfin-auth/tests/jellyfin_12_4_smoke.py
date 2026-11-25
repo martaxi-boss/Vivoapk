@@ -1748,7 +1748,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
     }
     baseline = transcode_cache_files(base)
 
-    def negotiate(item, owner, token, other):
+    def negotiate(item, owner, token, other, *, play=True):
         code, info = request("POST", "/Items/" + item + "/PlaybackInfo?UserId=" + owner,
             {"DeviceProfile": profile, "AutoOpenLiveStream": True,
              "EnableDirectPlay": False, "EnableDirectStream": False, "EnableTranscoding": True,
@@ -1779,6 +1779,12 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             raise RuntimeError("Private source ID is not the native item GUID") from None
         print("JELLYFIN_PRIVATE_NATIVE_GUID_CONTRACT=PASS", flush=True)
         require_native_denial(master, token, other, "private_master_before_owner")
+        if not play:
+            session = info.get("PlaySessionId")
+            if not session:
+                raise RuntimeError("Missing unused private play session")
+            return {"item": item, "token": token, "session": session,
+                    "source": source["Id"], "route": master}
         body = require_native_owner(master, token, "private_master")
         route = master
         if b"#EXT-X-STREAM-INF" in body:
@@ -1891,6 +1897,58 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         time.sleep(.4)
     if transcode_cache_files(base).keys() - baseline.keys():
         raise RuntimeError("Private native stop left transcoding cache")
+    if PRIVATE_FILE:
+        # 1. Stop a negotiation that has never issued a native media GET.
+        # 2. Abandon another negotiation without stop or playback reports.
+        # 3. Abandon a played item with no matching NowPlaying client.
+        # Each case must release its exact slot before another PlaybackInfo.
+        unused_stop = negotiate(item_a, owner_a, token_a, token_b, play=False)
+        if private_backend.count() != 1 or stop(unused_stop, token_b) != 404:
+            raise RuntimeError("Unused private lease or foreign stop invariant failed")
+        if stop(unused_stop, token_a) not in (200, 204) or private_backend.count() != 0:
+            raise RuntimeError("Explicit unused negotiation stop failed")
+        print("JELLYFIN_PRIVATE_NATIVE_UNUSED_STOP=PASS", flush=True)
+
+        def wait_for_retirement(state, marker):
+            started = time.monotonic()
+            deadline = started + 105
+            while time.monotonic() < deadline:
+                logs = (base / "logs/jellyfin-launch.log").read_text(errors="replace")
+                if (private_backend.count() == 0 and marker in logs
+                        and not (transcode_cache_files(base).keys() - baseline.keys())):
+                    break
+                time.sleep(.4)
+            else:
+                raise RuntimeError("Idle private session was not recovered by its observer")
+            require_denied_response(native_bytes(safe_fixture_route(state["route"], token_a),
+                                                 token_a), "private_idle_retired_route", "owner")
+            if stop(state, token_a) != 404:
+                raise RuntimeError("Retired unused/idle stop accepted")
+            print("JELLYFIN_PRIVATE_NATIVE_IDLE_RETIREMENT=" + json.dumps({
+                "marker": marker, "seconds": round(time.monotonic() - started, 2),
+                "remaining_sessions": private_backend.count(), "stop_sent_before_recovery": False,
+            }, sort_keys=True), flush=True)
+
+        unused = negotiate(item_a, owner_a, token_a, token_b, play=False)
+        if private_backend.count() != 1 or transcode_cache_files(base).keys() - baseline.keys():
+            raise RuntimeError("Unused negotiation unexpectedly started native FFmpeg")
+        wait_for_retirement(unused, "VIVOAPK_PRIVATE_NATIVE_UNUSED_NEGOTIATION=PASS")
+        orphan = negotiate(item_a, owner_a, token_a, token_b)
+        if orphan["session"] == unused["session"] or private_backend.count() != 1:
+            raise RuntimeError("New finite session did not replace unused lease")
+        # No /Sessions/Playing notification is sent by this synthetic
+        # client. The native job exists, but no matching client check-in
+        # can keep it alive; the lease must not become permanently stuck.
+        wait_for_retirement(orphan, "VIVOAPK_PRIVATE_NATIVE_MISSING_CLIENT_RECOVERY=PASS")
+        final = negotiate(item_a, owner_a, token_a, token_b)
+        if final["session"] == orphan["session"] or stop(final, token_a) not in (200, 204):
+            raise RuntimeError("Reopen after idle retirement failed")
+        deadline = time.monotonic() + 20
+        while transcode_cache_files(base).keys() - baseline.keys() and time.monotonic() < deadline:
+            time.sleep(.4)
+        if transcode_cache_files(base).keys() - baseline.keys():
+            raise RuntimeError("Final finite retirement left cache")
+        print("JELLYFIN_PRIVATE_NATIVE_UNUSED_AND_MISSING_CLIENT_REOPEN=PASS", flush=True)
     private_backend.check_cleanup()
     print("JELLYFIN_PRIVATE_NATIVE_STOP_CACHE_AND_BACKEND_CLEANUP=PASS", flush=True)
     print("JELLYFIN_PRIVATE_NATIVE_PLAYBACKINFO_NO_INTERNAL_ORIGIN=PASS", flush=True)

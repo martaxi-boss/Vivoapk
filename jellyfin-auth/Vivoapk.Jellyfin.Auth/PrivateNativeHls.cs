@@ -138,6 +138,18 @@ internal sealed class PrivateNativeHls(string socketPath, string keyPath) : IAsy
         };
     }
 
+    // Only the reserved server-side negotiation can capture its lease.
+    // This path stays in memory and is never returned to the HTTP caller.
+    internal async Task<string?> GetBoundPathAsync(Guid owner, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return _leases.TryGetValue(owner, out var bound) ? bound.Lease.Playlist.AbsoluteUri : null;
+        }
+        finally { _gate.Release(); }
+    }
+
     internal async Task<bool> MatchesJobAsync(Guid owner, TranscodingJob? job, string? device,
         string session, CancellationToken ct)
     {
