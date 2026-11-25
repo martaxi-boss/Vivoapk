@@ -715,69 +715,103 @@ def verify_parallel_cache_recovery(base, first_item, first_owner, first_token,
         state["index"] += 1
         report(state, "/Sessions/Playing/Progress")
 
-    def find_playlist(excluded_namespaces):
-        # Identify the output namespace even before the VOD playlist is saved.
-        for _ in range(12):
-            candidates = set()
-            for p in native_cache_delta(base, baseline):
-                stem, suffix = p.stem[:32], p.stem[32:]
-                if len(stem) != 32 or any(c not in "0123456789abcdef" for c in stem.lower()):
-                    continue
-                if not ((p.suffix.lower() == ".m3u8" and not suffix) or
-                        (p.suffix.lower() == ".ts" and suffix.isascii() and suffix.isdecimal())):
-                    continue
-                target = p.with_name(stem + ".m3u8")
-                if target not in excluded_namespaces:
-                    candidates.add(target)
-            active = [p for p in candidates if len(ffmpeg_identity(p)) == 1]
-            if len(active) == 1:
-                return active[0]
-            if len(active) > 1:
-                raise RuntimeError("Ambiguous active native cache namespaces")
-            time.sleep(0.25)
-        raise RuntimeError("Cannot prove a unique active native cache namespace")
+    import re
+    patterns = {}
 
+    def fixture_path(value):
+        # ffmpeg may use a local file: protocol prefix on the output.
+        if value.startswith("file:"):
+            value = value[5:]
+        p = Path(value)
+        if not p.is_absolute():
+            return None
+        p = p.resolve()
+        for root in (base.resolve() / "cache", base.resolve() / "data"):
+            if p.is_relative_to(root) and "transcodes" in p.relative_to(root).parts[:-1]:
+                return p
+        return None
 
-    def namespace(playlist):
-        return {p: size for p, size in native_cache_delta(base, baseline).items()
-                if p.parent == playlist.parent and (p == playlist or
-                    (p.stem.startswith(playlist.stem) and
-                     p.stem[len(playlist.stem):].isascii() and
-                     p.stem[len(playlist.stem):].isdecimal()))}
-
-    def ffmpeg_identity(playlist):
-        # Linux disposable runner only. Read process metadata; never log argv,
-        # send a signal, or touch processes/files outside the fixture.
-        expected = os.fsencode(str(playlist))
-        found = []
+    def active_jobs():
+        jobs = {}
         for proc in Path("/proc").iterdir():
             if not proc.name.isdecimal():
                 continue
             try:
-                args = (proc / "cmdline").read_bytes().split(bytes([0]))
-                if not args or Path(os.fsdecode(args[0])).name != "ffmpeg" or expected not in args:
+                args = [os.fsdecode(arg) for arg in
+                        (proc / "cmdline").read_bytes().split(bytes([0])) if arg]
+                if not args or Path(args[0]).name != "ffmpeg":
                     continue
-                start_ticks = (proc / "stat").read_text().rsplit(") ", 1)[1].split()[19]
-                found.append((proc.name, start_ticks))
+                playlist = fixture_path(args[-1])
+                if playlist is None or playlist.suffix.lower() != ".m3u8":
+                    continue
+                options = [i for i, arg in enumerate(args) if arg == "-hls_segment_filename"]
+                if len(options) != 1 or options[0] + 1 >= len(args):
+                    raise RuntimeError("Missing unique fixture HLS segment template")
+                template = fixture_path(args[options[0] + 1])
+                if template is None or template.parent != playlist.parent:
+                    raise RuntimeError("Unexpected fixture HLS segment directory")
+                matches = list(re.finditer(r"%[0-9]*d", template.name))
+                if len(matches) != 1 or template.suffix.lower() != ".ts":
+                    raise RuntimeError("Unexpected fixture HLS segment template")
+                m = matches[0]
+                pattern = re.escape(template.name[:m.start()]) + r"[0-9]+" + re.escape(template.name[m.end():])
+                ticks = (proc / "stat").read_text().rsplit(") ", 1)[1].split()[19]
+                jobs.setdefault(playlist, []).append(((proc.name, ticks), pattern))
             except (OSError, ValueError, IndexError):
                 continue
-        return found
+        return jobs
 
+    def namespace(playlist):
+        return {p: size for p, size in native_cache_delta(base, baseline).items()
+                if p.parent == playlist.parent and
+                (p == playlist or re.fullmatch(patterns[playlist], p.name))}
+
+    def ffmpeg_identity(playlist):
+        return [identity for identity, _ in active_jobs().get(playlist, [])]
+
+    def find_playlist(before):
+        old_ids = {identity for entries in before.values() for identity, _ in entries}
+        for _ in range(32):
+            jobs = active_jobs()
+            fresh = [(p, identity, pattern) for p, entries in jobs.items()
+                     for identity, pattern in entries if identity not in old_ids]
+            if len(fresh) > 1:
+                raise RuntimeError("Multiple new fixture FFmpeg jobs cannot be attributed")
+            if len(fresh) == 1:
+                playlist, identity, pattern = fresh[0]
+                if playlist in before or len(jobs[playlist]) != 1:
+                    raise RuntimeError("Fixture HLS namespace reused or shared")
+                patterns[playlist] = pattern
+                if any(p.suffix.lower() == ".ts" and size >= 188
+                       for p, size in namespace(playlist).items()):
+                    return playlist, [identity]
+            time.sleep(0.25)
+        raise RuntimeError("Cannot prove a unique new fixture HLS process and namespace: " +
+                           json.dumps({"active_jobs": sum(map(len, active_jobs().values())),
+                                       "cache_files": len(native_cache_delta(base, baseline))}))
+
+    before_a = active_jobs()
+    if before_a:
+        raise RuntimeError("Earlier fixture FFmpeg job remains active")
     a = start(first_item, first_owner, first_token, "VivoAPK-CI")
     for _ in range(4):
         consume(a)
-    pa = find_playlist(set())
+    pa, ids_a = find_playlist(before_a)
+    before_b = active_jobs()
+    if ffmpeg_identity(pa) != ids_a:
+        raise RuntimeError("First fixture process changed before second playback")
     b = start(second_item, second_owner, second_token, "Jellyfin for Tizen")
     for _ in range(2):
         consume(b)
-    pb = find_playlist({pa})
-    if pa == pb or a["session"] == b["session"]:
-        raise RuntimeError("Parallel native jobs share cache or play session")
-    ids_a, ids_b = ffmpeg_identity(pa), ffmpeg_identity(pb)
-    if len(ids_a) != 1 or len(ids_b) != 1 or ids_a == ids_b:
+    pb, ids_b = find_playlist(before_b)
+    if pa == pb or a["session"] == b["session"] or ids_a == ids_b:
+        raise RuntimeError("Parallel native jobs share cache, process or play session")
+    if ffmpeg_identity(pa) != ids_a or ffmpeg_identity(pb) != ids_b:
         raise RuntimeError("Two simultaneous native FFmpeg processes not proven")
-    if not namespace(pa) or not namespace(pb):
-        raise RuntimeError("Parallel job cache namespaces not both observed")
+    cache_a, cache_b = namespace(pa), namespace(pb)
+    if not cache_a or not cache_b or cache_a.keys() & cache_b.keys():
+        raise RuntimeError("Distinct parallel cache namespaces not both observed")
+    print("JELLYFIN_NATIVE_PARALLEL_NAMESPACE_DISCOVERY=PASS", flush=True)
     print("JELLYFIN_NATIVE_PARALLEL_TWO_PROCESSES=PASS", flush=True)
     require_native_denial(a["last_route"], first_token, second_token, "parallel_a")
     require_native_denial(b["last_route"], second_token, first_token, "parallel_b")
