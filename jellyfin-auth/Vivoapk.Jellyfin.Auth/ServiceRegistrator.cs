@@ -3,6 +3,7 @@ using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
@@ -11,6 +12,8 @@ public sealed class ServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
         services.AddHttpContextAccessor();
+        services.AddScoped<NativeStaticRedirectFilter>();
+        services.Configure<MvcOptions>(options => options.Filters.AddService<NativeStaticRedirectFilter>());
         services.AddSingleton<IAuthenticationProvider, MegaAuthenticationProvider>();
         // ChannelManager persists item IDs under a global ChannelId. Isolate
         // the channel itself, not merely its user-dependent cache key.

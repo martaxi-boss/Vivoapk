@@ -1,5 +1,6 @@
 """Disposable real Jellyfin 12.4 integration test. No Mega OTT accounts used."""
 import http.client
+import datetime
 import http.server
 import json
 import os
@@ -16,6 +17,9 @@ from urllib.request import urlopen
 PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
 MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
 CATEGORY_MODE = os.environ.get("VIVOAPK_CI_CATEGORY_MODE") == "1"
+REDIRECT_MODE = os.environ.get("VIVOAPK_CI_REDIRECT_MODE") == "1"
+if REDIRECT_MODE and not CATEGORY_MODE:
+    raise RuntimeError("Redirect fixture requires category mode")
 
 class BackendHandler(socketserver.StreamRequestHandler):
     def handle(self):
@@ -107,6 +111,18 @@ class BackendHandler(socketserver.StreamRequestHandler):
                     expanded = [{"id": "601", "title": "Série " + name,
                                  "category_id": category_id,
                                  "container_extension": None}]
+                if REDIRECT_MODE and request.get("request_playback_grant") is True:
+                    self.server.grant_calls += 1
+                    if self.server.grants_enabled and kind == "live":
+                        origin = self.server.provider_origin_tv if request.get("platform") in (
+                            "tizen", "webos") else self.server.provider_origin
+                        expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=45)
+                        for item in expanded:
+                            item["playback_grant"] = {
+                                "asset_id": item["id"], "kind": kind,
+                                "expires_at": expiry.isoformat(),
+                                "url": origin + "/fixture/" + item["id"] + ".m3u8",
+                            }
                 body = json.dumps({
                     "kind": kind, "categories": [], "items": expanded
                 }).encode()
@@ -239,6 +255,22 @@ def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
         _SESSION_TEST_DEVICES[parsed["AccessToken"]] = device_id
     return code, parsed
 
+def redirect_probe(method, uri, token=None):
+    """Examine only the disposable Jellyfin response; never follow Location."""
+    conn = Connection(DATAROOT / "run/jellyfin.sock")
+    headers = {"Accept": "*/*", "Range": "bytes=0-63"}
+    if token:
+        headers["X-Emby-Token"] = token
+        headers["Authorization"] = ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
+            'DeviceId="' + _SESSION_TEST_DEVICES[token] + '", Version="1.0.0", Token="' + token + '"')
+    conn.request(method, uri, headers=headers)
+    response = conn.getresponse()
+    result = (response.status, response.getheader("Location"),
+              response.getheader("Cache-Control"), response.read(4096))
+    conn.close()
+    return result
+
+
 def request_png(uri, *, token):
     """Read only local disposable Jellyfin PNG bytes, never a provider URL."""
     conn = Connection(DATAROOT / "run/jellyfin.sock")
@@ -260,6 +292,7 @@ def request_png(uri, *, token):
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-redirect-smoke" if REDIRECT_MODE else
         "vivo-jellyfin-12.4-category-smoke" if CATEGORY_MODE
         else "vivo-jellyfin-12.4-smoke")
     DATAROOT = base / "data"
@@ -280,6 +313,8 @@ def main():
     monitor_key_path.chmod(0o600)
     mock = BackendServer(str(MOCK), BackendHandler)
     mock.category_item_calls = 0
+    mock.grant_calls = 0
+    mock.grants_enabled = True
     synthetic_media = base / "synthetic-provider"
     synthetic_media.mkdir()
     subprocess.run([
@@ -305,6 +340,10 @@ def main():
     provider.requests = 0
     mock.provider_origin = "http://127.0.0.1:" + str(provider.server_port)
     mock.provider_origin_tv = "http://localhost:" + str(provider.server_port)
+    if REDIRECT_MODE:
+        # Reserved example domains only; the probe never follows Location.
+        mock.provider_origin = "https://media.example.org"
+        mock.provider_origin_tv = "https://tv-media.example.org"
     threading.Thread(target=provider.serve_forever, daemon=True).start()
     mock.statuses = {
         "synthetic-mega-user": "ACTIVE",
@@ -379,7 +418,8 @@ def main():
         code, _ = request("POST", "/Plugins/" + actual_id + "/Configuration",
                           {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True,
                            "PilotLiveChannels": True, "FullLiveCatalog": not CATEGORY_MODE,
-                           "CategoryNavigation": CATEGORY_MODE}, token=token)
+                           "CategoryNavigation": CATEGORY_MODE,
+                            "RequireAuthorizedPlaybackGrant": REDIRECT_MODE}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -570,6 +610,39 @@ def main():
         item_id_b = pilot_items_b["Items"][0]["Id"]
         if pilot_item_id == item_id_b:
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
+        if REDIRECT_MODE:
+            owner_token = customer["AccessToken"]
+            other_token = customer_b["AccessToken"]
+            endpoint = "/Videos/" + pilot_item_id + "/stream"
+            expected_url = mock.provider_origin + "/fixture/42.m3u8"
+            before = mock.grant_calls
+            if before != 0:
+                raise RuntimeError("Playback grants requested during catalogue indexing")
+            for verb, route in (("GET", endpoint), ("HEAD", endpoint + ".m3u8")):
+                status, location, cache, payload = redirect_probe(
+                    verb, route + "?Static=true", owner_token)
+                if (status, location, cache, payload) != (302, expected_url, "no-store", b""):
+                    raise RuntimeError("Native static route did not return the expected empty redirect: " + str(status))
+            if mock.grant_calls < before + 2:
+                raise RuntimeError("Native static route reused a cached playback grant")
+            for invalid_token in (None, other_token):
+                status, location, _, _ = redirect_probe("GET", endpoint + "?Static=true", invalid_token)
+                if location or status not in (401, 403, 404):
+                    raise RuntimeError("Unauthorized redirect was not denied: " + str(status))
+            status, location, _, _ = redirect_probe("GET", endpoint + "?Static=false", owner_token)
+            if location or status != 400:
+                raise RuntimeError("Non-static request did not fail closed")
+            mock.grants_enabled = False
+            status, location, _, _ = redirect_probe("GET", endpoint + "?Static=true", owner_token)
+            if location or status != 409:
+                raise RuntimeError("Missing fresh grant did not fail closed")
+            if provider.requests != 0:
+                raise RuntimeError("Server requested fixture media during redirect-only test")
+            print("JELLYFIN_NATIVE_STATIC_EMPTY_REDIRECT_GET_HEAD=PASS")
+            print("JELLYFIN_NATIVE_STATIC_FRESH_GRANT_AND_DENIAL=PASS")
+            print("JELLYFIN_NATIVE_STATIC_ZERO_FIXTURE_MEDIA_REQUESTS=PASS")
+            print("JELLYFIN_NATIVE_STATIC_SCOPE=DISPOSABLE_SYNTHETIC_GRANTS_NOT_PROVIDER_OR_CLIENT_PLAYBACK")
+            return
         for foreign_user, foreign_token, victim_item in (
             (account_b, customer_b["AccessToken"], pilot_item_id),
             (account_a, customer["AccessToken"], item_id_b),

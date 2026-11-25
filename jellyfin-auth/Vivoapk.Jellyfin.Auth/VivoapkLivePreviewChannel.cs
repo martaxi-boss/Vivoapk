@@ -550,8 +550,17 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         Items = new List<ChannelItemInfo>(), TotalRecordCount = 0
     };
 
-    public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
+    public Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
         string id, CancellationToken cancellationToken)
+        => GetChannelItemMediaInfoCore(id, cancellationToken,
+            Plugin.Instance?.Configuration.RequireAuthorizedPlaybackGrant == true);
+
+    internal Task<IEnumerable<MediaSourceInfo>> GetFreshAuthorizedMediaSourcesAsync(
+        string id, CancellationToken cancellationToken)
+        => GetChannelItemMediaInfoCore(id, cancellationToken, requireGrant: true);
+
+    private async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfoCore(
+        string id, CancellationToken cancellationToken, bool requireGrant)
     {
         PilotSnapshot? snapshot;
         lock (Gate)
@@ -562,7 +571,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         }
         if (snapshot is null)
             return Array.Empty<MediaSourceInfo>();
-        var requireGrant = Plugin.Instance?.Configuration.RequireAuthorizedPlaybackGrant == true;
+        if (requireGrant &&
+            NativeStaticRedirectFilter.AuthenticatedOwner(_httpContextAccessor?.HttpContext?.User)
+                != snapshot.Owner)
+            return Array.Empty<MediaSourceInfo>();
         if (!snapshot.CategoryNavigation)
         {
             if (requireGrant)
