@@ -15,6 +15,20 @@ jobs:
   loopback:
     runs-on: ubuntu-24.04
     timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vivoapk_fixture
+          POSTGRES_PASSWORD: disposable-loopback-fixture-only
+          POSTGRES_DB: vivoapk_loopback_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vivoapk_fixture -d vivoapk_loopback_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -44,7 +58,9 @@ jobs:
           test -x "$ffmpeg_bin"
           echo "$(dirname "$ffmpeg_bin")" >> "$GITHUB_PATH"
           "$ffmpeg_bin" -version | sed -n '1p'
-      - name: Real FFmpeg consumes two generated HLS streams through C# and backend Unix socket
+      - name: Three consecutive concurrent FFmpeg rounds over Unix socket and PostgreSQL
+        env:
+          VIVOAPK_LOOPBACK_DATABASE_URL: postgresql+psycopg://vivoapk_fixture:disposable-loopback-fixture-only@127.0.0.1:5432/vivoapk_loopback_ci
         shell: bash
         run: |
           set -euo pipefail

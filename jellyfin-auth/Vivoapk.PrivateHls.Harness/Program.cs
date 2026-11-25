@@ -46,7 +46,7 @@ try
 
     // Use real FFmpeg to read both opaque HLS inputs concurrently, not fake TS.
     checkpoint = "two simultaneous FFmpeg decodes";
-    async Task<(int Video, int Audio, string FirstFrame)> Decode(Uri uri)
+    async Task<(int Video, int Audio, string FirstFrame)> Decode(Uri uri, string label)
     {
         var start = new ProcessStartInfo(Get("ffmpeg")) {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false
@@ -63,9 +63,29 @@ try
             await process.WaitForExitAsync(ct);
             var lines = (await output).Split('\n');
             // Error text may include a private loopback capability; never print it.
-            _ = await errors;
+            var diagnostic = await errors;
             var video = lines.Where(l => l.StartsWith("0,", StringComparison.Ordinal)).ToArray();
             int audio = lines.Count(l => l.StartsWith("1,", StringComparison.Ordinal));
+            // Preserve the original frame minima and require a real zero
+            // exit code. A fixed vocabulary reports why any reader failed.
+            var markers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["http_404"] = "404 Not Found", ["http_429"] = "429 Too Many Requests",
+                ["http_500"] = "500 Internal Server Error", ["http_503"] = "503 Service Unavailable",
+                ["open_segment"] = "Failed to open segment", ["input_error"] = "Error opening input",
+                ["connection"] = "Connection refused", ["timeout"] = "timed out",
+                ["resource"] = "Resource temporarily unavailable", ["invalid_data"] = "Invalid data",
+                ["decoder"] = "Error while decoding", ["output"] = "Error opening output",
+                ["protocol"] = "not on whitelist",
+            };
+            Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_DECODE_OBSERVATION=" +
+                JsonSerializer.Serialize(new
+                {
+                    fixture = label, exit = process.ExitCode, video = video.Length, audio,
+                    diagnostic_bytes = diagnostic.Length,
+                    markers = markers.Where(pair => diagnostic.Contains(pair.Value,
+                        StringComparison.OrdinalIgnoreCase)).Select(pair => pair.Key).ToArray(),
+                }));
             if (process.ExitCode != 0 || video.Length < 100 || audio < 100)
                 throw new InvalidOperationException();
             return (video.Length, audio, video[0].Split(',').Last().Trim());
@@ -79,7 +99,7 @@ try
             }
         }
     }
-    var result = await Task.WhenAll(Decode(a.Playlist), Decode(b.Playlist));
+    var result = await Task.WhenAll(Decode(a.Playlist, "a"), Decode(b.Playlist, "b"));
     if (result[0].FirstFrame == result[1].FirstFrame)
         throw new InvalidOperationException();
     Console.WriteLine($"VIVOAPK_PRIVATE_LOOPBACK_FFMPEG_TWO_STREAMS=PASS video={result[0].Video}/{result[1].Video} audio={result[0].Audio}/{result[1].Audio}");
@@ -88,7 +108,7 @@ try
     using (var response = await http.GetAsync(a.Playlist, ct))
         if (response.StatusCode != HttpStatusCode.NotFound)
             throw new InvalidOperationException();
-    var surviving = await Decode(b.Playlist);
+    var surviving = await Decode(b.Playlist, "b_after_close");
     if (surviving.Video != result[1].Video || surviving.Audio != result[1].Audio)
         throw new InvalidOperationException();
     await bridge.CloseAsync(ownerB, b, ct);
