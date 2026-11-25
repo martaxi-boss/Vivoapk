@@ -35,16 +35,18 @@ internal static class NativePlaybackLab
             uri.AbsolutePath != "/" || uri.UserInfo.Length != 0 ||
             uri.Query.Length != 0 || uri.Fragment.Length != 0)
             return null;
+        // Separate CI-only case: a genuinely open-ended HTTP MPEG-TS source.
+        var infinite = Environment.GetEnvironmentVariable("VIVOAPK_CI_INFINITE_LIVE") == "1";
         return new MediaSourceInfo
         {
             Name = "Synthetic native FFmpeg fixture",
-            Path = new Uri(uri, "/fixture/native.ts").AbsoluteUri,
+            Path = new Uri(uri, infinite ? "/fixture/live.ts" : "/fixture/native.ts").AbsoluteUri,
             Protocol = MediaProtocol.Http,
             IsRemote = true,
-            IsInfiniteStream = false,
+            IsInfiniteStream = infinite,
             Container = "mpegts",
             // The extended fixture remains a finite, generated loopback asset.
-            RunTimeTicks = TimeSpan.FromSeconds(
+            RunTimeTicks = infinite ? null : TimeSpan.FromSeconds(
                 Environment.GetEnvironmentVariable("VIVOAPK_CI_LONG_CACHE") == "1" ? 360 : 15).Ticks,
             Bitrate = 500000,
             MediaStreams = new List<MediaStream>

@@ -19,6 +19,9 @@ MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
 CATEGORY_MODE = os.environ.get("VIVOAPK_CI_CATEGORY_MODE") == "1"
 SERVER_PLAYBACK = os.environ.get("VIVOAPK_CI_SERVER_PLAYBACK") == "1"
 LONG_CACHE = os.environ.get("VIVOAPK_CI_LONG_CACHE") == "1"
+INFINITE_LIVE = os.environ.get("VIVOAPK_CI_INFINITE_LIVE") == "1"
+if INFINITE_LIVE and (not SERVER_PLAYBACK or LONG_CACHE):
+    raise RuntimeError("Infinite live probe requires separate native lab mode")
 if LONG_CACHE and not SERVER_PLAYBACK:
     raise RuntimeError("Long cache test requires the disposable native playback lab")
 if SERVER_PLAYBACK and not CATEGORY_MODE:
@@ -177,8 +180,57 @@ class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def serve_continuous_fixture(self):
+        # No file, EOF, Content-Length, artificial runtime or repeated TS timestamps.
+        # FFmpeg produces an endless synthetic signal until this HTTP client leaves.
+        stats = {"bytes": 0, "ended": False, "generator_failed": False}
+        self.server.live_transfers.append(stats)
+        generator = subprocess.Popen([
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
+            "-f", "lavfi", "-i", "sine=frequency=650:sample_rate=48000",
+            "-c:v", "mpeg2video", "-g", "25", "-threads", "1",
+            "-b:v", "380k", "-maxrate", "380k", "-bufsize", "760k",
+            "-c:a", "mp2", "-ac", "2", "-b:a", "128k", "-muxrate", "600k",
+            "-f", "mpegts", "pipe:1",
+        ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.connection.settimeout(15)
+        burst = 220 * 75000  # same bounded startup probing allowance as finite CI
+        tail_started = None
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            while not self.server.live_stop.is_set():
+                chunk = generator.stdout.read(15040)
+                if not chunk:
+                    stats["generator_failed"] = not self.server.live_stop.is_set()
+                    break
+                self.wfile.write(chunk)
+                stats["bytes"] += len(chunk)
+                if stats["bytes"] >= burst:
+                    if tail_started is None:
+                        tail_started = time.monotonic()
+                    delay = max(0, tail_started + (stats["bytes"] - burst) / 75000 - time.monotonic())
+                    self.server.live_stop.wait(delay)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        finally:
+            generator.terminate()
+            try:
+                generator.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                generator.kill()
+                generator.wait(timeout=5)
+            generator.stdout.close()
+            stats["ended"] = True
+
     def do_GET(self):
         self.server.requests += 1
+        if self.path == "/fixture/live.ts" and INFINITE_LIVE:
+            self.serve_continuous_fixture()
+            return
         if self.path == "/fixture/native.ts" and SERVER_PLAYBACK:
             payload = (self.server.media_root / "native.ts").read_bytes()
             self.send_response(200)
@@ -855,10 +907,166 @@ def verify_parallel_cache_recovery(base, first_item, first_owner, first_token,
     print("JELLYFIN_NATIVE_PARALLEL_RECOVERY_ISOLATION=PASS", flush=True)
 
 
+def verify_infinite_live(base, item_id, master, owner_token, foreign_token,
+                         baseline, provider, info, source):
+    # Native negotiation, never force a VOD runtime or manually synthesize an HLS route.
+    print("JELLYFIN_INFINITE_SOURCE=" + json.dumps({
+        "infinite": source.get("IsInfiniteStream"),
+        "runtime_ticks": source.get("RunTimeTicks"),
+    }), flush=True)
+    if source.get("IsInfiniteStream") is not True or source.get("RunTimeTicks") not in (None, 0):
+        raise RuntimeError("Negotiated source is not genuinely open-ended")
+    session = info.get("PlaySessionId") or next(
+        (v for k, v in parse_qsl(urlsplit(master).query) if k.lower() == "playsessionid"), None)
+    if not session:
+        raise RuntimeError("Infinite live source has no native play session")
+
+    def report(endpoint, position):
+        status, _ = request("POST", endpoint, {
+            "ItemId": item_id, "MediaSourceId": source.get("Id"),
+            "PlaySessionId": session, "PositionTicks": int(position * 10000000),
+            "PlayMethod": "Transcode", "IsPaused": False,
+        }, token=owner_token)
+        if status not in (200, 204):
+            raise RuntimeError("Live playback report rejected: " + str(status))
+
+    def decode(segment, phase):
+        output = base / ("live-decode-" + phase + ".ts")
+        output.write_bytes(segment)
+        try:
+            decoded = subprocess.run([
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-i", str(output), "-map", "0:v:0", "-map", "0:a:0",
+                "-f", "framemd5", "pipe:1"
+            ], capture_output=True, text=True, check=True, timeout=30)
+            video = sum(x.startswith("0,") for x in decoded.stdout.splitlines())
+            audio = sum(x.startswith("1,") for x in decoded.stdout.splitlines())
+            if min(video, audio) < 20:
+                raise RuntimeError("Continuous live decode lacks video or audio")
+            print("JELLYFIN_INFINITE_DECODE=" + json.dumps({
+                "phase": phase, "video_frames": video, "audio_frames": audio
+            }), flush=True)
+        finally:
+            output.unlink(missing_ok=True)
+
+    require_native_denial(master, owner_token, foreign_token, "infinite_master")
+    body = require_native_owner(master, owner_token, "infinite_master")
+    if not body.startswith(b"#EXTM3U"):
+        raise RuntimeError("No live HLS master")
+    playlist = master
+    if b"#EXT-X-STREAM-INF" in body:
+        relative = [line.strip() for line in body.decode().splitlines()
+                    if line.strip() and not line.startswith("#")]
+        if not relative:
+            raise RuntimeError("Live master lacks media playlist")
+        playlist = native_route(master, relative[0], item_id)
+    is_live_route = urlsplit(playlist).path.lower().endswith("/live.m3u8")
+    print("JELLYFIN_INFINITE_NATIVE_LIVE_ROUTE=" + ("PASS" if is_live_route else "FAIL"), flush=True)
+    if not is_live_route:
+        raise RuntimeError("Unknown-duration source did not negotiate Jellyfin live.m3u8")
+
+    initial = require_native_owner(playlist, owner_token, "infinite_playlist")
+    timed = parse_timed_segments(initial)
+    if b"#EXT-X-ENDLIST" in initial or not timed:
+        raise RuntimeError("Native live playlist is closed or empty")
+    # Start close to the live edge, never replay the startup probing backlog.
+    seen = {relative for _, relative in timed[:-2]}
+    first_files = set()
+    served = 0.0
+    count = 0
+    peak = 0
+    last_segment = None
+    last_route = None
+    first_bytes = sum(t["bytes"] for t in provider.live_transfers)
+    begin = time.monotonic()
+    report("/Sessions/Playing", 0)
+    failure = None
+    rolling = False
+    try:
+        # Bounded 75 seconds of real observation, not 75 seconds downloaded at once.
+        while time.monotonic() - begin < 75:
+            body = require_native_owner(playlist, owner_token, "infinite_playlist_refresh")
+            if b"#EXT-X-ENDLIST" in body:
+                raise RuntimeError("End marker appeared in continuous live playlist")
+            for duration, relative in parse_timed_segments(body):
+                if relative in seen:
+                    continue
+                route = native_route(playlist, relative, item_id)
+                data = require_native_owner(route, owner_token, "infinite_segment")
+                if len(data) < 188 or data[0] != 0x47:
+                    raise RuntimeError("Live MPEG-TS segment invalid")
+                seen.add(relative)
+                served += duration
+                count += 1
+                last_segment, last_route = data, route
+                if count == 1:
+                    require_native_denial(route, owner_token, foreign_token, "infinite_segment")
+                    decode(data, "start")
+                if count <= 3:
+                    filename = Path(urlsplit(route).path).name
+                    first_files.update(p for p in native_cache_delta(base, baseline) if p.name == filename)
+                report("/Sessions/Playing/Progress", served)
+            files = native_cache_delta(base, baseline)
+            peak = max(peak, sum(files.values()))
+            rolling = bool(first_files.difference(files)) and bool(files)
+            if peak > 64 * 1024 * 1024:
+                raise RuntimeError("Live cache exceeded 64 MiB sampled laboratory bound")
+            if any(t["generator_failed"] for t in provider.live_transfers):
+                raise RuntimeError("Continuous source generator ended unexpectedly")
+            time.sleep(0.75)
+        if last_segment is None or served < 45 or count < 10:
+            raise RuntimeError("Insufficient advancing live media")
+        decode(last_segment, "end")
+        require_native_denial(last_route, owner_token, foreign_token, "infinite_latest_segment")
+        final_bytes = sum(t["bytes"] for t in provider.live_transfers)
+        if final_bytes <= first_bytes or not any(not t["ended"] for t in provider.live_transfers):
+            raise RuntimeError("No active advancing origin after observation")
+        files = native_cache_delta(base, baseline)
+        removed = len(first_files.difference(files))
+        print("JELLYFIN_INFINITE_LIVE_OBSERVATION=" + json.dumps({
+            "wall_seconds": round(time.monotonic() - begin, 1), "served_seconds": served,
+            "segments": count, "peak_sampled_cache_bytes": peak,
+            "observed_early_files": len(first_files), "removed_early_files": removed,
+            "cache_files_at_end": len(files), "origin_bytes_advanced": final_bytes - first_bytes,
+            "origin_still_open": True, "rolling_pass": rolling,
+        }, sort_keys=True), flush=True)
+        print("JELLYFIN_INFINITE_LIVE_PLAYBACK=PASS", flush=True)
+        if not first_files or not rolling:
+            failure = RuntimeError("Continuous live cache rolling deletion not demonstrated")
+    except Exception as exc:
+        failure = exc
+    finally:
+        # Explicit stop is a separate gate even if rolling retention fails.
+        status, _ = request("POST", "/Sessions/Playing/Stopped", {
+            "ItemId": item_id, "MediaSourceId": source.get("Id"),
+            "PlaySessionId": session, "PositionTicks": int(served * 10000000)
+        }, token=owner_token)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            remaining = native_cache_delta(base, baseline)
+            active = sum(not t["ended"] for t in provider.live_transfers)
+            if not remaining and not active:
+                break
+            time.sleep(0.5)
+        remaining = native_cache_delta(base, baseline)
+        active = sum(not t["ended"] for t in provider.live_transfers)
+        stopped = status in (200, 204) and not remaining and not active
+        print("JELLYFIN_INFINITE_NATIVE_STOP=" + json.dumps({
+            "passed": stopped, "http_status": status,
+            "remaining_files": len(remaining), "active_origins": active
+        }), flush=True)
+        if not stopped and failure is None:
+            failure = RuntimeError("Live native stop did not reclaim origin and cache")
+    if failure is not None:
+        raise failure
+    print("JELLYFIN_INFINITE_LIVE_AND_ROLLING_CACHE=PASS", flush=True)
+
+
 def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider, mock,
                          second_item=None, second_owner=None):
     cache_baseline = transcode_cache_files(base)
-    input_digest = hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest()
+    input_digest = (None if INFINITE_LIVE else
+                    hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest())
     profile = {
         "Name": "CI server HLS H264 AAC",
         "MaxStreamingBitrate": 2000000, "MaxStaticBitrate": 2000000,
@@ -881,6 +1089,10 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
             "status": code, "error": (info or {}).get("ErrorCode"),
             "source_count": len(sources), "ready_count": len(ready)}))
     route = native_route("/", ready[0]["TranscodingUrl"], item_id)
+    if INFINITE_LIVE:
+        verify_infinite_live(base, item_id, route, owner_token, foreign_token,
+                             cache_baseline, provider, info, ready[0])
+        return
     if LONG_CACHE:
         verify_long_cache(base, item_id, route, owner_token, foreign_token,
                           cache_baseline, input_digest, provider, info, ready[0])
@@ -1010,6 +1222,7 @@ def request_png(uri, *, token):
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-infinite-live-smoke" if INFINITE_LIVE else
         "vivo-jellyfin-12.4-native-long-cache-smoke" if LONG_CACHE else
         "vivo-jellyfin-12.4-native-ffmpeg-smoke" if SERVER_PLAYBACK else
         "vivo-jellyfin-12.4-category-smoke" if CATEGORY_MODE
@@ -1052,7 +1265,7 @@ def main():
         "-c:a", "aac", "-movflags", "+faststart",
         str(synthetic_media / "fixture.mp4"),
     ], check=True, timeout=30)
-    if SERVER_PLAYBACK:
+    if SERVER_PLAYBACK and not INFINITE_LIVE:
         subprocess.run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
@@ -1067,6 +1280,8 @@ def main():
     provider.media_root = synthetic_media
     provider.requests = 0
     provider.long_fixture_bytes_sent = 0
+    provider.live_stop = threading.Event()
+    provider.live_transfers = []
     mock.provider_origin = "http://127.0.0.1:" + str(provider.server_port)
     mock.provider_origin_tv = "http://localhost:" + str(provider.server_port)
     threading.Thread(target=provider.serve_forever, daemon=True).start()
@@ -1119,7 +1334,7 @@ def main():
         if code != 200 or not isinstance(admin, dict) or not admin.get("AccessToken"):
             raise RuntimeError("Administrator login not working")
         token = admin["AccessToken"]
-        if LONG_CACHE:
+        if LONG_CACHE or INFINITE_LIVE:
             # Jellyfin v12.4 caches named configuration keys case-sensitively,
             # although its XML paths and store lookup are case-insensitive.
             # Use the exact key read by GetEncodingOptions / the segment cleaner.
@@ -2248,6 +2463,7 @@ def main():
             jellyfin.kill()
         mock.shutdown()
         mock.server_close()
+        provider.live_stop.set()
         provider.shutdown()
         provider.server_close()
         log.close()
