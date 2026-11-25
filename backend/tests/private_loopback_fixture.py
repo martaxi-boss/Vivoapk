@@ -110,7 +110,7 @@ def main():
             app_env="test", database_url=database_url,
             session_signing_key=secrets.token_urlsafe(32),
             private_hls_enabled=True, private_media_key=secrets.token_urlsafe(32),
-            session_ttl_seconds=300,
+            session_ttl_seconds=30,
         )
         app = create_app(settings)
         dbfactory = app.state.session_factory
@@ -136,7 +136,7 @@ def main():
         @app.middleware("http")
         async def observe_response(request, call_next):
             route = request.url.path.rsplit("/", 1)[-1]
-            if route not in {"open", "playlist", "segment", "close"}:
+            if route not in {"open", "playlist", "segment", "close", "renew"}:
                 route = "other"
             try:
                 result = await call_next(request)
@@ -200,6 +200,9 @@ def main():
             with os.fdopen(fd, "w") as out:
                 json.dump(data, out)
             for trial in range(1, 4):
+                for suffix, ident in tokens.items():
+                    data[suffix], _ = issue_session_token(ident, settings)
+                config.write_text(json.dumps(data))
                 upstream.begin_round()
                 with observation_lock:
                     observations.clear()
@@ -223,8 +226,6 @@ def main():
                 assert all(pool.closed and pool.response.closed for pool in upstream.pools)
                 assert all(url in routes for url in upstream.calls)
                 print(f"VIVOAPK_PRIVATE_LOOPBACK_ROUND={trial}:PASS", flush=True)
-            # Both accounts must still contribute to the shared admission
-            # counter. A test that bypasses the real limiter is not acceptable.
             with dbfactory() as db:
                 buckets = db.scalars(select(AuthRateWindow)).all()
                 global_bucket = next(b for b in buckets if b.bucket_key == "c:global")
@@ -233,6 +234,36 @@ def main():
                 assert global_bucket.attempts == sum(b.attempts for b in individual)
                 assert all(b.attempts > 0 for b in individual)
             print("VIVOAPK_PRIVATE_LOOPBACK_POSTGRES_ADMISSION_ACCOUNTING=PASS", flush=True)
+            # Separate lifecycle round: one original account token and one
+            # scoped grant expire in real wall-clock time while A stays active.
+            # Keep the same loopback lease, then decode A again; B is reaped
+            # without an HTTP request to its session.
+            with dbfactory() as db:
+                db.query(AuthRateWindow).delete()
+                db.commit()
+            for suffix, ident in tokens.items():
+                data[suffix], _ = issue_session_token(ident, settings)
+            config.write_text(json.dumps(data))
+            upstream.begin_round()
+            with observation_lock:
+                observations.clear()
+            result = subprocess.run(["dotnet", str(assembly), str(config), "lifecycle"],
+                                    capture_output=True, text=True, timeout=110)
+            for line in (result.stdout + "\n" + result.stderr).splitlines():
+                if line.startswith("VIVOAPK_PRIVATE_LOOPBACK_"):
+                    print(line, flush=True)
+            with observation_lock:
+                lifecycle = dict(observations)
+            print("VIVOAPK_PRIVATE_LOOPBACK_LIFECYCLE_OBSERVATION=" + json.dumps({
+                "statuses": lifecycle, "active_backend_sessions": len(app.state.private_hls_registry._entries),
+                "overlapping_origins": upstream.overlaps,
+            }, sort_keys=True), flush=True)
+            assert result.returncode == 0, "Private loopback lifecycle failed"
+            assert lifecycle.get("renew_200", 0) >= 2
+            assert upstream.overlaps == 2
+            assert not app.state.private_hls_registry._entries
+            assert all(pool.closed and pool.response.closed for pool in upstream.pools)
+            print("VIVOAPK_PRIVATE_LOOPBACK_REAL_TTL_AND_ABANDONMENT=PASS", flush=True)
             print("VIVOAPK_PRIVATE_LOOPBACK_BACKEND_UDS_AND_CLEANUP=PASS", flush=True)
         finally:
             server.should_exit = True

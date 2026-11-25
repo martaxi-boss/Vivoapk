@@ -2,6 +2,9 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import asyncio
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
@@ -60,11 +63,17 @@ def private_client(settings, session_factory):
         resolver=public_dns, pool_factory=upstream.factory,
     )
     with TestClient(app) as client:
-        def post(action, suffix="a", payload=None, key=KEY):
-            return client.post(PATH + action, json=payload or {}, headers={
+        grants = {}
+        def post(action, suffix="a", payload=None, key=KEY, credential=None):
+            token = (tokens[suffix] if action == "open"
+                     else grants.get(suffix, tokens[suffix]))
+            result = client.post(PATH + action, json=payload or {}, headers={
                 "X-Vivoapk-Media-Key": key,
-                "Authorization": "Bearer " + tokens[suffix],
+                "Authorization": "Bearer " + (credential if credential is not None else token),
             })
+            if result.status_code == 200 and action in {"open", "renew"}:
+                grants[suffix] = result.json()["media_token"]
+            return result
         yield client, post, upstream, xtream, rows
 
 
@@ -140,3 +149,70 @@ def test_revocation_and_origin_change_fail_closed(private_client):
     rows[901].password = SecretStr("changed-fixture-password")
     assert post("playlist", payload={"session_id": sid}).status_code == 404
     assert len(upstream.calls) == count
+
+
+def test_rotating_grant_cannot_be_replayed_or_open_other_assets(private_client):
+    client, post, upstream, xtream, _ = private_client
+    a = post("open", payload=request_for("a")).json()
+    b = post("open", suffix="b", payload=request_for("b")).json()
+    sa, sb = a["session_id"], b["session_id"]
+    old = a["media_token"]
+    assert a["valid_for_seconds"] == 300 and len(old) == 43
+    assert post("renew", suffix="b", payload={"session_id": sa}).status_code == 404
+    assert post("open", payload=request_for("a"), credential=old).status_code == 401
+    assert client.post("/v1/catalog/list", json={"kind": "live", "platform": "android"},
+                       headers={"Authorization": "Bearer " + old}).status_code == 401
+    rotated = post("renew", payload={"session_id": sa})
+    assert rotated.status_code == 200 and rotated.headers["Cache-Control"] == "no-store"
+    new = rotated.json()["media_token"]
+    assert old != new and "session_token" not in rotated.json()
+    assert post("renew", payload={"session_id": sa}, credential=old).status_code == 404
+    assert post("playlist", payload={"session_id": sa}, credential=old).status_code == 404
+    playlist = post("playlist", payload={"session_id": sa})
+    assert playlist.status_code == 200
+    assert post("segment", payload={"session_id": sa,
+                 "segment_id": handles(playlist.text)[0]}).content == TS
+    calls = len(upstream.calls)
+    xtream.status = "DISABLED"
+    assert post("renew", payload={"session_id": sa}).status_code == 404
+    assert len(upstream.calls) == calls
+    xtream.status = "SUCCESS"
+    assert post("playlist", payload={"session_id": sa}).status_code == 404
+    assert post("playlist", suffix="b", payload={"session_id": sb}).status_code == 200
+    assert post("close", suffix="b", payload={"session_id": sb}).status_code == 204
+
+
+def test_periodic_sweep_releases_expired_grant_without_request(private_client, monkeypatch):
+    # Run the exact async sweep loop with a short fixture interval; no API
+    # request is made after advancing the entry's monotonic deadline.
+    client, post, _, _, _ = private_client
+    a = post("open", payload=request_for("a")).json()
+    b = post("open", suffix="b", payload=request_for("b")).json()
+    registry = client.app.state.private_hls_registry
+    sa, sb = a["session_id"], b["session_id"]
+    with registry._lock:
+        entry = registry._entries[sa]
+        entry.grant_expires = time.monotonic() - 1
+    monkeypatch.setattr("app.private_media_api._SWEEP_SECONDS", 0.01)
+
+    async def check():
+        task = asyncio.create_task(registry.run_sweeper())
+        try:
+            for _ in range(100):
+                with registry._lock:
+                    if sa not in registry._entries:
+                        break
+                await asyncio.sleep(.01)
+            with registry._lock:
+                assert sa not in registry._entries and sb in registry._entries
+                assert entry.source is None and entry.player is None and not entry.grant_digest
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    asyncio.run(check())
+    assert post("renew", payload={"session_id": sa}).status_code == 404
+    assert post("playlist", suffix="b", payload={"session_id": sb}).status_code == 200
+    assert post("close", suffix="b", payload={"session_id": sb}).status_code == 204

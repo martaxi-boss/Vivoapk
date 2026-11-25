@@ -103,6 +103,31 @@ try
     if (result[0].FirstFrame == result[1].FirstFrame)
         throw new InvalidOperationException();
     Console.WriteLine($"VIVOAPK_PRIVATE_LOOPBACK_FFMPEG_TWO_STREAMS=PASS video={result[0].Video}/{result[1].Video} audio={result[0].Audio}/{result[1].Audio}");
+    if (args.Length == 2 && args[1] == "lifecycle")
+    {
+        // Wait beyond the actual initial grant and account-token lifetime.
+        // Keep A active without touching B. A's scoped token must rotate
+        // without changing the local playlist or reopening the account.
+        checkpoint = "real grant renewal and abandonment";
+        var started = Stopwatch.StartNew();
+        while (started.Elapsed < TimeSpan.FromSeconds(42))
+        {
+            await Task.Delay(TimeSpan.FromSeconds(4), ct);
+            using var response = await http.GetAsync(a.Playlist, ct);
+            if (response.StatusCode != HttpStatusCode.OK)
+                throw new InvalidOperationException();
+        }
+        using (var expired = await http.GetAsync(b.Playlist, ct))
+            if (expired.StatusCode != HttpStatusCode.NotFound)
+                throw new InvalidOperationException();
+        var resumed = await Decode(a.Playlist, "a_after_initial_expiry");
+        if (resumed.Video != result[0].Video || resumed.Audio != result[0].Audio
+            || resumed.FirstFrame != result[0].FirstFrame)
+            throw new InvalidOperationException();
+        await bridge.CloseAsync(ownerA, a, ct);
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_RENEWED_SAME_LEASE_AND_EXPIRED_OTHER=PASS");
+        return 0;
+    }
     checkpoint = "session close isolation";
     await bridge.CloseAsync(ownerA, a, ct);
     using (var response = await http.GetAsync(a.Playlist, ct))

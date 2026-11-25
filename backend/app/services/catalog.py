@@ -85,7 +85,14 @@ class CatalogService:
         self._catalog_client_factory = catalog_client_factory
 
     def _authorize(self, *, token: str, platform: ClientPlatform) -> tuple[str, str, str]:
-        mapping_id = mapping_id_for_token(token, self._settings)
+        return self._authorize_mapping(
+            mapping_id=mapping_id_for_token(token, self._settings), platform=platform,
+        )
+
+    def _authorize_mapping(self, *, mapping_id: int, platform: ClientPlatform) -> tuple[str, str, str]:
+        # Only trusted in-process callers that have already authenticated a
+        # signed catalogue token or an exact private media grant may call this.
+        # No route accepts a mapping ID supplied by a client.
         mapping = self._db.get(SubscriptionMapping, mapping_id)
         if mapping is None or _expired(mapping.expiring_at):
             raise CatalogDenied("Subscription unavailable")

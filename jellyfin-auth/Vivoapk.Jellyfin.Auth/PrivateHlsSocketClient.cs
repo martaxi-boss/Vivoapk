@@ -50,7 +50,13 @@ internal sealed class PrivateHlsSocketClient : IDisposable
 
     internal static bool IsId(string? value) => value is not null && Id.IsMatch(value);
 
-    internal async Task<string> OpenAsync(string token, string category, string asset,
+    internal sealed class Grant(string token, int seconds)
+    {
+        internal string Token { get; } = token;
+        internal int Seconds { get; } = seconds;
+    }
+
+    internal async Task<(string SessionId, Grant Grant)> OpenAsync(string token, string category, string asset,
         string platform, CancellationToken ct)
     {
         if (!Number.IsMatch(category) || !Number.IsMatch(asset)
@@ -63,7 +69,26 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         if (!json.RootElement.TryGetProperty("session_id", out var id)
             || id.ValueKind != JsonValueKind.String || !IsId(id.GetString()))
             throw new InvalidOperationException("Private media unavailable");
-        return id.GetString()!;
+        return (id.GetString()!, ParseGrant(json.RootElement));
+    }
+
+    private static Grant ParseGrant(JsonElement root)
+    {
+        if (!root.TryGetProperty("media_token", out var token) || token.ValueKind != JsonValueKind.String
+            || token.GetString() is not string value || value.Length != 43
+            || !value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')
+            || !root.TryGetProperty("valid_for_seconds", out var ttl) || !ttl.TryGetInt32(out var seconds)
+            || seconds is < 30 or > 300)
+            throw new InvalidOperationException("Invalid private media grant");
+        return new Grant(value, seconds);
+    }
+
+    internal async Task<Grant> RenewAsync(string grant, string sessionId, CancellationToken ct)
+    {
+        var body = await SendAsync("renew", grant, new { session_id = RequireId(sessionId) },
+            "application/json", 4096, ct).ConfigureAwait(false);
+        using var json = JsonDocument.Parse(body);
+        return ParseGrant(json.RootElement);
     }
 
     internal Task<byte[]> PlaylistAsync(string token, string sessionId, CancellationToken ct)

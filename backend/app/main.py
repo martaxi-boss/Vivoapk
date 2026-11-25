@@ -1,5 +1,7 @@
 """Vivoapk: Mega OTT login control plane, never an IPTV restreamer."""
+import asyncio
 import hmac
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -35,7 +37,20 @@ from app.services.session import SessionResolver
 def create_app(settings: Settings | None = None) -> FastAPI:
     runtime_settings = settings or get_settings()
     configure_logging()
-    app = FastAPI(title="Vivoapk Mega OTT Resolver", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        registry = getattr(application.state, "private_hls_registry", None)
+        task = asyncio.create_task(registry.run_sweeper()) if registry is not None else None
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                registry.shutdown()
+
+    app = FastAPI(title="Vivoapk Mega OTT Resolver", version="0.1.0", lifespan=lifespan)
     app.state.settings = runtime_settings
     app.state.session_factory = build_session_factory(runtime_settings.database_url)
     app.state.xtream_client_factory = XtreamClient

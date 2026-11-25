@@ -26,11 +26,16 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _admission = new(1, 1);
     private readonly Uri _base;
+    private readonly CancellationTokenSource _stopping = new();
+    private readonly Task _sweeper;
+    private int _disposed;
 
-    private sealed class Entry(Guid owner, string token, string sessionId)
+    private sealed class Entry(Guid owner, PrivateHlsSocketClient.Grant grant, string sessionId, long issued)
     {
         internal readonly Guid Owner = owner;
-        internal readonly string Token = token;
+        internal string Token = grant.Token;
+        internal long GrantExpires = issued + grant.Seconds * 1000L;
+        internal long RenewAt = issued + grant.Seconds * 500L;
         internal readonly string SessionId = sessionId;
         internal readonly SemaphoreSlim Gate = new(1, 1);
         internal long LastUse = Environment.TickCount64;
@@ -47,6 +52,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         _backend = backend;
         _app = app;
         _base = address;
+        _sweeper = SweepAsync(_stopping.Token);
     }
 
     internal static async Task<PrivateHlsLoopback> StartAsync(PrivateHlsSocketClient backend,
@@ -104,11 +110,13 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         {
             if (_entries.Count >= 2 || _entries.Values.Any(e => e.Owner == owner))
                 throw new InvalidOperationException("Private media admission limit");
-            var session = await _backend.OpenAsync(token, category, asset, platform, ct).ConfigureAwait(false);
+            var issued = Environment.TickCount64;
+            var opened = await _backend.OpenAsync(token, category, asset, platform, ct).ConfigureAwait(false);
+            var session = opened.SessionId;
             var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-            if (!_entries.TryAdd(id, new Entry(owner, token, session)))
+            if (!_entries.TryAdd(id, new Entry(owner, opened.Grant, session, issued)))
             {
-                await _backend.CloseAsync(token, session, ct).ConfigureAwait(false);
+                await _backend.CloseAsync(opened.Grant.Token, session, ct).ConfigureAwait(false);
                 throw new InvalidOperationException("Private media admission failed");
             }
             return new Lease(id, new Uri(_base, "/vivoapk/" + id + "/index.m3u8"));
@@ -134,6 +142,60 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         {
             entry.Gate.Release();
         }
+    }
+
+    // Backend and local capability cleanup need no extra service. Idle or
+    // expired entries are removed without a subsequent client request.
+    private async Task SweepAsync(CancellationToken stopping)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stopping).ConfigureAwait(false))
+            {
+                foreach (var pair in _entries.ToArray())
+                {
+                    var entry = pair.Value;
+                    if (!entry.Gate.Wait(0))
+                        continue;
+                    try
+                    {
+                        var now = Environment.TickCount64;
+                        if (now < entry.GrantExpires && now - entry.LastUse < 90000)
+                            continue;
+                        if (!_entries.TryRemove(new KeyValuePair<string, Entry>(pair.Key, entry)))
+                            continue;
+                        if (now < entry.GrantExpires)
+                        {
+                            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+                            deadline.CancelAfter(TimeSpan.FromSeconds(5));
+                            try
+                            {
+                                await _backend.CloseAsync(entry.Token, entry.SessionId, deadline.Token)
+                                    .ConfigureAwait(false);
+                            }
+                            catch (InvalidOperationException) { }
+                        }
+                        entry.Token = "";
+                    }
+                    finally { entry.Gate.Release(); }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }
+    }
+
+    private async Task RenewIfNeededAsync(Entry entry, CancellationToken ct)
+    {
+        var now = Environment.TickCount64;
+        if (now >= entry.GrantExpires)
+            throw new InvalidOperationException("Private media grant expired");
+        if (now < entry.RenewAt)
+            return;
+        var grant = await _backend.RenewAsync(entry.Token, entry.SessionId, ct).ConfigureAwait(false);
+        entry.Token = grant.Token;
+        entry.GrantExpires = now + grant.Seconds * 1000L;
+        entry.RenewAt = now + grant.Seconds * 500L;
     }
 
     private static bool SafePlaylist(byte[] bytes)
@@ -193,6 +255,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
                 http.Response.StatusCode = 404;
                 return;
             }
+            await RenewIfNeededAsync(entry, http.RequestAborted).ConfigureAwait(false);
             var body = playlist
                 ? await _backend.PlaylistAsync(entry.Token, entry.SessionId, http.RequestAborted).ConfigureAwait(false)
                 : await _backend.SegmentAsync(entry.Token, entry.SessionId, segment.Groups[1].Value,
@@ -220,6 +283,10 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+        _stopping.Cancel();
+        await _sweeper.ConfigureAwait(false);
         foreach (var pair in _entries.ToArray())
         {
             try
@@ -236,5 +303,6 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         await _app.StopAsync().ConfigureAwait(false);
         await _app.DisposeAsync().ConfigureAwait(false);
         _admission.Dispose();
+        _stopping.Dispose();
     }
 }

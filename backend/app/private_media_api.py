@@ -1,13 +1,14 @@
-"""Opt-in private HLS control endpoints on the existing backend socket.
+"""Opt-in private HLS routes on the existing single-worker backend.
 
-No origin URLs or provider credentials leave this process. Every operation
-requires both an independent service key and a valid existing account-scoped
-session token. The registry is intentionally bounded for the existing
-single-worker Uvicorn deployment; do not enable it in a multi-worker service.
-No public Nginx route, Jellyfin loopback adapter, or activation is added here.
+Open requires a valid account JWT and an independent service key. Every later
+operation requires that service key AND the exact per-session opaque grant.
+Grants rotate before expiry; never issue or renew an account-wide JWT here.
+Credentials and grant digests remain in RAM; no public route or activation.
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import hmac
 import secrets
 import time
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 from threading import Lock
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -30,8 +32,9 @@ from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.private_hls import PrivateHlsSession
 
 _NO_STORE = {"Cache-Control": "no-store"}
-_MAX_SESSIONS = 2  # Conservative staging gate; not a certified VPS capacity.
+_MAX_SESSIONS = 2
 _IDLE_SECONDS = 90
+_SWEEP_SECONDS = 5
 
 
 class OpenLiveRequest(BaseModel):
@@ -58,6 +61,8 @@ class _Entry:
     busy: bool = True
     source: AuthorizedMediaOrigin | None = None
     player: PrivateHlsSession | None = None
+    grant_digest: bytes = b""
+    grant_expires: float = 0.0
 
 
 def _http(status: int) -> HTTPException:
@@ -65,14 +70,17 @@ def _http(status: int) -> HTTPException:
                          headers=_NO_STORE)
 
 
-class PrivateHlsRegistry:
-    """RAM-only session admission, exact owner binding, and idle expiration.
+def _digest(grant: str) -> bytes:
+    return hashlib.sha256(grant.encode("utf-8")).digest()
 
-    No upstream I/O under the registry lock. One in-flight operation per session;
-    a concurrent operation must retry. Lazy expiry is bounded by two entries,
-    and a later operation cannot revive an idle-expired entry.
+
+class PrivateHlsRegistry:
+    """Bounded, single-worker, RAM-only registry. Busy operations are not
+    deleted by a sweeper. Every operation also checks expiration under lock.
+    A rotation is atomic with respect to the entry's exclusive borrow.
     """
-    def __init__(self) -> None:
+    def __init__(self, ttl: int) -> None:
+        self._ttl = ttl
         self._entries: dict[str, _Entry] = {}
         self._lock = Lock()
 
@@ -82,13 +90,40 @@ class PrivateHlsRegistry:
             entry.player.close()
         entry.player = None
         entry.source = None
+        entry.grant_digest = b""
+        entry.grant_expires = 0.0
 
     def _prune(self) -> None:
         now = time.monotonic()
         for key, entry in tuple(self._entries.items()):
-            if not entry.busy and now - entry.seen >= _IDLE_SECONDS:
+            if not entry.busy and (now - entry.seen >= _IDLE_SECONDS
+                                   or now >= entry.grant_expires):
                 del self._entries[key]
                 self._dispose(entry)
+
+    def sweep(self) -> None:
+        with self._lock:
+            self._prune()
+
+    async def run_sweeper(self) -> None:
+        while True:
+            await asyncio.sleep(_SWEEP_SECONDS)
+            self.sweep()
+
+    def shutdown(self) -> None:
+        # ASGI lifespan shutdown follows request draining.
+        with self._lock:
+            for key, entry in tuple(self._entries.items()):
+                if not entry.busy:
+                    del self._entries[key]
+                    self._dispose(entry)
+
+    def rotate(self, entry: _Entry) -> dict:
+        # Only called inside an exclusive reserve or borrow.
+        grant = secrets.token_urlsafe(32)
+        entry.grant_digest = _digest(grant)
+        entry.grant_expires = time.monotonic() + self._ttl
+        return {"media_token": grant, "valid_for_seconds": self._ttl}
 
     @contextmanager
     def reserve(self, owner: int, platform: ClientPlatform) -> Iterator[tuple[str, _Entry]]:
@@ -105,7 +140,8 @@ class PrivateHlsRegistry:
         committed = False
         try:
             yield key, entry
-            committed = entry.source is not None and entry.player is not None
+            committed = (entry.source is not None and entry.player is not None
+                         and bool(entry.grant_digest) and time.monotonic() < entry.grant_expires)
             if not committed:
                 raise _http(503)
         finally:
@@ -117,17 +153,23 @@ class PrivateHlsRegistry:
                     self._entries.pop(key, None)
                     self._dispose(entry)
 
+    def _match(self, key: str, grant: str) -> _Entry:
+        self._prune()
+        entry = self._entries.get(key)
+        if (entry is None or len(grant) != 43 or not entry.grant_digest
+                or not hmac.compare_digest(entry.grant_digest, _digest(grant))
+                or time.monotonic() >= entry.grant_expires):
+            raise _http(404)
+        if entry.busy:
+            raise _http(429)
+        if entry.player is None or entry.source is None:
+            raise _http(404)
+        return entry
+
     @contextmanager
-    def borrow(self, key: str, owner: int) -> Iterator[_Entry]:
+    def borrow(self, key: str, grant: str) -> Iterator[_Entry]:
         with self._lock:
-            self._prune()
-            entry = self._entries.get(key)
-            if entry is None or entry.owner != owner:
-                raise _http(404)
-            if entry.busy:
-                raise _http(429)
-            if entry.player is None or entry.source is None:
-                raise _http(404)
+            entry = self._match(key, grant)
             entry.busy = True
         success = False
         try:
@@ -137,41 +179,27 @@ class PrivateHlsRegistry:
             with self._lock:
                 if self._entries.get(key) is entry:
                     entry.busy = False
-                    if success:
+                    if success and time.monotonic() < entry.grant_expires:
                         entry.seen = time.monotonic()
                     else:
-                        # Fail closed. A bad/revoked upstream session cannot be
-                        # reused; an authorized client can request a new one.
                         self._entries.pop(key, None)
                         self._dispose(entry)
 
-    def close(self, key: str, owner: int) -> None:
+    def close(self, key: str, grant: str) -> None:
         with self._lock:
-            self._prune()
-            entry = self._entries.get(key)
-            if entry is None or entry.owner != owner:
-                raise _http(404)
-            if entry.busy:
-                raise _http(429)
+            entry = self._match(key, grant)
             del self._entries[key]
             self._dispose(entry)
 
 
-@dataclass(frozen=True, slots=True, repr=False)
-class _Identity:
-    mapping_id: int
-    token: str
-
-
 def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
-    registry = PrivateHlsRegistry()
+    registry = PrivateHlsRegistry(settings.session_ttl_seconds)
     app.state.private_hls_registry = registry
-    # Test injection only. No new listening socket or external route.
     app.state.private_hls_factory = lambda source: PrivateHlsSession(
         source, entitlement=lambda: EntitlementState.UNAVAILABLE,
     )
 
-    def identity(request: Request) -> _Identity:
+    def credential(request: Request) -> str:
         key = settings.private_media_key
         keys = request.headers.getlist("x-vivoapk-media-key")
         auth = request.headers.getlist("authorization")
@@ -180,11 +208,7 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
             raise _http(403)
         if len(auth) != 1 or not auth[0].startswith("Bearer ") or len(auth[0]) > 4120:
             raise _http(401)
-        token = auth[0][7:]
-        try:
-            return _Identity(mapping_id_for_token(token, settings), token)
-        except CatalogDenied:
-            raise _http(401) from None
+        return auth[0][7:]
 
     def catalogue(request: Request, db: Session) -> CatalogService:
         return CatalogService(
@@ -193,17 +217,14 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
             catalog_client_factory=request.app.state.catalog_client_factory,
         )
 
-    def entitlement(service: CatalogService, caller: _Identity, entry: _Entry):
+    def entitlement(service: CatalogService, entry: _Entry):
         def verify() -> EntitlementState:
-            # Use the exact mapping and selected platform again, not the generic
-            # entitlement check's Android DNS. A changed origin/credential
-            # requires a new authorized session; never silently rebind one.
             source = entry.source
-            if source is None:
+            if source is None or time.monotonic() >= entry.grant_expires:
                 return EntitlementState.UNAVAILABLE
             try:
-                origin, username, password = service._authorize(
-                    token=caller.token, platform=entry.platform,
+                origin, username, password = service._authorize_mapping(
+                    mapping_id=entry.owner, platform=entry.platform,
                 )
             except CatalogDenied:
                 return EntitlementState.DISABLED
@@ -211,46 +232,57 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
                 return EntitlementState.UNAVAILABLE
             if (origin != source.origin or username != source.username
                     or not hmac.compare_digest(password.encode(),
-                                               source.password.get_secret_value().encode())):
+                                               source.password.get_secret_value().encode())
+                    or time.monotonic() >= entry.grant_expires):
                 return EntitlementState.DISABLED
             return EntitlementState.ACTIVE
         return verify
 
-    # All opaque identifiers are in the private POST body, not access-log URLs.
-    # A service-key header alone is never a grant to another account's session.
     @app.post("/_internal/media/hls/open", include_in_schema=False)
     def open_live(
-        payload: OpenLiveRequest, request: Request, caller: _Identity = Depends(identity),
+        payload: OpenLiveRequest, request: Request, token: str = Depends(credential),
         db: Session = Depends(get_db),
     ):
-        with registry.reserve(caller.mapping_id, payload.platform) as (key, entry):
+        try:
+            owner = mapping_id_for_token(token, settings)
+        except CatalogDenied:
+            raise _http(401) from None
+        with registry.reserve(owner, payload.platform) as (key, entry):
             try:
-                source = catalogue(request, db).authorize_media_origin(
-                    token=caller.token, asset=MediaAsset(
+                entry.source = catalogue(request, db).authorize_media_origin(
+                    token=token, asset=MediaAsset(
                         CatalogKind.LIVE, payload.category_id, payload.asset_id,
                     ), platform=payload.platform,
                 )
-                entry.source = source
-                entry.player = request.app.state.private_hls_factory(source)
+                entry.player = request.app.state.private_hls_factory(entry.source)
+                grant = registry.rotate(entry)
             except CatalogDenied:
                 raise _http(404) from None
             except (CatalogUnavailable, MediaReadError, ValueError):
                 raise _http(503) from None
-        return Response(
-            content='{"session_id":"' + key + '"}', media_type="application/json",
-            headers=_NO_STORE,
-        )
+        return JSONResponse({"session_id": key, **grant}, headers=_NO_STORE)
+
+    @app.post("/_internal/media/hls/renew", include_in_schema=False)
+    def renew(payload: SessionRequest, request: Request, grant: str = Depends(credential),
+              db: Session = Depends(get_db)):
+        with registry.borrow(payload.session_id, grant) as entry:
+            # Never renew an expired/replayed grant or a different asset.
+            # Recheck current subscription and authoritative DNS/credentials.
+            if entitlement(catalogue(request, db), entry)() is not EntitlementState.ACTIVE:
+                raise _http(404)
+            rotated = registry.rotate(entry)
+        return JSONResponse(rotated, headers=_NO_STORE)
 
     @app.post("/_internal/media/hls/playlist", include_in_schema=False)
     def playlist(
-        payload: SessionRequest, request: Request, caller: _Identity = Depends(identity),
+        payload: SessionRequest, request: Request, grant: str = Depends(credential),
         db: Session = Depends(get_db),
     ):
-        with registry.borrow(payload.session_id, caller.mapping_id) as entry:
+        with registry.borrow(payload.session_id, grant) as entry:
             assert entry.player is not None
             try:
                 body = entry.player.refresh(
-                    entitlement=entitlement(catalogue(request, db), caller, entry),
+                    entitlement=entitlement(catalogue(request, db), entry),
                 )
             except MediaReadError:
                 raise _http(404) from None
@@ -258,21 +290,21 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
 
     @app.post("/_internal/media/hls/segment", include_in_schema=False)
     def segment(
-        payload: SegmentRequest, request: Request, caller: _Identity = Depends(identity),
+        payload: SegmentRequest, request: Request, grant: str = Depends(credential),
         db: Session = Depends(get_db),
     ):
-        with registry.borrow(payload.session_id, caller.mapping_id) as entry:
+        with registry.borrow(payload.session_id, grant) as entry:
             assert entry.player is not None
             try:
                 body = entry.player.read_segment(
                     payload.segment_id,
-                    entitlement=entitlement(catalogue(request, db), caller, entry),
+                    entitlement=entitlement(catalogue(request, db), entry),
                 )
             except MediaReadError:
                 raise _http(404) from None
         return Response(body, media_type="video/mp2t", headers=_NO_STORE)
 
     @app.post("/_internal/media/hls/close", include_in_schema=False)
-    def close(payload: SessionRequest, caller: _Identity = Depends(identity)):
-        registry.close(payload.session_id, caller.mapping_id)
+    def close(payload: SessionRequest, grant: str = Depends(credential)):
+        registry.close(payload.session_id, grant)
         return Response(status_code=204, headers=_NO_STORE)
