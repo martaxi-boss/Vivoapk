@@ -2144,12 +2144,59 @@ def main():
                          if task.get("Key") == "VivoapkMegaEntitlementMonitor"]
         if len(monitor_tasks) != 1:
             raise RuntimeError("VivoAPK native entitlement scheduler not registered")
-        mock.statuses["synthetic-mega-user-b"] = "EXPIRED"
-        code, _ = request("POST",
-                          "/ScheduledTasks/Running/" + monitor_tasks[0]["Id"],
-                          token=token)
-        if code not in (200, 204):
-            raise RuntimeError(f"Cannot trigger entitlement task: {code}")
+        monitor_id = monitor_tasks[0]["Id"]
+        monitor_route = "/ScheduledTasks/" + monitor_id
+
+        def task_info():
+            status, info = request("GET", monitor_route, token=token)
+            if status != 200 or not isinstance(info, dict):
+                raise RuntimeError(f"Cannot inspect entitlement task state: {status}")
+            return info
+
+        def execution_key(info):
+            result = info.get("LastExecutionResult") or {}
+            return result.get("StartTimeUtc"), result.get("EndTimeUtc")
+
+        def run_entitlement_check(phase, provider_status):
+            # Jellyfin returns 204 for StartTask before the worker completes.
+            # Starting a still-running worker is rejected internally, even
+            # though the HTTP response is successful. Wait for a new completed
+            # execution, not merely an accepted HTTP request or user state.
+            deadline = time.monotonic() + 30
+            while True:
+                before = task_info()
+                if before.get("State") == "Idle":
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"Entitlement task not idle before {phase}")
+                time.sleep(0.25)
+
+            previous = execution_key(before)
+            mock.statuses["synthetic-mega-user-b"] = provider_status
+            status, _ = request("POST", "/ScheduledTasks/Running/" + monitor_id, token=token)
+            if status not in (200, 204):
+                raise RuntimeError(f"Cannot trigger entitlement task for {phase}: {status}")
+            deadline = time.monotonic() + 30
+            while True:
+                current = task_info()
+                result = current.get("LastExecutionResult") or {}
+                observed = execution_key(current)
+                if (current.get("State") == "Idle" and all(observed)
+                        and observed != previous):
+                    if result.get("Status") != "Completed":
+                        raise RuntimeError(f"Entitlement task {phase} failed: {result.get('Status')}")
+                    print("JELLYFIN_ENTITLEMENT_TASK_COMPLETED=" + json.dumps({
+                        "phase": phase, "new_execution": True,
+                        "state": current["State"], "result": result["Status"]
+                    }, sort_keys=True), flush=True)
+                    return
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"No new completed entitlement task for {phase}; "
+                                       f"state={current.get('State')}, "
+                                       f"execution_changed={observed != previous}")
+                time.sleep(0.25)
+
+        run_entitlement_check("expiry", "EXPIRED")
         revoked = False
         for _ in range(60):
             code, profile_b = request("GET", "/Users/" + account_b, token=token)
@@ -2167,18 +2214,7 @@ def main():
         print("JELLYFIN_SYNTHETIC_ACTIVE_MEGA_NATIVE_SESSION_PRESERVED=PASS")
         # Renewal of the SAME provider subscription restores only the
         # restriction created by the VivoAPK task; no new account/password.
-        mock.statuses["synthetic-mega-user-b"] = "ACTIVE"
-        restarted = False
-        for _ in range(30):
-            code, _ = request("POST",
-                              "/ScheduledTasks/Running/" + monitor_tasks[0]["Id"],
-                              token=token)
-            if code in (200, 204):
-                restarted = True
-                break
-            time.sleep(0.5)
-        if not restarted:
-            raise RuntimeError("Cannot re-run entitlement task after renewal")
+        run_entitlement_check("renewal", "ACTIVE")
         renewed = False
         for _ in range(60):
             code, profile_b = request("GET", "/Users/" + account_b, token=token)
