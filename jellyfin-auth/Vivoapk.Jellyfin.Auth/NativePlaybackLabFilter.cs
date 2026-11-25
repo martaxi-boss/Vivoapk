@@ -1,5 +1,7 @@
 #if VIVOAPK_NATIVE_PLAYBACK_LAB
 using System.Collections.Concurrent;
+using System.Globalization;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Session;
@@ -80,10 +82,65 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
             job!.TranscodingSegmentCleaner is not null, job.DownloadPositionTicks, job.ActiveRequestCount);
         var stopping = http.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
         var sessions = http.RequestServices.GetRequiredService<ISessionManager>();
-        _ = RecoverCompletedFixtureAsync(manager, sessions, session, device, owner, itemId, state, logger, stopping);
+        var config = http.RequestServices.GetService<IConfigurationManager>();
+        _ = RecoverCompletedFixtureAsync(manager, sessions, config, session, device, owner, itemId, state, logger, stopping);
     }
 
-    private async Task RecoverCompletedFixtureAsync(ITranscodeManager manager, ISessionManager sessions, string session,
+    // Read-only diagnostics for the exact v12.4 cleaner prerequisites.
+    // No alteration of its timers, configuration, jobs or segment files.
+    private static void ObserveNativeCleanerEligibility(TranscodingJob job,
+        IConfigurationManager? config, ILogger logger)
+    {
+        try
+        {
+            var options = config?.GetEncodingOptions();
+            var keep = Math.Max(options?.SegmentKeepSeconds ?? 20, 20);
+            var ticks = job.DownloadPositionTicks;
+            var cutoff = ticks.GetValueOrDefault() - TimeSpan.FromSeconds(keep).Ticks;
+            var eligible = cutoff > 0 ? job.GetHighestServedSegmentIndexEndingAtOrBefore(cutoff) : null;
+            var matching = 0;
+            var earliest = int.MaxValue;
+            var latest = -1;
+            var scanned = 0;
+            var path = job.Path!;
+            var root = Environment.GetEnvironmentVariable("RUNNER_TEMP");
+            var directory = Path.GetDirectoryName(path);
+            var stem = Path.GetFileNameWithoutExtension(path);
+            // Restrict enumeration to the disposable runner and this observed
+            // playlist's own segment namespace. Never output paths or names.
+            if (root is not null && directory is not null &&
+                Path.GetFullPath(directory).StartsWith(
+                    Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                    StringComparison.Ordinal) && stem.Length > 0 &&
+                stem.All(char.IsAsciiHexDigit))
+            {
+                foreach (var file in Directory.EnumerateFiles(directory, stem + "*.ts").Take(512))
+                {
+                    scanned++;
+                    var name = Path.GetFileNameWithoutExtension(file);
+                    if (!name.StartsWith(stem, StringComparison.Ordinal) ||
+                        !int.TryParse(name.AsSpan(stem.Length), NumberStyles.None,
+                            CultureInfo.InvariantCulture, out var index))
+                        continue;
+                    earliest = Math.Min(earliest, index);
+                    latest = Math.Max(latest, index);
+                    if (eligible.HasValue && index >= 0 && index <= eligible.Value)
+                        matching++;
+                }
+            }
+            logger.LogInformation("VIVOAPK_LAB_NATIVE_CLEANER_DIAG configAvailable={Config} enabled={Enabled} keepSec={Keep} eligibleIndex={Eligible} matchingOldTs={Matching} scannedTs={Scanned} minIndex={Min} maxIndex={Max} isHls={Hls}",
+                options is not null, options?.EnableSegmentDeletion, keep, eligible,
+                matching, scanned, earliest == int.MaxValue ? -1 : earliest, latest,
+                job.Type == TranscodingJobType.Hls);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("VIVOAPK_LAB_NATIVE_CLEANER_DIAG_ERROR ({ErrorType})", ex.GetType().Name);
+        }
+    }
+
+    private async Task RecoverCompletedFixtureAsync(ITranscodeManager manager, ISessionManager sessions,
+        IConfigurationManager? config, string session,
         string device, Guid owner, Guid itemId, FixtureRecovery state, ILogger logger, CancellationToken stopping)
     {
         try
@@ -115,6 +172,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                         job!.TranscodingSegmentCleaner is not null, job.DownloadPositionTicks, job.ActiveRequestCount,
                         job.HasExited, job.IsUserPaused, matches.Length, (long)actualIdle, mediaIdle,
                         (long)(DateTime.UtcNow - job.LastPingDate).TotalMilliseconds);
+                    ObserveNativeCleanerEligibility(job, config, logger);
                 }
                 if (client is null || client.PlayState.IsPaused || actualIdle < FixtureIdleMilliseconds ||
                     mediaIdle < FixtureIdleMilliseconds || !job!.HasExited ||
