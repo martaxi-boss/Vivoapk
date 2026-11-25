@@ -35,7 +35,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
     private const long FixtureIdleMilliseconds = 80000;
     private readonly ConcurrentDictionary<string, FixtureRecovery> _recoveries = new(StringComparer.OrdinalIgnoreCase);
 
-    private readonly PrivateLiveRecovery _privateLive = new();
+    private readonly PrivateLiveRecovery _privateLive = new("X-Vivoapk-Lab-Guard");
 
     private sealed class FixtureRecovery(TranscodingJob job)
     {
@@ -329,7 +329,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 buffer.Position = 0;
                 var node = await JsonNode.ParseAsync(buffer, cancellationToken: http.RequestAborted)
                     .ConfigureAwait(false) ?? throw new InvalidOperationException("Missing playback response");
-                PrivateHlsNativeLab.SanitizePlaybackInfo(node);
+                PrivatePlaybackResponse.SanitizePlaybackInfo(node);
                 if (reserved)
                 {
                     if (node is not JsonObject response || response["MediaSources"] is not JsonArray sources
@@ -373,7 +373,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                     if (!bound)
                     {
                         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-                        await services.GetRequiredService<PrivateHlsNativeLab>()
+                        await services.GetRequiredService<PrivateNativeHls>()
                             .ReleaseUnstartedAsync(owner, deadline.Token).ConfigureAwait(false);
                         cache!.Remove(cacheKey!);
                     }
@@ -436,7 +436,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
             await _privateLive.StopAsync(http, downstream, owner, item, session).ConfigureAwait(false);
             return;
         }
-        var lab = http.RequestServices.GetRequiredService<PrivateHlsNativeLab>();
+        var lab = http.RequestServices.GetRequiredService<PrivateNativeHls>();
         var jobs = http.RequestServices.GetRequiredService<ITranscodeManager>();
         if (owner == Guid.Empty || !await lab.MatchesJobAsync(owner, jobs.GetTranscodingJob(session),
                 http.User.FindFirst("Jellyfin-DeviceId")?.Value, session, http.RequestAborted).ConfigureAwait(false))

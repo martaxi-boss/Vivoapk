@@ -1,5 +1,9 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using Jellyfin.Plugin.VivoapkMegaAuth;
 
 var cases = new (string Response, HttpStatusCode Status, bool Expected)[]
@@ -91,6 +95,54 @@ using (var handler = new SyntheticHandler("{\"code\":\"SUCCESS\"}", HttpStatusCo
     passed++;
 }
 Console.WriteLine($"VivoAPK Jellyfin auth and monitor synthetic checks: {passed}/{passed} PASS");
+
+// Read the actual ordinary plugin DLL, not a source-linked harness or a
+// reflection load of all Jellyfin-dependent types. The three shared classes
+// must exist, while the lab registration and fixture-only transport do not.
+var assembly = typeof(MegaResolverClient).Assembly;
+using (var dll = File.OpenRead(assembly.Location))
+using (var pe = new PEReader(dll))
+{
+    var reader = pe.GetMetadataReader();
+    var names = reader.TypeDefinitions.Select(h =>
+        reader.GetString(reader.GetTypeDefinition(h).Name)).ToHashSet(StringComparer.Ordinal);
+    if (!names.Contains("PrivateNativeHls") || !names.Contains("PrivateLiveRecovery")
+        || !names.Contains("PrivatePlaybackResponse") || names.Contains("PrivateHlsNativeLab")
+        || names.Contains("NativePlaybackLabFilter"))
+        throw new InvalidOperationException("Ordinary plugin shared/fixture type boundary failed.");
+}
+Console.WriteLine("VIVOAPK_REGULAR_DLL_SHARED_NATIVE_CORE=PASS");
+
+// Exercise the actual common response sanitizer in the normal assembly.
+var sanitizer = assembly.GetType("Jellyfin.Plugin.VivoapkMegaAuth.PrivatePlaybackResponse", true)!
+    .GetMethod("SanitizePlaybackInfo", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("Shared sanitizer not found.");
+var response = JsonNode.Parse("""
+    {"PlaySessionId":"safe","MediaSources":[{"Id":"safe-id","Path":"http://127.0.0.1:12345/vivoapk/opaque/index.m3u8",
+    "EncoderPath":"http://127.0.0.1:12345/vivoapk/opaque/index.m3u8","TranscodingUrl":"/Videos/item/master.m3u8"}]}
+    """)!;
+sanitizer.Invoke(null, [response]);
+var result = response.ToJsonString();
+if (result.Contains("/vivoapk/", StringComparison.OrdinalIgnoreCase)
+    || !result.Contains("/Videos/item/master.m3u8", StringComparison.Ordinal)
+    || response["MediaSources"]![0]!["Id"]!.GetValue<string>() != "safe-id")
+    throw new InvalidOperationException("Normal DLL leaked private source or removed native playback route.");
+foreach (var path in new[] {
+    "http://127.0.0.1:12345/vivoapk/opaque/index.m3u8",
+    "http://127.0.0.1:12345/%2fvivoapk%2fopaque",
+    "/srv/projects/Vivoapk/run/backend.sock",
+    "private-hls-fixture.key"})
+{
+    var unsafeResponse = new JsonObject { ["TranscodingUrl"] = path };
+    bool refused = false;
+    try { sanitizer.Invoke(null, [unsafeResponse]); }
+    catch (TargetInvocationException ex) when (ex.InnerException is InvalidOperationException)
+    { refused = true; }
+    if (!refused)
+        throw new InvalidOperationException("Normal DLL accepted unexpected private source reference.");
+}
+Console.WriteLine("VIVOAPK_REGULAR_DLL_PRIVATE_RESPONSE_SANITATION=PASS");
+
 
 internal sealed class SyntheticHandler(string body, HttpStatusCode status, string expectedPlatform = "android") : HttpMessageHandler
 {

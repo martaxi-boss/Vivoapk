@@ -1,4 +1,3 @@
-#if VIVOAPK_NATIVE_PLAYBACK_LAB
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using MediaBrowser.Controller.MediaEncoding;
@@ -10,10 +9,12 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
-/// <summary>Two-account disposable experiment, not production recovery.
-/// Only the negotiated, authorized owner/device/item/session and exact
-/// observed native job can be recovered. No process scanning or file deletion.</summary>
-internal sealed class PrivateLiveRecovery
+/// <summary>Shared bounded native playback lifecycle, compiled in the normal
+/// plugin but not registered for real-provider playback yet. Only a negotiated,
+/// authorized owner/device/item/session and its exact observed job can be
+/// recovered. No process scanning or file deletion. Current capacity: two.
+/// The host supplies the optional diagnostic header, not the client.</summary>
+internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
 {
     private const long IdleMs = 80000;
     private readonly ConcurrentDictionary<string, State> _states = new(StringComparer.OrdinalIgnoreCase);
@@ -72,9 +73,10 @@ internal sealed class PrivateLiveRecovery
         }
     }
 
-    private static void Deny(HttpContext http)
+    private void Deny(HttpContext http)
     {
-        http.Response.Headers["X-Vivoapk-Lab-Guard"] = "denied";
+        if (diagnosticHeader is not null)
+            http.Response.Headers[diagnosticHeader] = "denied";
         http.Response.Headers.CacheControl = "no-store";
         http.Response.StatusCode = 404;
         http.Response.ContentLength = 0;
@@ -158,7 +160,7 @@ internal sealed class PrivateLiveRecovery
         }
         var services = http.RequestServices;
         var manager = services.GetRequiredService<ITranscodeManager>();
-        var lab = services.GetRequiredService<PrivateHlsNativeLab>();
+        var lab = services.GetRequiredService<PrivateNativeHls>();
         var existing = manager.GetTranscodingJob(session);
         if (existing is not null && !await lab.MatchesJobAsync(owner, existing, device,
                 session, http.RequestAborted).ConfigureAwait(false))
@@ -237,7 +239,7 @@ internal sealed class PrivateLiveRecovery
         }
         var services = http.RequestServices;
         var manager = services.GetRequiredService<ITranscodeManager>();
-        var lab = services.GetRequiredService<PrivateHlsNativeLab>();
+        var lab = services.GetRequiredService<PrivateNativeHls>();
         var job = manager.GetTranscodingJob(session);
         if (job is null || !ReferenceEquals(job, state.Job) ||
             string.IsNullOrEmpty(job.MediaSource?.Path) ||
@@ -283,7 +285,7 @@ internal sealed class PrivateLiveRecovery
     }
 
     private async Task RecoverAsync(ITranscodeManager manager, ISessionManager sessions,
-        PrivateHlsNativeLab lab, string session, State state, ILogger logger,
+        PrivateNativeHls lab, string session, State state, ILogger logger,
         CancellationToken stopping)
     {
         try
@@ -356,4 +358,3 @@ internal sealed class PrivateLiveRecovery
         }
     }
 }
-#endif
