@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import jwt
+from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
 from app.auth_rate_limit import charge_auth_attempt
@@ -28,6 +29,7 @@ from app.schemas import (
     EpgResponse,
     SeriesDetailResponse,
 )
+from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
 
 _SUB = re.compile(r"^mapping:([1-9][0-9]{0,18})$")
@@ -140,6 +142,40 @@ class CatalogService:
             raise CatalogDenied("Subscription unavailable")
 
         return origin, mapping.username, password
+
+    def authorize_media_origin(
+        self, *, token: str, asset: MediaAsset, platform: ClientPlatform,
+    ) -> AuthorizedMediaOrigin:
+        """Internal-only: authorize a specific asset, never accept a caller URL."""
+        origin, username, password = self._authorize(token=token, platform=platform)
+        entries = self._authorized_category_items(
+            origin=origin, username=username, password=password,
+            kind=asset.kind, category_id=asset.category_id,
+        )
+        if asset.kind is CatalogKind.SERIES:
+            if not any(entry["id"] == asset.series_id for entry in entries):
+                raise CatalogDenied("Series not authorized")
+            detail = SeriesDetailResponse.model_validate(
+                self._catalog_client_factory().series_detail(
+                    dns_link=origin, username=username, password=password,
+                    series_id=asset.series_id,
+                )
+            )
+            if detail.series_id != asset.series_id:
+                raise CatalogDenied("Series identity does not match")
+            matches = [e.container_extension for e in detail.episodes if e.id == asset.asset_id]
+        else:
+            matches = [e["container_extension"] for e in entries if e["id"] == asset.asset_id]
+        if len(matches) != 1:
+            raise CatalogDenied("Media not authorized")
+        extension = "m3u8" if asset.kind is CatalogKind.LIVE else matches[0]
+        try:
+            return AuthorizedMediaOrigin(
+                asset=asset, origin=origin, username=username, password=SecretStr(password),
+                extension=extension,
+            )
+        except ValueError:
+            raise CatalogUnavailable("Authorized media format unavailable") from None
 
     def list(self, *, token: str, kind: CatalogKind, platform: ClientPlatform) -> CatalogListResponse:
         origin, username, password = self._authorize(token=token, platform=platform)
