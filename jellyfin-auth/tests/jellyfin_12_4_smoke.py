@@ -295,17 +295,40 @@ def safe_fixture_route(uri, owner_token):
     return safe
 
 
+def native_query_fixture(uri, token, owner_token):
+    safe = safe_fixture_route(uri, owner_token)
+    u = urlsplit(safe)
+    return urlunsplit(("", "", u.path,
+        urlencode(parse_qsl(u.query, keep_blank_values=True) + [("ApiKey", token)]), ""))
+
+
+def require_denied_response(response, stage, identity):
+    status, body, guard = response
+    if status not in (401, 403, 404) or guard != "denied" or body:
+        raise RuntimeError("Native route denial failed: " + json.dumps({
+            "stage": stage, "identity": identity, "status": status,
+            "guard": guard, "response_bytes": len(body)}))
+
+
+def require_native_query_owner(uri, owner_token, stage):
+    status, body, guard = native_bytes(native_query_fixture(uri, owner_token, owner_token))
+    if status != 200 or guard != "allowed":
+        raise RuntimeError("Native query-auth owner failed: " + json.dumps({
+            "stage": stage, "status": status, "guard": guard}))
+    return body
+
+
 def require_native_denial(uri, owner_token, foreign_token, stage):
     safe = safe_fixture_route(uri, owner_token)
     for name, denied_token in (("anonymous", None), ("foreign", foreign_token),
                                ("invalid", "synthetic-invalid-token")):
-        status, body, guard = native_bytes(safe, denied_token)
-        if status not in (401, 403, 404) or guard != "denied" or body:
-            raise RuntimeError("Native route denial failed: " + json.dumps({
-                "stage": stage, "identity": name, "status": status,
-                "guard": guard, "response_bytes": len(body)}))
+        response = native_bytes(safe, denied_token)
+        require_denied_response(response, stage, name)
+        if denied_token:
+            require_denied_response(native_bytes(native_query_fixture(safe, denied_token, owner_token)),
+                                    stage, name + "_query")
         print("JELLYFIN_NATIVE_ROUTE_DENIAL=" + json.dumps({
-            "stage": stage, "identity": name, "status": status, "guard": guard}))
+            "stage": stage, "identity": name, "status": response[0], "guard": response[2]}))
 
 
 def require_native_owner(uri, owner_token, stage):
@@ -317,7 +340,7 @@ def require_native_owner(uri, owner_token, stage):
     return body
 
 
-def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider):
+def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider, mock):
     profile = {
         "Name": "CI server HLS H264 AAC",
         "MaxStreamingBitrate": 2000000, "MaxStaticBitrate": 2000000,
@@ -344,12 +367,19 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     print("JELLYFIN_NATIVE_ROUTE_AUTH_QUERY_KEYS=" + json.dumps(sorted(
         {k for k, v in parse_qsl(urlsplit(route).query, keep_blank_values=True)
          if is_auth_query_key(k)})))
+    master_route = route
     before = provider.requests
     require_native_denial(route, owner_token, foreign_token, "master_before_owner")
+    query_route = native_query_fixture(route, owner_token, owner_token)
+    require_denied_response(native_bytes(query_route, foreign_token), "master", "mixed_credentials")
+    separator = "&" if "?" in query_route else "?"
+    duplicate = query_route + separator + urlencode({"ApiKey": "synthetic-invalid-token"})
+    require_denied_response(native_bytes(duplicate), "master", "duplicate_credentials")
     if provider.requests != before:
         raise RuntimeError("Denied requests reached the synthetic provider")
     body = require_native_owner(route, owner_token, "master")
-    if not body.startswith(b"#EXTM3U"):
+    if not body.startswith(b"#EXTM3U") or not require_native_query_owner(
+            route, owner_token, "master").startswith(b"#EXTM3U"):
         raise RuntimeError("Native HLS master was not a playlist")
     require_native_denial(route, owner_token, foreign_token, "master_after_owner")
     lines = [x.strip() for x in body.decode().splitlines() if x.strip()]
@@ -360,7 +390,8 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
         route = native_route(route, media[0], item_id)
         require_native_denial(route, owner_token, foreign_token, "playlist_before_owner")
         body = require_native_owner(route, owner_token, "playlist")
-        if not body.startswith(b"#EXTM3U"):
+        if not body.startswith(b"#EXTM3U") or not require_native_query_owner(
+                route, owner_token, "playlist").startswith(b"#EXTM3U"):
             raise RuntimeError("Native media playlist was not HLS")
         require_native_denial(route, owner_token, foreign_token, "playlist_after_owner")
     segments = [x.strip() for x in body.decode().splitlines()
@@ -368,6 +399,7 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     if not segments:
         raise RuntimeError("Native playlist has no segments")
     out = base / "server-encoded-output.ts"
+    first_segment = native_route(route, segments[0], item_id)
     with out.open("wb") as dest:
         for relative in segments[:2]:
             segment = native_route(route, relative, item_id)
@@ -376,6 +408,9 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
             if len(content) < 188 or content[0] != 0x47:
                 raise RuntimeError("Native MPEG-TS segment unavailable")
             dest.write(content)
+            query_content = require_native_query_owner(segment, owner_token, "segment")
+            if query_content != content:
+                raise RuntimeError("Native query-auth segment differs from header-auth segment")
             require_native_denial(segment, owner_token, foreign_token, "segment_after_owner")
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                             "stream=codec_type,codec_name", "-of", "json", str(out)],
@@ -401,6 +436,31 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     out.unlink()
     print("JELLYFIN_NATIVE_SERVER_TRANSCODE_VIDEO_AUDIO=PASS")
     print("JELLYFIN_NATIVE_SERVER_FOREIGN_AND_ANONYMOUS_DENIAL=PASS")
+    print("JELLYFIN_NATIVE_SERVER_QUERY_AND_HEADER_AUTH=PASS")
+
+    # Verify the already-created HLS route and cached segment are denied
+    # immediately when the private entitlement endpoint reports non-active.
+    # The test does not wait for a scheduled task or create a new account.
+    for state in ("EXPIRED", "DISABLED", "UNAVAILABLE"):
+        mock.statuses["synthetic-mega-user"] = state
+        count_before = provider.requests
+        for label, uri in (("master", master_route), ("cached_segment", first_segment)):
+            require_denied_response(native_bytes(safe_fixture_route(uri, owner_token), owner_token),
+                                    label, state + "_header")
+            require_denied_response(native_bytes(native_query_fixture(uri, owner_token, owner_token)),
+                                    label, state + "_query")
+        if provider.requests != count_before:
+            raise RuntimeError("Revoked request reached synthetic media origin")
+        code, _ = request("GET", "/Users/Me", token=foreign_token)
+        if code != 200:
+            raise RuntimeError("Other active fixture session was affected by denial")
+        print("JELLYFIN_NATIVE_SERVER_ENTITLEMENT_DENIAL=" + state)
+    mock.statuses["synthetic-mega-user"] = "ACTIVE"
+    if not require_native_query_owner(master_route, owner_token, "renewed_master").startswith(b"#EXTM3U"):
+        raise RuntimeError("Renewed fixture could not access own media")
+    if require_native_owner(first_segment, owner_token, "renewed_segment")[0] != 0x47:
+        raise RuntimeError("Renewed fixture could not access its own segment")
+    print("JELLYFIN_NATIVE_SERVER_ACTIVE_SESSION_RESTORED=PASS")
 
 
 def request_png(uri, *, token):
@@ -751,7 +811,7 @@ def main():
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
         if SERVER_PLAYBACK:
             verify_native_ffmpeg(pilot_item_id, account_a, customer["AccessToken"],
-                                 customer_b["AccessToken"], base, provider)
+                                 customer_b["AccessToken"], base, provider, mock)
             log.flush()
             for folder in (DATAROOT, base / "logs"):
                 for candidate in folder.rglob("*"):

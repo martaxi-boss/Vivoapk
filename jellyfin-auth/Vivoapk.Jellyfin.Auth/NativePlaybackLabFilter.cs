@@ -20,6 +20,9 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 /// </summary>
 public sealed class NativePlaybackLabFilter : IStartupFilter
 {
+    // Uses the existing private entitlement endpoint; no new backend or cache.
+    // Only compiled in the disposable synthetic laboratory.
+    private static readonly MegaResolverClient Entitlements = new();
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
     {
         return app =>
@@ -50,12 +53,11 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 // ran, independent of a successful or unsuccessful core action.
                 var services = http.RequestServices;
                 var logger = services.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
-                // The disposable CI client presents one explicit header credential.
-                // Reject credential-free requests and query aliases before asking
-                // Jellyfin to authenticate. This is NOT a production client contract.
-                if (!http.Request.Headers.TryGetValue("X-Emby-Token", out var headerToken) ||
-                    headerToken.Count != 1 || string.IsNullOrWhiteSpace(headerToken[0]) ||
-                    http.Request.Query.Keys.Any(IsAuthenticationQueryKey))
+                // Native clients can use a header or the server-generated HLS
+                // query token. Never infer identity from an item or play session.
+                // Reject missing, duplicate or ambiguous authentication sources
+                // before invoking the native authentication handler.
+                if (!HasExplicitNativeCredential(http.Request))
                 {
                     Reject(http, logger);
                     return;
@@ -110,11 +112,44 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                     return;
                 }
 
+                // Cached HLS playlists and segments must not survive a revoked
+                // entitlement. Reuse the existing private status check, fail closed
+                // on unavailable/expired/disabled, and recheck snapshot ownership.
+                if (await Entitlements.CheckEntitlementAsync(user.Username, http.RequestAborted)
+                        .ConfigureAwait(false) != EntitlementState.Active ||
+                    !channel.OwnsActiveSnapshot(owner))
+                {
+                    Reject(http, logger);
+                    return;
+                }
+
+                http.Response.Headers.CacheControl = "no-store";
                 http.Response.Headers["X-Vivoapk-Lab-Guard"] = "allowed";
                 await downstream(http).ConfigureAwait(false);
             });
             next(app);
         };
+    }
+
+    private static bool HasExplicitNativeCredential(HttpRequest request)
+    {
+        var queryKeys = request.Query.Keys.Where(IsAuthenticationQueryKey).ToArray();
+        var hasHeader = request.Headers.TryGetValue("X-Emby-Token", out var headerToken);
+        if (queryKeys.Length == 0)
+            return hasHeader && headerToken.Count == 1 &&
+                !string.IsNullOrWhiteSpace(headerToken[0]) &&
+                !request.Headers.ContainsKey("X-MediaBrowser-Token");
+
+        if (queryKeys.Length != 1 || hasHeader ||
+            request.Headers.ContainsKey("Authorization") ||
+            request.Headers.ContainsKey("X-MediaBrowser-Token"))
+            return false;
+        var key = queryKeys[0];
+        if (!key.Equals("ApiKey", StringComparison.OrdinalIgnoreCase) &&
+            !key.Equals("api_key", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var value = request.Query[key];
+        return value.Count == 1 && !string.IsNullOrWhiteSpace(value[0]);
     }
 
     private static bool IsAuthenticationQueryKey(string key)
