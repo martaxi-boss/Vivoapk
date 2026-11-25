@@ -259,7 +259,8 @@ def native_bytes(uri, token=None):
             'DeviceId="' + _SESSION_TEST_DEVICES[token] + '", Version="1.0.0", Token="' + token + '"')
     conn.request("GET", uri, headers=headers)
     response = conn.getresponse()
-    result = response.status, response.read(8 * 1024 * 1024)
+    result = (response.status, response.read(8 * 1024 * 1024),
+              response.getheader("X-Vivoapk-Lab-Guard"))
     conn.close()
     return result
 
@@ -272,6 +273,33 @@ def native_route(current, relative, item_id):
             or parts[2].replace("-", "") != item_id.lower().replace("-", "")):
         raise RuntimeError("Media route escaped disposable Jellyfin")
     return urlunsplit(("", "", parsed.path, parsed.query, ""))
+
+
+def strip_playback_credentials(uri):
+    u = urlsplit(uri)
+    return urlunsplit(("", "", u.path,
+        urlencode([(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
+                   if k.lower() not in ("api_key", "access_token", "token")]), ""))
+
+
+def require_native_denial(uri, foreign_token, stage):
+    for name, denied_token in (("anonymous", None), ("foreign", foreign_token)):
+        status, body, guard = native_bytes(strip_playback_credentials(uri), denied_token)
+        if status not in (401, 403, 404) or guard != "denied" or body:
+            raise RuntimeError("Native route denial failed: " + json.dumps({
+                "stage": stage, "identity": name, "status": status,
+                "guard": guard, "response_bytes": len(body)}))
+        print("JELLYFIN_NATIVE_ROUTE_DENIAL=" + json.dumps({
+            "stage": stage, "identity": name, "status": status, "guard": guard}))
+
+
+def require_native_owner(uri, owner_token, stage):
+    status, body, guard = native_bytes(strip_playback_credentials(uri), owner_token)
+    if status != 200 or guard != "allowed":
+        raise RuntimeError("Native owner request failed: " + json.dumps({
+            "stage": stage, "status": status, "guard": guard,
+            "response_bytes": len(body)}))
+    return body
 
 
 def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider):
@@ -297,27 +325,25 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
             "status": code, "error": (info or {}).get("ErrorCode"),
             "source_count": len(sources), "ready_count": len(ready)}))
     route = native_route("/", ready[0]["TranscodingUrl"], item_id)
-    u = urlsplit(route)
-    safe = urlunsplit(("", "", u.path,
-        urlencode([(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
-                   if k.lower() not in ("api_key", "access_token", "token")]), ""))
-    for denied_token in (None, foreign_token):
-        status, _ = native_bytes(safe, denied_token)
-        if status not in (401, 403, 404):
-            raise RuntimeError("Native route did not deny anonymous/foreign client: " + str(status))
     before = provider.requests
-    status, body = native_bytes(route, owner_token)
-    if status != 200 or not body.startswith(b"#EXTM3U"):
-        raise RuntimeError("Native HLS master failed: " + str(status))
+    require_native_denial(route, foreign_token, "master_before_owner")
+    if provider.requests != before:
+        raise RuntimeError("Denied requests reached the synthetic provider")
+    body = require_native_owner(route, owner_token, "master")
+    if not body.startswith(b"#EXTM3U"):
+        raise RuntimeError("Native HLS master was not a playlist")
+    require_native_denial(route, foreign_token, "master_after_owner")
     lines = [x.strip() for x in body.decode().splitlines() if x.strip()]
     if any(x.startswith("#EXT-X-STREAM-INF") for x in lines):
         media = [x for x in lines if not x.startswith("#")]
         if not media:
             raise RuntimeError("Master playlist has no media playlist")
         route = native_route(route, media[0], item_id)
-        status, body = native_bytes(route, owner_token)
-        if status != 200 or not body.startswith(b"#EXTM3U"):
-            raise RuntimeError("Native media playlist failed: " + str(status))
+        require_native_denial(route, foreign_token, "playlist_before_owner")
+        body = require_native_owner(route, owner_token, "playlist")
+        if not body.startswith(b"#EXTM3U"):
+            raise RuntimeError("Native media playlist was not HLS")
+        require_native_denial(route, foreign_token, "playlist_after_owner")
     segments = [x.strip() for x in body.decode().splitlines()
                 if x.strip() and not x.startswith("#")]
     if not segments:
@@ -326,10 +352,12 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     with out.open("wb") as dest:
         for relative in segments[:2]:
             segment = native_route(route, relative, item_id)
-            status, content = native_bytes(segment, owner_token)
-            if status != 200 or len(content) < 188 or content[0] != 0x47:
-                raise RuntimeError("Native MPEG-TS segment unavailable: " + str(status))
+            require_native_denial(segment, foreign_token, "segment_before_owner")
+            content = require_native_owner(segment, owner_token, "segment")
+            if len(content) < 188 or content[0] != 0x47:
+                raise RuntimeError("Native MPEG-TS segment unavailable")
             dest.write(content)
+            require_native_denial(segment, foreign_token, "segment_after_owner")
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                             "stream=codec_type,codec_name", "-of", "json", str(out)],
                            capture_output=True, text=True, check=True, timeout=30)

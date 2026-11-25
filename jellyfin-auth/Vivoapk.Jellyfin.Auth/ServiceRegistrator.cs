@@ -3,7 +3,7 @@ using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Hosting;
 
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
@@ -13,8 +13,7 @@ public sealed class ServiceRegistrator : IPluginServiceRegistrator
     {
         services.AddHttpContextAccessor();
 #if VIVOAPK_NATIVE_PLAYBACK_LAB
-        services.AddScoped<NativePlaybackLabFilter>();
-        services.Configure<MvcOptions>(o => o.Filters.AddService<NativePlaybackLabFilter>());
+        services.AddSingleton<IStartupFilter, NativePlaybackLabFilter>();
 #endif
         services.AddSingleton<IAuthenticationProvider, MegaAuthenticationProvider>();
         // ChannelManager persists item IDs under a global ChannelId. Isolate
