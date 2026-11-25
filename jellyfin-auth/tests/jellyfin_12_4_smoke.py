@@ -458,6 +458,15 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
     if not isinstance(session, str) or not session:
         raise RuntimeError("No native play session for long cache fixture")
 
+    print("JELLYFIN_NATIVE_LONG_SOURCE_METADATA=" + json.dumps({
+        "runtime_ticks": source.get("RunTimeTicks"),
+        "protocol": source.get("Protocol"),
+        "container": source.get("Container"),
+        "infinite": source.get("IsInfiniteStream"),
+        "master_session_matches": any(k.lower() == "playsessionid" and v == session
+            for k, v in parse_qsl(urlsplit(master_route).query)),
+    }, sort_keys=True), flush=True)
+
     def report_progress(endpoint, seconds):
         status, _ = request("POST", endpoint, {
             "ItemId": item_id, "MediaSourceId": source.get("Id"),
@@ -491,12 +500,20 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
     peak = 0
     max_files = 0
     last_route = None
+    segment_timing = []
     for duration, relative in timed:
         if served >= 70:
             break
         if time.monotonic() - begin > 100:
             raise RuntimeError("Long native fixture exceeded bounded read interval")
         route = native_route(media_route, relative, item_id)
+        query = {k.lower(): v for k, v in parse_qsl(urlsplit(route).query)}
+        def read_ticks(key):
+            value = query.get(key, "")
+            return int(value) if value.isascii() and value.isdecimal() and len(value) <= 18 else None
+        segment_timing.append({"runtime_ticks": read_ticks("runtimeticks"),
+            "length_ticks": read_ticks("actualsegmentlengthticks"),
+            "session_matches": query.get("playsessionid") == session})
         try:
             data = require_native_owner(route, owner_token, "long_segment")
         except TimeoutError as exc:
@@ -519,6 +536,13 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
             early = {p for p in observed if p.suffix.lower() == ".ts"}
         if peak > 32 * 1024 * 1024:
             raise RuntimeError("Synthetic cache exceeded the 32 MiB test limit")
+    print("JELLYFIN_NATIVE_LONG_SEGMENT_TIMING=" + json.dumps({
+        "count": len(segment_timing), "first": segment_timing[:1],
+        "last": segment_timing[-1:],
+        "missing_timing": sum(x["runtime_ticks"] is None or x["length_ticks"] is None
+                              for x in segment_timing),
+        "matching_sessions": sum(x["session_matches"] for x in segment_timing),
+    }, sort_keys=True), flush=True)
     if served < 60 or not early or fetched < 5:
         raise RuntimeError("Insufficient sequential media for cache window test")
     # Give the native cleaner multiple observation opportunities while a
@@ -575,8 +599,25 @@ def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
         if peak > 32 * 1024 * 1024:
             raise RuntimeError("Abandoned synthetic cache exceeded test limit")
     if remaining:
-        raise RuntimeError("Abandoned native session retained cache: " +
-                           json.dumps({"files": len(remaining), "bytes": sum(remaining.values())}))
+        # Keep the automatic idle gate failed. Separately verify whether the
+        # ordinary native stop can reclaim this abandoned/completed fixture.
+        # This is evidence for a future owner/session-scoped lifecycle fix,
+        # not automatic cleanup and not a production policy.
+        failure = {"files": len(remaining), "bytes": sum(remaining.values()),
+                   "fixture_bytes_sent": getattr(provider, "long_fixture_bytes_sent", 0),
+                   "fixture_total_bytes": (base / "synthetic-provider/native.ts").stat().st_size,
+                   "idle_seconds": round(time.monotonic() - disconnected_at, 1)}
+        print("JELLYFIN_NATIVE_LONG_IDLE_CLEANUP=FAIL " + json.dumps(failure, sort_keys=True), flush=True)
+        try:
+            verify_native_cache_cleanup(base, item_id, info, source, last_route,
+                                        owner_token, foreign_token, baseline, input_digest)
+        except RuntimeError as exc:
+            print("JELLYFIN_NATIVE_EXPLICIT_RECOVERY_AFTER_IDLE=FAIL", flush=True)
+            raise RuntimeError("Automatic idle and explicit native recovery both failed: " +
+                               json.dumps(failure, sort_keys=True)) from exc
+        print("JELLYFIN_NATIVE_EXPLICIT_RECOVERY_AFTER_IDLE=PASS", flush=True)
+        raise RuntimeError("Automatic idle cleanup failed; explicit recovery passed: " +
+                           json.dumps(failure, sort_keys=True))
     if provider.requests <= requests_before:
         raise RuntimeError("Synthetic media origin was not contacted")
     if hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest() != input_digest:
