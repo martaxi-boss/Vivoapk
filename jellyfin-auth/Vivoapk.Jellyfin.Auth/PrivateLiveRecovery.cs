@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Session;
@@ -43,11 +44,13 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         lock (_bindGate)
             return _states.TryRemove(new KeyValuePair<string, State>(session, state));
     }
-    private sealed class State(Guid owner, Guid item, string device)
+    private sealed class State(Guid owner, Guid item, string device, bool finite)
     {
         internal readonly Guid Owner = owner;
         internal readonly Guid Item = item;
         internal readonly string Device = device;
+        internal readonly bool Finite = finite;
+        internal readonly SemaphoreSlim FiniteRequests = new(1, 1);
         internal readonly object Gate = new();
         internal long LastMedia = Environment.TickCount64;
         internal int InFlight;
@@ -60,7 +63,10 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
     {
         if (string.IsNullOrEmpty(device) || node is not JsonObject response
             || response["PlaySessionId"] is not JsonValue value
-            || !value.TryGetValue<string>(out var session) || !Guid.TryParse(session, out _))
+            || !value.TryGetValue<string>(out var session) || !Guid.TryParse(session, out _)
+            || response["MediaSources"] is not JsonArray sources || sources.Count != 1
+            || sources[0] is not JsonObject media || media["IsInfiniteStream"] is not JsonValue flag
+            || !flag.TryGetValue<bool>(out var infinite))
             return false;
         lock (_bindGate)
         {
@@ -69,7 +75,7 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
             // the new random private source and observed job.
             return _negotiating.Contains(owner) && _states.Count < 2
                 && !_states.Values.Any(s => s.Owner == owner)
-                && _states.TryAdd(session, new State(owner, item, device));
+                && _states.TryAdd(session, new State(owner, item, device, !infinite));
         }
     }
 
@@ -111,10 +117,21 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         var device = http.User.FindFirst("Jellyfin-DeviceId")?.Value;
         var parts = (http.Request.Path.Value ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries);
         var legacy = parts.Length == 5 && parts[2].Equals("hls", StringComparison.OrdinalIgnoreCase);
-        var nativePlaylist = parts.Length == 3 && parts[0].Equals("Videos", StringComparison.OrdinalIgnoreCase)
-            && (parts[2].Equals("master.m3u8", StringComparison.OrdinalIgnoreCase)
-                || parts[2].Equals("live.m3u8", StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrEmpty(device) || (!legacy && !nativePlaylist))
+        bool video = parts.Length >= 3 && parts[0].Equals("Videos", StringComparison.OrdinalIgnoreCase);
+        bool master = video && parts.Length == 3 && parts[2].Equals("master.m3u8", StringComparison.OrdinalIgnoreCase);
+        bool livePlaylist = video && parts.Length == 3 && parts[2].Equals("live.m3u8", StringComparison.OrdinalIgnoreCase);
+        bool finitePlaylist = video && parts.Length == 3 && parts[2].Equals("main.m3u8", StringComparison.OrdinalIgnoreCase);
+        // Exact dynamic MPEG-TS route emitted by Jellyfin v12.4's
+        // CreateMainPlaylistRequest ("hls1/main/"). Unlike the legacy
+        // controller, it derives the path from item and streaming state.
+        bool dynamicSegment = video && parts.Length == 5
+            && parts[2].Equals("hls1", StringComparison.OrdinalIgnoreCase)
+            && parts[3].Equals("main", StringComparison.Ordinal)
+            && parts[4].EndsWith(".ts", StringComparison.Ordinal)
+            && int.TryParse(parts[4].AsSpan(0, parts[4].Length - 3), NumberStyles.None,
+                CultureInfo.InvariantCulture, out var index) && index is >= 0 and <= 1000000;
+        if (string.IsNullOrEmpty(device) || (!master && !livePlaylist && !finitePlaylist && !dynamicSegment && !legacy)
+            || (!HttpMethods.IsGet(http.Request.Method) && !(master && HttpMethods.IsHead(http.Request.Method))))
         {
             Deny(http);
             return;
@@ -147,8 +164,25 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
             session = values[0]!;
             state = bound;
         }
+        if ((state.Finite && (legacy || livePlaylist)) || (!state.Finite && (finitePlaylist || dynamicSegment)))
+        {
+            Deny(http);
+            return;
+        }
         // If present, native caller-controlled device/source selectors must
-        // agree with the already authenticated identity.
+        // agree with the already authenticated identity. Do not accept the
+        // alternate encoded Params or LiveStreamId source selection.
+        var userIds = http.Request.Query["UserId"];
+        var packed = http.Request.Query["Params"];
+        var liveIds = http.Request.Query["LiveStreamId"];
+        if (userIds.Count > 1 || (userIds.Count == 1
+                && (!Guid.TryParse(userIds[0], out var requestedUser) || requestedUser != owner))
+            || packed.Count > 1 || packed.Any(v => !string.IsNullOrEmpty(v))
+            || liveIds.Count > 1 || liveIds.Any(v => !string.IsNullOrEmpty(v)))
+        {
+            Deny(http);
+            return;
+        }
         var devices = http.Request.Query["DeviceId"];
         var sources = http.Request.Query["MediaSourceId"];
         if (devices.Count > 1 || (devices.Count == 1 && devices[0] != device)
@@ -161,66 +195,102 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         var services = http.RequestServices;
         var manager = services.GetRequiredService<ITranscodeManager>();
         var lab = services.GetRequiredService<PrivateNativeHls>();
-        var existing = manager.GetTranscodingJob(session);
-        if (existing is not null && !await lab.MatchesJobAsync(owner, existing, device,
-                session, http.RequestAborted).ConfigureAwait(false))
+        // Finite segments can legitimately replace the native FFmpeg job
+        // during a seek. Serialize these requests for that one play session
+        // so an old response cannot publish a different job concurrently.
+        bool finiteLocked = false;
+        try
         {
-            Deny(http);
-            return;
-        }
-        lock (state.Gate)
-        {
-            if (state.Recovering || (state.Job is not null &&
-                    !ReferenceEquals(state.Job, existing))
-                || (legacy && (!ReferenceEquals(state.Job, existing)
-                    || !MatchesLegacySegment(parts, existing))))
+            if (state.Finite)
+            {
+                finiteLocked = await state.FiniteRequests.WaitAsync(TimeSpan.FromSeconds(20),
+                    http.RequestAborted).ConfigureAwait(false);
+                if (!finiteLocked)
+                {
+                    Deny(http);
+                    return;
+                }
+            }
+            if (!_states.TryGetValue(session, out var active) || !ReferenceEquals(active, state))
             {
                 Deny(http);
                 return;
             }
-            state.InFlight++;
-        }
-        try
-        {
-            await downstream(http).ConfigureAwait(false);
-            if (http.Response.StatusCode != 200)
+            var existing = manager.GetTranscodingJob(session);
+            if (existing is not null && !await lab.MatchesJobAsync(owner, existing, device,
+                    session, http.RequestAborted).ConfigureAwait(false))
+            {
+                Deny(http);
                 return;
-            if (legacy && values.Count == 0)
-                logger.LogDebug("VIVOAPK_PRIVATE_NATIVE_QUERYLESS_SEGMENT=PASS");
-            var job = manager.GetTranscodingJob(session);
-            if (job is null || job.Type != TranscodingJobType.Hls ||
-                string.IsNullOrEmpty(job.Path) ||
-                !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted)
-                    .ConfigureAwait(false))
-                return;
-            bool start = false;
+            }
             lock (state.Gate)
             {
-                state.Job ??= job;
-                if (!ReferenceEquals(state.Job, job))
-                    return;
-                state.LastMedia = Environment.TickCount64;
-                if (!state.Watching)
+                // Existing finite jobs may end or be replaced by the native
+                // dynamic segment controller. Accept replacement only for
+                // this exact authorized source/session and same cache stem.
+                if (state.Recovering || (state.Job is not null
+                        && !ReferenceEquals(state.Job, existing)
+                        && (!state.Finite || (existing is not null
+                            && !string.Equals(state.Job.Path, existing.Path, StringComparison.Ordinal))))
+                    || (legacy && (!ReferenceEquals(state.Job, existing)
+                        || !MatchesLegacySegment(parts, existing))))
                 {
-                    state.Watching = true;
-                    start = true;
+                    Deny(http);
+                    return;
+                }
+                state.InFlight++;
+            }
+            try
+            {
+                await downstream(http).ConfigureAwait(false);
+                if (http.Response.StatusCode != 200)
+                    return;
+                if (legacy && values.Count == 0)
+                    logger.LogDebug("VIVOAPK_PRIVATE_NATIVE_QUERYLESS_SEGMENT=PASS");
+                var job = manager.GetTranscodingJob(session);
+                if (job is null || job.Type != TranscodingJobType.Hls ||
+                    string.IsNullOrEmpty(job.Path) ||
+                    !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted)
+                        .ConfigureAwait(false))
+                    return;
+                bool watch = false;
+                lock (state.Gate)
+                {
+                    if (state.Job is null)
+                        state.Job = job;
+                    else if (state.Finite && dynamicSegment
+                        && string.Equals(state.Job.Path, job.Path, StringComparison.Ordinal))
+                        state.Job = job;
+                    if (!ReferenceEquals(state.Job, job))
+                        return;
+                    state.LastMedia = Environment.TickCount64;
+                    if (!state.Watching)
+                    {
+                        state.Watching = true;
+                        watch = true;
+                    }
+                }
+                if (watch)
+                {
+                    var stopping = services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+                    var sessions = services.GetRequiredService<ISessionManager>();
+                    _ = RecoverAsync(manager, sessions, lab, session, state, logger, stopping);
                 }
             }
-            if (start)
+            finally
             {
-                var stopping = services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
-                var sessions = services.GetRequiredService<ISessionManager>();
-                _ = RecoverAsync(manager, sessions, lab, session, state, logger, stopping);
+                lock (state.Gate)
+                {
+                    state.InFlight--;
+                    if (http.Response.StatusCode == 200)
+                        state.LastMedia = Environment.TickCount64;
+                }
             }
         }
         finally
         {
-            lock (state.Gate)
-            {
-                state.InFlight--;
-                if (http.Response.StatusCode == 200)
-                    state.LastMedia = Environment.TickCount64;
-            }
+            if (finiteLocked)
+                state.FiniteRequests.Release();
         }
     }
 
@@ -301,7 +371,11 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
                     return;
                 var current = manager.GetTranscodingJob(session);
                 if (current is not null && !ReferenceEquals(current, job))
+                {
+                    if (state.Finite)
+                        continue; // A serialized dynamic segment is replacing the observed job.
                     return;
+                }
                 var candidates = sessions.Sessions.Where(s => s.UserId == state.Owner &&
                     string.Equals(s.DeviceId, state.Device, StringComparison.Ordinal) &&
                     s.NowPlayingItem?.Id == state.Item).Take(2).ToArray();
@@ -314,7 +388,7 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
                     continue;
                 lock (state.Gate)
                 {
-                    if (state.Recovering || state.InFlight != 0 ||
+                    if (state.Recovering || state.InFlight != 0 || !ReferenceEquals(state.Job, job) ||
                         Environment.TickCount64 - state.LastMedia < IdleMs)
                         continue;
                     state.Recovering = true;

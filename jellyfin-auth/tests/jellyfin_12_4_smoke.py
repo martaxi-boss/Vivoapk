@@ -1791,6 +1791,23 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         if not segments:
             raise RuntimeError("Private native stream has no segments")
         require_native_denial(segments[0], token, other, "private_segment_foreign")
+        # Reject a stale/forged play session even under the correct owner's
+        # token and item. The exact dynamic playlist contract is main/<n>.ts.
+        original = urlsplit(safe_fixture_route(segments[0], token))
+        query = parse_qsl(original.query, keep_blank_values=True)
+        forged = [(k, v if k.lower() != "playsessionid" else "00000000-0000-0000-0000-000000000001")
+                  for k, v in query]
+        if not any(k.lower() == "playsessionid" for k, _ in query):
+            raise RuntimeError("Finite segment did not carry native session identity")
+        bad_session = urlunsplit(("", "", original.path, urlencode(forged), ""))
+        require_denied_response(native_bytes(bad_session, token),
+                                "private_finite_forged_session", "owner")
+        if "/hls1/main/" not in original.path:
+            raise RuntimeError("Unexpected finite native segment route")
+        forged_route = urlunsplit(("", "", original.path.replace("/hls1/main/", "/hls1/foreign/"),
+                                   original.query, ""))
+        require_denied_response(native_bytes(forged_route, token),
+                                "private_finite_forged_playlist", "owner")
         segment = require_native_owner(segments[0], token, "private_segment")
         if b"#EXTM3U" in segment or len(segment) < 188 or segment[0] != 0x47:
             raise RuntimeError("Private native media not MPEG-TS")
@@ -1851,6 +1868,22 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
     if stop(a, token_a) not in (200, 204) or private_backend.count() != 1:
         raise RuntimeError("Private native stop did not close exact backend session")
     require_native_owner(b["segment"], token_b, "private_surviving_after_stop")
+    # Reopen the same actual catalogue item before ChannelManager's five
+    # minute cache expires. The old native session and stop must not affect
+    # the freshly opened capability or B's still-active playback.
+    reopened = negotiate(item_a, owner_a, token_a, token_b)
+    if reopened["session"] == a["session"] or private_backend.count() != 2:
+        raise RuntimeError("Finite reopen reused retired native session")
+    for key in ("route", "segment"):
+        require_denied_response(native_bytes(safe_fixture_route(a[key], token_a), token_a),
+                                "private_finite_retired_route", key)
+    if stop(a, token_a) != 404 or private_backend.count() != 2:
+        raise RuntimeError("Retired finite stop affected current playback")
+    require_native_owner(reopened["segment"], token_a, "private_finite_reopened_segment")
+    require_native_owner(b["segment"], token_b, "private_finite_survivor_after_reopen")
+    if stop(reopened, token_a) not in (200, 204) or private_backend.count() != 1:
+        raise RuntimeError("Reopened finite stop did not retire its own lease")
+    print("JELLYFIN_PRIVATE_NATIVE_FINITE_REOPEN_AND_SESSION_DENIAL=PASS", flush=True)
     if stop(b, token_b) not in (200, 204) or private_backend.count() != 0:
         raise RuntimeError("Second private native stop did not close backend")
     deadline = time.monotonic() + 20

@@ -273,7 +273,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 http.Response.Headers["X-Vivoapk-Lab-Guard"] = "allowed";
                 if (PrivateHlsNativeLab.Enabled && info)
                     await PrivatePlaybackInfoAsync(http, downstream, owner, id).ConfigureAwait(false);
-                else if (PrivateHlsNativeLab.LiveRecoveryEnabled && media)
+                else if (PrivateHlsNativeLab.Enabled && media)
                     await _privateLive.HandleAsync(http, downstream, owner, id, logger).ConfigureAwait(false);
                 else
                     await downstream(http).ConfigureAwait(false);
@@ -296,14 +296,16 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         IMemoryCache? cache = null;
         var services = http.RequestServices;
         var logger = services.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
-        if (PrivateHlsNativeLab.LiveRecoveryEnabled)
+        if (PrivateHlsNativeLab.Enabled)
         {
             var user = services.GetRequiredService<IUserManager>().GetUserById(owner);
             var entity = user is null ? null :
                 services.GetRequiredService<ILibraryManager>().GetItemById<BaseItem>(item, user);
             cacheKey = entity?.ExternalId;
             if (cacheKey is null ||
-                !Regex.IsMatch(cacheKey, @"\Aslot:[0-9]{1,3}:(?:general|tv):live:(?:10|20):42\z",
+                !Regex.IsMatch(cacheKey, PrivateHlsNativeLab.FileEnabled
+                    ? @"\Aslot:[0-9]{1,3}:(?:general|tv):(?:vod:110:501:mp4|ep:220:601:701:mp4)\z"
+                    : @"\Aslot:[0-9]{1,3}:(?:general|tv):live:(?:10|20):42\z",
                     RegexOptions.CultureInvariant) ||
                 !_privateLive.TryBeginNegotiation(owner))
             {
@@ -426,7 +428,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         }
         var owner = await NativePlaybackAuthorization.AuthorizeAsync(http, item,
             NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
-        if (PrivateHlsNativeLab.LiveRecoveryEnabled)
+        if (PrivateHlsNativeLab.Enabled)
         {
             if (owner == Guid.Empty)
             {
