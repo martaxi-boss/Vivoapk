@@ -42,7 +42,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
 
     private static bool MatchesFixtureJob(TranscodingJob? job, string device, string session)
     {
-        return job is not null && !string.IsNullOrWhiteSpace(job.Path) &&
+        return job is not null && job.Type == TranscodingJobType.Hls && !string.IsNullOrWhiteSpace(job.Path) &&
             string.Equals(job.DeviceId, device, StringComparison.Ordinal) &&
             string.Equals(job.PlaySessionId, session, StringComparison.OrdinalIgnoreCase) &&
             Uri.TryCreate(job.MediaSource?.Path, UriKind.Absolute, out var origin) &&
@@ -83,7 +83,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         var stopping = http.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
         var sessions = http.RequestServices.GetRequiredService<ISessionManager>();
         var config = http.RequestServices.GetService<IConfigurationManager>();
-        _ = RecoverCompletedFixtureAsync(manager, sessions, config, session, device, owner, itemId, state, logger, stopping);
+        _ = RecoverAbandonedFixtureAsync(manager, sessions, config, session, device, owner, itemId, state, logger, stopping);
     }
 
     // Read-only diagnostics for the exact v12.4 cleaner prerequisites.
@@ -139,14 +139,15 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         }
     }
 
-    private async Task RecoverCompletedFixtureAsync(ITranscodeManager manager, ISessionManager sessions,
+    private async Task RecoverAbandonedFixtureAsync(ITranscodeManager manager, ISessionManager sessions,
         IConfigurationManager? config, string session,
         string device, Guid owner, Guid itemId, FixtureRecovery state, ILogger logger, CancellationToken stopping)
     {
         try
         {
             // Bounded observation of this exact finite fixture, not a general
-            // playback watchdog. Do not interrupt a running or paused transcode.
+            // playback watchdog. Only the synthetic job may be recovered while
+            // FFmpeg is still running, after both genuine idle checks pass.
             var started = Environment.TickCount64;
             var lastDiagnostic = started - 20000;
             while (Environment.TickCount64 - started < 240000)
@@ -175,8 +176,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                     ObserveNativeCleanerEligibility(job, config, logger);
                 }
                 if (client is null || client.PlayState.IsPaused || actualIdle < FixtureIdleMilliseconds ||
-                    mediaIdle < FixtureIdleMilliseconds || !job!.HasExited ||
-                    job.IsUserPaused || job.ActiveRequestCount > 0)
+                    mediaIdle < FixtureIdleMilliseconds || job!.IsUserPaused || job.ActiveRequestCount > 0)
                     continue;
 
                 // The native operation is scoped to the observed job's own
@@ -185,17 +185,22 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 var path = job.Path!;
                 if (!ReferenceEquals(manager.GetTranscodingJob(session), state.Job))
                     return;
-                if (client.NowPlayingItem?.Id != itemId || client.PlayState.IsPaused ||
+                if (client.UserId != owner || !string.Equals(client.DeviceId, device, StringComparison.Ordinal) ||
+                    client.NowPlayingItem?.Id != itemId || client.PlayState.IsPaused || job.IsUserPaused ||
                     (DateTime.UtcNow - client.LastPlaybackCheckIn).TotalMilliseconds < FixtureIdleMilliseconds ||
                     Environment.TickCount64 - Interlocked.Read(ref state.LastMediaRequest) < FixtureIdleMilliseconds ||
                     job.ActiveRequestCount > 0)
                     continue;
+                var exitedBeforeRecovery = job.HasExited;
+                // Scope remains the known synthetic fixture, exact observed job,
+                // native play-session ID, and playlist. No direct process/file operation.
                 await manager.KillTranscodingJobs(device, session,
                     candidate => string.Equals(candidate, path, StringComparison.Ordinal)).ConfigureAwait(false);
-                logger.LogInformation("VIVOAPK_LAB_NATIVE_COMPLETED_SESSION_RECOVERY=PASS");
+                logger.LogInformation("VIVOAPK_LAB_NATIVE_ABANDONED_SESSION_RECOVERY invoked=true exitedBeforeRecovery={ExitedBefore} jobRemoved={Removed}",
+                    exitedBeforeRecovery, manager.GetTranscodingJob(session) is null);
                 return;
             }
-            logger.LogInformation("VIVOAPK_LAB_NATIVE_COMPLETED_SESSION_RECOVERY=NOT_ELIGIBLE");
+            logger.LogInformation("VIVOAPK_LAB_NATIVE_ABANDONED_SESSION_RECOVERY=NOT_ELIGIBLE");
         }
         catch (OperationCanceledException) when (stopping.IsCancellationRequested)
         {
@@ -203,7 +208,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         catch (Exception ex)
         {
             // Do not print exception text that might contain paths or tokens.
-            logger.LogWarning("VIVOAPK_LAB_NATIVE_COMPLETED_SESSION_RECOVERY=FAIL ({ErrorType})", ex.GetType().Name);
+            logger.LogWarning("VIVOAPK_LAB_NATIVE_ABANDONED_SESSION_RECOVERY=FAIL ({ErrorType})", ex.GetType().Name);
         }
         finally
         {
