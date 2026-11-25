@@ -1,6 +1,6 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
-**Regra vinculativa do produto, confirmada pelo proprietário em 23/11/2026 e atualizada com a sua autorização expressa em 25/11/2026.**
+**Regra vinculativa ATUAL — 25/11/2026: o proprietário confirma expressamente a autorização de passagem e processamento de áudio e vídeo em tempo real pela VPS, para reprodução nas aplicações oficiais Jellyfin.** Esta decisão prevalece sobre todas as regras anteriores de transmissão exclusivamente direta. Os ensaios históricos abaixo não definem a arquitetura atual.
 Este documento é a fonte de verdade do funcionamento pretendido para clientes. Ler antes de qualquer alteração ao VivoAPK, ao plugin Jellyfin, aos DNS ou à VPS. O histórico de experiências com Pink IPTV e Vivo Player não altera este contrato.
 
 ## Objetivo único: entrada automática dos clientes no Jellyfin
@@ -24,24 +24,25 @@ Aplicação Jellyfin oficial
     → encontra o DNS oficial completo atribuído pela Mega à subscrição
     → cria/associa automaticamente a identidade restrita Jellyfin desse cliente
     → disponibiliza apenas o catálogo da subscrição (TV / filmes / séries / episódios / EPG)
-    → o VivoAPK pode indicar ao leitor a origem de reprodução por redirecionamento autorizado
-    → o dispositivo reproduz do fornecedor diretamente, quando tecnicamente compatível
+    → Jellyfin recebe a origem autorizada da própria subscrição e verifica o acesso
+    → Jellyfin na VPS usa a reprodução nativa: Direct Stream/remux ou FFmpeg quando necessário
+    → entrega áudio e vídeo compatíveis por HTTPS do Jellyfin à aplicação oficial
 ```
 
-**A VPS é o ponto de autenticação, controlo e apresentação de metadados Jellyfin; não deve armazenar vídeos nem retransmitir, converter, remultiplexar ou transcodificar media para os clientes.** Não introduzir proxy/relay de vídeo como solução automática. Se determinada app só funcionar com relay, reportar essa limitação e não declarar conformidade.
+**A VPS pode receber, encaminhar, remultiplexar, descodificar e transcodificar áudio e vídeo em tempo real**, exclusivamente para conteúdos e subscrições autorizados. A preferência é usar a infraestrutura nativa Jellyfin + FFmpeg já existente, não criar outro servidor nem reinstalar Pink. Não guardar canais, filmes ou séries como ficheiros de biblioteca; os segmentos/cache técnicos temporários estritamente necessários à reprodução são permitidos, com limites de espaço e limpeza automática. O URL público e o login atuais mantêm-se.
 
-## Redirecionamento autorizado — decisão do proprietário de 25/11/2026
+## Decisão atual de reprodução — Jellyfin + FFmpeg na VPS (25/11/2026)
 
-O proprietário autoriza expressamente a integração de um componente de ligação/redirecionamento no VivoAPK existente, na VPS, para permitir ao leitor Jellyfin compatível abrir diretamente a origem autorizada do fornecedor. Esta decisão clarifica a arquitetura original; não autoriza retransmissão de vídeo nem a instalação de outro sistema em paralelo.
+O proprietário confirma que já tinha solicitado esta alteração: a passagem e compatibilização do áudio e vídeo na VPS é autorizada, precisamente para evitar as incompatibilidades dos leitores oficiais com a origem direta. A regra histórica que proibia retransmissão, remux e transcodificação fica **expressamente substituída**. Não exigir novamente autorização para esta mesma arquitetura.
 
-- Manter o DNS público único, o login existente, a descoberta automática, a validação da subscrição e a gestão exclusiva no painel Mega OTT.
-- A VPS pode autenticar, autorizar, apresentar metadados e devolver a indicação do destino de reprodução; não pode transportar o conteúdo multimédia, fazer proxy/relay, remux, transcodificação, descarregar ou armazenar canais, filmes, séries ou episódios. O catálogo contém apenas referências e metadados.
-- Privilegiar o Jellyfin oficial e os leitores compatíveis já existentes. A compatibilidade com Android, Android TV, iOS, Windows, Samsung Tizen e LG webOS é obrigatória como objetivo; não assumir que um redirecionamento elimina limitações dos clientes. Não impor nova aplicação, segundo login ou alteração do leitor sem validar a necessidade e obter autorização quando mudar o contrato do produto.
-- Utilizar exclusivamente origens e conteúdos para os quais existam autorização e direitos de reprodução. Proteger as credenciais no cofre privado, não publicar passwords, tokens ou URLs com segredos em GitHub, logs ou artefactos, não contornar DRM, permissões de acesso nem restrições de segurança. Usar apenas destinos autorizados e seguros, preservando o isolamento e a revogação das subscrições.
-- Testar primeiro com media sintéticos/autorizados em ambiente isolado; validar imagem e som, percurso efetivo do vídeo fora da VPS, ausência de armazenamento de media, isolamento entre clientes, renovação e expiração. A certificação final exige testes reais dos leitores nas plataformas de destino. Não alterar produção com base apenas num resultado sintético.
-- A execução Ferrari/REA [#45604691965](https://github.com/martaxi-boss/VPS/actions/runs/45604691965) foi concluída com sucesso no ambiente de ensaio de redirecionamento e não constitui prova de integração em produção nem de funcionamento em dispositivos físicos. A implementação final e os testes com a linha real permanecem pendentes.
+- Preservar o backend, API Mega OTT, descoberta dos DNS, login, identidade, catálogo, bibliotecas e gestão exclusiva no painel Mega OTT já integrados. Não pedir credenciais de novo nem migrar a base de dados por causa da reprodução.
+- Usar os destinos completos atribuídos à subscrição e a autenticação existente; não inventar DNS, grants, formatos ou credenciais. O HTTPS do Jellyfin protege a ligação ao cliente; não confundir com segurança ou disponibilidade da origem do fornecedor. A origem tem de ser autorizada e acessível; não desativar validação TLS nem contornar DRM ou controlos de acesso.
+- Integrar a reprodução nativa Jellyfin/FFmpeg com os conteúdos autorizados do VivoAPK. Priorizar remux quando os codecs forem suportados e transcodificar somente quando necessário para o perfil real do cliente. O redirecionamento direto anterior passa a ser experiência histórica, não pré-requisito obrigatório. A inexistência de uma origem HTTPS direta universal não é, por si só, bloqueio do caminho mediado pelo Jellyfin.
+- Garantir isolamento por subscrição, revalidação de autorização e expiração, sem exposição de credenciais, URLs privadas ou conteúdo de outro cliente. Não habilitar globalmente a reprodução/transcodificação sem validar as rotas e as permissões de cada conta. Não introduzir alterações de segurança nos clientes ou novos serviços desnecessários.
+- Verificar o FFmpeg utilizado pelo Jellyfin, CPU/RAM/rede e espaço temporário; limitar sessões simultâneas e utilização de recursos, preservar rollback e restantes serviços. Não criar ficheiros permanentes nem cache de catálogo com segredos. A utilização de media real requer direitos de reprodução e um ambiente autorizado; não contornar o incidente de segurança da sonda privada anteriormente registado.
+- Aceitação: testar media de ensaio legalmente autorizado com imagem e som através do Jellyfin, provar remux/transcodificação e limpeza temporária, testar negação cruzada/expiração, validar a linha existente em segurança, instalar apenas após validação e confirmar reprodução nas seis famílias de clientes. Não certificar por HTTP 200, código compilado ou negociação de formatos sem descodificação/reprodução real.
 
-Esta autorização mantém todas as restantes regras de segurança e os requisitos do bootstrap.
+Esta decisão não autoriza a redistribuição de conteúdos sem direitos, a publicação de segredos, a reinstalação do Pink, aplicações próprias, segundo login ou nova infraestrutura de transmissão fora do Jellyfin existente.
 
 ## Gestão exclusiva pelo painel Mega OTT
 
@@ -56,7 +57,7 @@ Esta autorização mantém todas as restantes regras de segurança e os requisit
 - O backend usa as credenciais de API **já existentes no cofre privado da VPS**, não as solicita novamente nem as copia para o GitHub.
 - Selecionar os **URLs completos atribuídos à própria subscrição** pela Mega OTT; não inventar ou substituir subdomínios, não tratar a lista de bases DNS como uma whitelist fixa.
 - O backend existente suporta `dns_link` para Android, Android TV, Windows e, sujeito a validação, iOS; preserva `dns_link_for_samsung_lg` para Samsung Tizen e LG webOS quando essa origem se aplica ao cliente. A aplicação Jellyfin pode não identificar a plataforma como um leitor Xtream nativo: a seleção e a compatibilidade reais exigem validação.
-- As várias bases DNS fornecidas servem **para selecionar a origem correta de cada subscrição**, não para pedir mais endereços ao cliente e não para redirecionar o streaming pela VPS.
+- As várias bases DNS fornecidas servem **para selecionar a origem correta de cada subscrição**, sem pedir mais endereços ao cliente. A reprodução compatível pode ser entregue pelo Jellyfin/FFmpeg na VPS, conforme a decisão atual.
 - A aplicação fala **protocolo Jellyfin** com o servidor; a API Mega OTT / Xtream é usada privadamente pelo VivoAPK para autenticação, autorização e catálogo. Um simples apontamento DNS não converte Xtream automaticamente para o protocolo Jellyfin: **essa tradução pertence ao plugin do servidor**.
 
 ## Requisitos funcionais obrigatórios
@@ -65,9 +66,9 @@ Esta autorização mantém todas as restantes regras de segurança e os requisit
 - Catálogo automático e **completo para cada subscrição**, com TV, filmes, séries, episódios e guia EPG dentro do que a Mega OTT autoriza e a plataforma suporta.
 - Múltiplos clientes simultâneos e isolamento total: nunca revelar itens, IDs reproduzíveis, origens ou credenciais de uma subscrição a outra.
 - Renovação, expiração e revogação reconhecidas a partir da Mega OTT sem gestão manual duplicada.
-- A reprodução precisa de funcionar nos clientes Jellyfin de destino; testar login, catálogo e imagem+som em plataformas reais. DirectPlay no JSON não é prova de playback ou de ausência de tráfego de vídeo pela VPS.
+- A reprodução precisa de funcionar nos clientes Jellyfin de destino; testar login, catálogo e imagem+som em plataformas reais. DirectPlay/DirectStream/Transcode no JSON não constituem prova de reprodução. A transmissão temporária pela VPS está autorizada.
 - Não introduzir M3U global, tuner partilhado, ficheiros STRM com credenciais, palavras-passe em logs/URL pública ou bases de dados acessíveis a outros clientes.
-- Não modificar apps comerciais, contornar DRM/licenças nem supor compatibilidade física sem testes. Reutilizar o código autorizado do antigo Pink apenas como referência de integração e não reinstalar o Pink.
+- Não modificar apps comerciais, contornar DRM/licenças nem supor compatibilidade física sem testes. Reutilizar o código autorizado do antigo Pink apenas como referência de integração e não reinstalar o Pink. Manter cache técnica de reprodução limitada e temporária.
 
 ## Infraestrutura e execução
 
@@ -75,6 +76,10 @@ Esta autorização mantém todas as restantes regras de segurança e os requisit
 - Reutilizar o que está efetivamente implementado no backend VivoAPK; uma nova solução incompatível com a integração existente não deve ser criada em paralelo.
 - O serviço `jellyfin-pink.service` é o **nome herdado do serviço Jellyfin ativo**, não um pedido para voltar a instalar Pink IPTV. Nunca apagar o Jellyfin por causa do nome.
 - Se existirem componentes antigos do Pink ainda ativos, a remoção definitiva é uma operação separada: inventariar consumidores e backups e nunca destruir serviços ou dados que a integração Jellyfin ainda use. O objetivo final é **não depender do Pink IPTV nem ocupar a VPS com o Pink**.
+
+## Histórico técnico — evidências anteriores à decisão atual
+
+**Atenção:** as secções seguintes preservam os resultados e as limitações históricas dos ensaios em modo exclusivamente direto. As referências à proibição de retransmissão, à exigência de HTTPS direto no fornecedor, à ausência de tráfego de vídeo pela VPS ou à obrigatoriedade de grants são históricas, não requisitos atuais. Em caso de conflito, prevalece a decisão Jellyfin + FFmpeg na VPS acima. As provas existentes não demonstram reprodução real em nenhum cliente oficial.
 
 ## Estado comprovado versus objetivo — 24/11/2026 (revisto após ativação)
 
@@ -177,6 +182,6 @@ Candidato integrado no plugin existente, branch `vivoapk/redirect-preflight-2026
 
 ## Critério final de aceitação
 
-O redirecionamento autorizado pode integrar o fluxo de reprodução, desde que o servidor não transporte vídeo e a compatibilidade e os controlos de segurança sejam comprovados. Um cliente novo, sem instalação nem configuração adicional além do Jellyfin oficial, abre a app, introduz `https://serveriptv.duckdns.org`, username e password Mega OTT, vê **automaticamente só a sua subscrição**, reproduz conteúdos autorizados sem retransmissão pela VPS e perde/recupera acesso conforme o painel Mega OTT. Repetir com pelo menos duas contas diferentes e clientes de cada plataforma de destino.
+Um cliente novo, sem instalação nem configuração adicional além do Jellyfin oficial, abre a app, introduz `https://serveriptv.duckdns.org`, username e password Mega OTT, vê **automaticamente só a sua subscrição**, reproduz conteúdos autorizados com imagem e som usando a reprodução nativa do Jellyfin e o processamento FFmpeg na VPS quando necessário, e perde/recupera acesso conforme o painel Mega OTT. Repetir com pelo menos duas contas diferentes e clientes de cada plataforma de destino (Android, Android TV, iOS, Windows, Samsung Tizen e LG webOS). Verificar recursos, cache temporária e ausência de armazenamento permanente de media. Não confundir autorização da nova arquitetura com implementação ou instalação concluídas.
 
 **NÃO DESVIAR DESTE OBJETIVO PARA CORREÇÕES APENAS ANDROID, PAINÉIS NOVOS OU REINSTALAÇÃO DO PINK IPTV.**
