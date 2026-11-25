@@ -11,7 +11,27 @@ internal static class FiniteFixture
     {
         var a = await bridge.OpenFileAsync(ownerA, get("a"), "vod", "10", "501", null, "ios", ct);
         var b = await bridge.OpenFileAsync(ownerB, get("b"), "series", "20", "90", "401", "webos", ct);
-        using var http = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false });
+        using var http = new HttpClient(new SocketsHttpHandler
+        {
+            UseProxy = false, AllowAutoRedirect = false,
+            // Disposing the deliberately unread test response must close its
+            // connection rather than silently draining it in the background.
+            MaxResponseDrainSize = 0
+        });
+        async Task DrainReaders(Guid owner, PrivateHlsLoopback.Lease lease, string label)
+        {
+            var deadline = Stopwatch.StartNew();
+            while (bridge.InspectFileReaders(owner, lease).Active != 0)
+            {
+                if (deadline.Elapsed > TimeSpan.FromSeconds(10))
+                    throw new InvalidOperationException("Previous private file readers did not retire");
+                await Task.Delay(20, ct);
+            }
+            var stats = bridge.InspectFileReaders(owner, lease);
+            Console.WriteLine($"VIVOAPK_PRIVATE_LOOPBACK_FILE_READER_STATS={label} active={stats.Active} peak={stats.Peak} waits={stats.Waits} timeouts={stats.Timeouts} cancelled={stats.Cancelled} failures={stats.Failures}");
+            if (stats.Peak > 3 || stats.Timeouts != 0 || stats.Failures != 0)
+                throw new InvalidOperationException("Private reader operation failed");
+        }
         var fixtures = new[] { (Lease: a, Reference: get("movie_reference"), Label: "movie"),
                               (Lease: b, Reference: get("episode_reference"), Label: "episode") };
         foreach (var item in fixtures)
@@ -63,6 +83,7 @@ internal static class FiniteFixture
             long total = new FileInfo(item.Reference).Length;
             using var stalledRequest = new HttpRequestMessage(HttpMethod.Get, item.Lease.Playlist);
             stalledRequest.Headers.Range = new RangeHeaderValue(0, null);
+            stalledRequest.Headers.ConnectionClose = true;
             using (var stalled = await http.SendAsync(stalledRequest,
                 HttpCompletionOption.ResponseHeadersRead, ct))
             {
@@ -91,6 +112,8 @@ internal static class FiniteFixture
             if (resumed.StatusCode != HttpStatusCode.PartialContent)
                 throw new InvalidOperationException("Seek cancellation invalidated lease");
         }
+        await Task.WhenAll(DrainReaders(ownerA, a, "movie_after_cancel"),
+            DrainReaders(ownerB, b, "episode_after_cancel"));
         Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_FILE_OVERLAPPING_SEEK_AND_CANCEL=PASS");
 
         async Task<string[]> Decode(string input, string label, bool local, string seek)
@@ -169,7 +192,24 @@ internal static class FiniteFixture
 
         foreach (var seek in new[] { "0", "7", "2" })
         {
-            var actual = await Task.WhenAll(fixtures.Select(item => Compare(item, seek)));
+            string[][] actual;
+            try
+            {
+                actual = await Task.WhenAll(fixtures.Select(item => Compare(item, seek)));
+            }
+            finally
+            {
+                // Even a failing decode must leave its sanitized counters
+                // visible, and neither side can silently swallow the failure.
+                foreach (var (owner, lease, label) in new[] {
+                    (ownerA, a, "movie"), (ownerB, b, "episode") })
+                {
+                    var stats = bridge.InspectFileReaders(owner, lease);
+                    Console.WriteLine($"VIVOAPK_PRIVATE_LOOPBACK_FILE_READER_STATS={label}_seek_{seek} active={stats.Active} peak={stats.Peak} waits={stats.Waits} timeouts={stats.Timeouts} cancelled={stats.Cancelled} failures={stats.Failures}");
+                }
+            }
+            await Task.WhenAll(DrainReaders(ownerA, a, "movie_after_decode"),
+                DrainReaders(ownerB, b, "episode_after_decode"));
             if (actual[0].Where(x => x.StartsWith("0:", StringComparison.Ordinal))
                 .SequenceEqual(actual[1].Where(x => x.StartsWith("0:", StringComparison.Ordinal))))
                 throw new InvalidOperationException("Movie and episode unexpectedly share decoded content");

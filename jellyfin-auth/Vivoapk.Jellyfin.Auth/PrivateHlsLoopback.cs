@@ -45,7 +45,17 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         // FFmpeg may open a second HTTP connection before closing its old
         // connection when it seeks. Bound responses separately from the
         // backend grant lock; never hold that lock during socket writes.
-        internal readonly SemaphoreSlim FileReaders = new(2, 2);
+        // A previous seek connection can still be unwinding on the server
+        // while FFmpeg opens its next pair. Keep headroom for that transient
+        // reader, without increasing the number of media sessions or allowing
+        // parallel backend operations for an account.
+        internal readonly SemaphoreSlim FileReaders = new(3, 3);
+        internal int ActiveFileReaders;
+        internal int PeakFileReaders;
+        internal int FileReaderWaits;
+        internal int FileReaderTimeouts;
+        internal int FileReaderCancelled;
+        internal int FileReaderFailures;
         internal readonly CancellationTokenSource Retired = new();
         internal long LastUse = Environment.TickCount64;
     }
@@ -325,6 +335,22 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         finally { entry.Gate.Release(); }
     }
 
+    // Internal counters only. No credentials, capability URL, request headers,
+    // byte contents or provider details are exposed by this diagnostic.
+    internal readonly record struct FileReaderStats(int Active, int Peak,
+        int Waits, int Timeouts, int Cancelled, int Failures);
+
+    internal FileReaderStats InspectFileReaders(Guid owner, Lease lease)
+    {
+        if (!_entries.TryGetValue(lease.Id, out var entry) || entry.Owner != owner
+            || entry.File is null)
+            throw new InvalidOperationException("Private media session unavailable");
+        return new FileReaderStats(Volatile.Read(ref entry.ActiveFileReaders),
+            Volatile.Read(ref entry.PeakFileReaders), Volatile.Read(ref entry.FileReaderWaits),
+            Volatile.Read(ref entry.FileReaderTimeouts), Volatile.Read(ref entry.FileReaderCancelled),
+            Volatile.Read(ref entry.FileReaderFailures));
+    }
+
     private async Task ServeFileAsync(HttpContext http, string id, Entry entry,
         PrivateHlsSocketClient.FileInfo file, long start, long end, bool partial)
     {
@@ -332,7 +358,22 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             http.RequestAborted, entry.Retired.Token, _stopping.Token);
         var ct = lifetime.Token;
         if (!entry.FileReaders.Wait(0))
-            throw new InvalidOperationException("Private file reader limit");
+        {
+            Interlocked.Increment(ref entry.FileReaderWaits);
+            if (!await entry.FileReaders.WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false))
+            {
+                Interlocked.Increment(ref entry.FileReaderTimeouts);
+                throw new InvalidOperationException("Private file reader limit");
+            }
+        }
+        int active = Interlocked.Increment(ref entry.ActiveFileReaders);
+        int peak;
+        do
+        {
+            peak = Volatile.Read(ref entry.PeakFileReaders);
+            if (active <= peak)
+                break;
+        } while (Interlocked.CompareExchange(ref entry.PeakFileReaders, active, peak) != peak);
         try
         {
             if (HttpMethods.IsHead(http.Request.Method))
@@ -360,7 +401,26 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
                 offset += body.Length;
             }
         }
-        finally { entry.FileReaders.Release(); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Interlocked.Increment(ref entry.FileReaderCancelled);
+            throw;
+        }
+        catch (IOException) when (ct.IsCancellationRequested)
+        {
+            Interlocked.Increment(ref entry.FileReaderCancelled);
+            throw;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
+        {
+            Interlocked.Increment(ref entry.FileReaderFailures);
+            throw;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref entry.ActiveFileReaders);
+            entry.FileReaders.Release();
+        }
     }
 
     private static void SetFileHeaders(HttpContext http, PrivateHlsSocketClient.FileInfo file,
