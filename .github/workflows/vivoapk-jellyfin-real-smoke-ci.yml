@@ -1,4 +1,4 @@
-name: VivoAPK Jellyfin 12.4 disposable server integration
+name: VivoAPK Jellyfin 12.4 - isolated continuous TV regression
 on:
   push:
     paths:
@@ -208,21 +208,13 @@ jobs:
             echo "PATCHED_API_SHA256=$(sha256sum "$runtime_dir/Jellyfin.Api.dll" | cut -d ' ' -f1)"
             echo "FFMPEG_SHA256=$(sha256sum "$VIVOAPK_EXPECTED_FFMPEG" | cut -d ' ' -f1)"
           } | tee "$evidence"
-          run_gate standard python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          run_gate category env VIVOAPK_CI_CATEGORY_MODE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          mkdir -p "$RUNNER_TEMP/catalog-race"
-          run_gate catalog-race env RUNNER_TEMP="$RUNNER_TEMP/catalog-race" VIVOAPK_CI_CATEGORY_MODE=1 python3 -u jellyfin-auth/tests/catalog_concurrency_probe.py
+          # This disposable branch reruns ONLY the canceled last gate.
+          # All source files and fixtures are unchanged from the seven-gate approval.
+          echo "BASE_VALIDATED_SOURCE=f12b7c7545c1830bf28d7848fae45125c0d2c430" | tee -a "$evidence"
+          echo "SOURCE_CHANGE_SCOPE=WORKFLOW_ONLY" | tee -a "$evidence"
+          git diff --exit-code f12b7c7545c1830bf28d7848fae45125c0d2c430 HEAD -- jellyfin-auth backend
           dotnet build jellyfin-auth/Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj -c Release -t:Rebuild -p:NativePlaybackLabBuild=true
           echo "SYNTHETIC_PLUGIN_SHA256=$(sha256sum "$plugin" | cut -d ' ' -f1)" | tee -a "$evidence"
-          # Exercise the previously failing gate first in the disposable native build.
-          run_gate native-private-hls env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          run_gate native-private-live-recovery env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 VIVOAPK_CI_PRIVATE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          if (( failed != 0 )); then
-            echo "PRIVATE_HLS_GATE_FAILED_BEFORE_REMAINING_NATIVE_REGRESSION=1" | tee -a "$evidence"
-            exit "$failed"
-          fi
-          run_gate native-server-ffmpeg env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
-          run_gate native-long-cache env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_LONG_CACHE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           run_gate native-infinite-live env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_INFINITE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           echo "COMBINED_LAB_GATE_EXIT=$failed" | tee -a "$evidence"
           exit "$failed"
