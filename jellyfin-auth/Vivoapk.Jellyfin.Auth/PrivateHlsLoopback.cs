@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -17,6 +18,7 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 /// Future integration must keep it inside the isolated Jellyfin namespace.</summary>
 internal sealed class PrivateHlsLoopback : IAsyncDisposable
 {
+    private static readonly Regex FileRange = new(@"\Abytes=([0-9]{1,18})-([0-9]{0,18})\z", RegexOptions.CultureInvariant);
     private static readonly Regex Segment = new(@"^segment/([A-Za-z0-9_-]{32})\.ts\z", RegexOptions.CultureInvariant);
     private static readonly Regex SafeTag = new(
         @"^#(?:EXT-X-VERSION:[0-9]{1,2}|EXT-X-TARGETDURATION:[0-9]{1,3}|EXT-X-MEDIA-SEQUENCE:[0-9]{1,16}|EXT-X-DISCONTINUITY-SEQUENCE:[0-9]{1,16}|EXTINF:[0-9]{1,3}(?:\.[0-9]{1,6})?,|EXT-X-DISCONTINUITY|EXT-X-ENDLIST)\z",
@@ -30,9 +32,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
     private readonly Task _sweeper;
     private int _disposed;
 
-    private sealed class Entry(Guid owner, PrivateHlsSocketClient.Grant grant, string sessionId, long issued)
+    private sealed class Entry(Guid owner, PrivateHlsSocketClient.Grant grant, string sessionId, long issued,
+        PrivateHlsSocketClient.FileInfo? file = null)
     {
         internal readonly Guid Owner = owner;
+        internal readonly PrivateHlsSocketClient.FileInfo? File = file;
         internal string Token = grant.Token;
         internal long GrantExpires = issued + grant.Seconds * 1000L;
         internal long RenewAt = issued + grant.Seconds * 500L;
@@ -127,6 +131,31 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         }
     }
 
+    internal async Task<Lease> OpenFileAsync(Guid owner, string token, string kind, string category,
+        string asset, string? series, string platform, CancellationToken ct)
+    {
+        if (owner == Guid.Empty)
+            throw new InvalidOperationException("Missing authenticated owner");
+        await _admission.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_entries.Count >= 2 || _entries.Values.Any(e => e.Owner == owner))
+                throw new InvalidOperationException("Private media admission limit");
+            var issued = Environment.TickCount64;
+            var opened = await _backend.OpenFileAsync(token, kind, category, asset, series, platform, ct)
+                .ConfigureAwait(false);
+            var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+            if (!_entries.TryAdd(id, new Entry(owner, opened.Grant, opened.SessionId, issued, opened.File)))
+            {
+                await _backend.CloseAsync(opened.Grant.Token, opened.SessionId, ct, finite: true)
+                    .ConfigureAwait(false);
+                throw new InvalidOperationException("Private media admission failed");
+            }
+            return new Lease(id, new Uri(_base, "/vivoapk/" + id + "/file"));
+        }
+        finally { _admission.Release(); }
+    }
+
     internal async Task CloseAsync(Guid owner, Lease lease, CancellationToken ct)
     {
         if (!_entries.TryGetValue(lease.Id, out var entry) || entry.Owner != owner)
@@ -136,7 +165,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         {
             if (!_entries.TryRemove(new KeyValuePair<string, Entry>(lease.Id, entry)))
                 throw new InvalidOperationException("Private media session unavailable");
-            await _backend.CloseAsync(entry.Token, entry.SessionId, ct).ConfigureAwait(false);
+            await _backend.CloseAsync(entry.Token, entry.SessionId, ct, finite: entry.File is not null).ConfigureAwait(false);
         }
         finally
         {
@@ -155,7 +184,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
                 return;
             try
             {
-                await _backend.CloseAsync(entry.Token, entry.SessionId, ct).ConfigureAwait(false);
+                await _backend.CloseAsync(entry.Token, entry.SessionId, ct, finite: entry.File is not null).ConfigureAwait(false);
             }
             catch (InvalidOperationException)
             {
@@ -194,7 +223,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
                             deadline.CancelAfter(TimeSpan.FromSeconds(5));
                             try
                             {
-                                await _backend.CloseAsync(entry.Token, entry.SessionId, deadline.Token)
+                                await _backend.CloseAsync(entry.Token, entry.SessionId, deadline.Token, finite: entry.File is not null)
                                     .ConfigureAwait(false);
                             }
                             catch (InvalidOperationException) { }
@@ -215,7 +244,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             throw new InvalidOperationException("Private media grant expired");
         if (now < entry.RenewAt)
             return;
-        var grant = await _backend.RenewAsync(entry.Token, entry.SessionId, ct).ConfigureAwait(false);
+        var grant = await _backend.RenewAsync(entry.Token, entry.SessionId, ct, finite: entry.File is not null).ConfigureAwait(false);
         entry.Token = grant.Token;
         entry.GrantExpires = now + grant.Seconds * 1000L;
         entry.RenewAt = now + grant.Seconds * 500L;
@@ -233,6 +262,77 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             && lines.Any(l => Segment.IsMatch(l));
     }
 
+    private static bool TryRange(HttpRequest request, long total, out long start, out long end, out bool partial)
+    {
+        start = 0;
+        end = total - 1;
+        partial = request.Headers.TryGetValue("Range", out var values);
+        if (!partial)
+            return true;
+        if (values.Count != 1 || values[0] is not string value)
+            return false;
+        var match = FileRange.Match(value);
+        if (!match.Success || !long.TryParse(match.Groups[1].Value, NumberStyles.None,
+                CultureInfo.InvariantCulture, out start) || start >= total)
+            return false;
+        if (match.Groups[2].Length != 0)
+        {
+            if (!long.TryParse(match.Groups[2].Value, NumberStyles.None,
+                    CultureInfo.InvariantCulture, out end) || end < start)
+                return false;
+            end = Math.Min(end, total - 1);
+        }
+        return true;
+    }
+
+    private async Task ServeFileAsync(HttpContext http, Entry entry, PrivateHlsSocketClient.FileInfo file,
+        long start, long end, bool partial)
+    {
+        // Keep the existing bounded per-lease gate while streaming. The
+        // backend receives one bounded, authenticated window at a time;
+        // the client cannot submit an upstream URL or validator.
+        var ct = http.RequestAborted;
+        await RenewIfNeededAsync(entry, ct).ConfigureAwait(false);
+        if (HttpMethods.IsHead(http.Request.Method))
+        {
+            // An actual one-byte authorized read ensures HEAD does not
+            // expose stale metadata after entitlement revocation.
+            _ = await _backend.ReadFileAsync(entry.Token, entry.SessionId, file, start, 1, ct)
+                .ConfigureAwait(false);
+            SetFileHeaders(http, file, start, end, partial);
+            entry.LastUse = Environment.TickCount64;
+            return;
+        }
+        // Obtain the first window before sending any successful response.
+        // Later errors abort the response rather than delivering a truncated
+        // representation as if it were a complete file.
+        for (long offset = start; offset <= end;)
+        {
+            await RenewIfNeededAsync(entry, ct).ConfigureAwait(false);
+            int length = (int)Math.Min(PrivateHlsSocketClient.FileWindowBytes, end - offset + 1);
+            var body = await _backend.ReadFileAsync(entry.Token, entry.SessionId, file, offset, length, ct)
+                .ConfigureAwait(false);
+            if (offset == start)
+                SetFileHeaders(http, file, start, end, partial);
+            await http.Response.Body.WriteAsync(body, ct).ConfigureAwait(false);
+            await http.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+            entry.LastUse = Environment.TickCount64;
+            offset += body.Length;
+        }
+    }
+
+    private static void SetFileHeaders(HttpContext http, PrivateHlsSocketClient.FileInfo file,
+        long start, long end, bool partial)
+    {
+        http.Response.StatusCode = partial ? 206 : 200;
+        http.Response.ContentType = file.Mime;
+        http.Response.ContentLength = end - start + 1;
+        http.Response.Headers["Accept-Ranges"] = "bytes";
+        if (partial)
+            http.Response.Headers["Content-Range"] = string.Create(CultureInfo.InvariantCulture,
+                $"bytes {start}-{end}/{file.Length}");
+    }
+
     private async Task HandleAsync(HttpContext http)
     {
         http.Response.Headers.CacheControl = "no-store";
@@ -240,12 +340,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         var remote = http.Connection.RemoteIpAddress;
         if (remote is null || !IPAddress.Loopback.Equals(remote)
             || http.Connection.LocalIpAddress is null || !IPAddress.Loopback.Equals(http.Connection.LocalIpAddress)
-            || request.Host.Value != _base.Authority || !HttpMethods.IsGet(request.Method)
+            || request.Host.Value != _base.Authority
+            || (!HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method))
             || request.QueryString.HasValue || request.Headers.ContainsKey("Forwarded")
             || request.Headers.ContainsKey("X-Forwarded-For")
-            || request.Headers.ContainsKey("X-Forwarded-Host")
-            || (request.Headers.TryGetValue("Range", out var range)
-                && (range.Count != 1 || range[0] != "bytes=0-")))
+            || request.Headers.ContainsKey("X-Forwarded-Host"))
         {
             http.Response.StatusCode = 404;
             return;
@@ -261,7 +360,20 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         }
         bool playlist = parts.Length == 4 && parts[3] == "index.m3u8";
         var segment = parts.Length == 5 ? Segment.Match(parts[3] + "/" + parts[4]) : Match.Empty;
-        if (!playlist && !segment.Success)
+        bool fileRoute = parts.Length == 4 && parts[3] == "file";
+        long start = 0, end = 0;
+        bool partial = false;
+        if (entry.File is { } file)
+        {
+            if (!fileRoute || !TryRange(request, file.Length, out start, out end, out partial))
+            {
+                http.Response.StatusCode = 404;
+                return;
+            }
+        }
+        else if ((!playlist && !segment.Success) || !HttpMethods.IsGet(request.Method)
+            || (request.Headers.TryGetValue("Range", out var range)
+                && (range.Count != 1 || range[0] != "bytes=0-")))
         {
             http.Response.StatusCode = 404;
             return;
@@ -276,6 +388,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
                 || Environment.TickCount64 - entry.LastUse >= 90000)
             {
                 http.Response.StatusCode = 404;
+                return;
+            }
+            if (entry.File is { } finiteFile)
+            {
+                await ServeFileAsync(http, entry, finiteFile, start, end, partial).ConfigureAwait(false);
                 return;
             }
             await RenewIfNeededAsync(entry, http.RequestAborted).ConfigureAwait(false);
@@ -293,7 +410,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
         {
             if (!http.Response.HasStarted)
+            {
+                http.Response.Clear();
+                http.Response.Headers.CacheControl = "no-store";
                 http.Response.StatusCode = 404;
+            }
             else
                 http.Abort();
         }

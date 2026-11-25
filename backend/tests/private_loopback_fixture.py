@@ -33,8 +33,11 @@ from app.models import AuthRateWindow, SubscriptionMapping
 from app.schemas import EntitlementState
 from app.security import issue_session_token
 from app.services.private_hls import PrivateHlsSession
+from app.services.private_file import PrivateFileSession
+from app.services.media_body import open_media_body
 from test_catalog_privacy import FakeCatalog, FakeMega, FakeXtream
-from test_media_origin import public_dns
+from test_media_origin import MediaCatalogue, public_dns
+from test_private_file_api import RangePool
 from test_private_hls import ORIGIN, Origin, response
 
 
@@ -91,6 +94,33 @@ class ConcurrentOrigin(Origin):
         return response(body, b"video/mp2t")
 
 
+def generate_file(ffmpeg, path, suffix, frequency):
+    # Real MP4 with moov at the end, deliberately >4 MiB. Use deterministic
+    # generated video and audio only. No download or provider content.
+    video = ("testsrc2=size=640x360:rate=25" if suffix == "a" else
+             "testsrc2=size=640x360:rate=25,negate")
+    subprocess.run([
+        ffmpeg, "-hide_banner", "-nostdin", "-v", "error",
+        "-f", "lavfi", "-i", video,
+        "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000",
+        "-t", "12", "-c:v", "libx264", "-preset", "ultrafast", "-threads:v", "1",
+        "-pix_fmt", "yuv420p", "-crf", "0", "-g", "50", "-keyint_min", "50",
+        "-sc_threshold", "0", "-c:a", "aac", "-threads:a", "1", str(path),
+    ], check=True, capture_output=True, timeout=30)
+    # An ordinary MP4 'free' box at the end makes the multi-window byte
+    # contract deterministic without forcing an expensive encode.
+    import struct
+    minimum = 4 * 1024 * 1024 + 8192
+    size = path.stat().st_size
+    if size < minimum:
+        padding = minimum - size
+        with path.open("ab") as f:
+            f.write(struct.pack(">I4s", padding, b"free"))
+            f.write(bytes(padding - 8))
+    assert path.stat().st_size > 4 * 1024 * 1024 + 1024
+    return path.read_bytes()
+
+
 def main():
     ffmpeg = shutil.which("ffmpeg")
     assert ffmpeg is not None
@@ -136,7 +166,7 @@ def main():
         @app.middleware("http")
         async def observe_response(request, call_next):
             route = request.url.path.rsplit("/", 1)[-1]
-            if route not in {"open", "playlist", "segment", "close", "renew"}:
+            if route not in {"open", "playlist", "segment", "close", "renew", "read"}:
                 route = "other"
             try:
                 result = await call_next(request)
@@ -264,6 +294,54 @@ def main():
             assert not app.state.private_hls_registry._entries
             assert all(pool.closed and pool.response.closed for pool in upstream.pools)
             print("VIVOAPK_PRIVATE_LOOPBACK_REAL_TTL_AND_ABANDONMENT=PASS", flush=True)
+            # Same running backend/socket/registry and exact C# adapter:
+            # actual random-access finite media after all HLS regression gates.
+            with dbfactory() as db:
+                db.query(AuthRateWindow).delete()
+                db.commit()
+            movie, episode = base / "movie.mp4", base / "episode.mp4"
+            finite = RangePool({
+                ORIGIN + "/movie/sub-a/fixture-password-a/501.mp4":
+                    generate_file(ffmpeg, movie, "a", 550),
+                ORIGIN + "/series/sub-b/fixture-password-b/90.mp4":
+                    generate_file(ffmpeg, episode, "b", 770),
+            })
+            app.state.catalog_client_factory = MediaCatalogue
+            app.state.private_file_factory = lambda source: PrivateFileSession(source,
+                body_reader=lambda src, **kwargs: open_media_body(
+                    src, resolver=public_dns, pool_factory=finite.factory, **kwargs))
+            for suffix, ident in tokens.items():
+                data[suffix], _ = issue_session_token(ident, settings)
+            data["movie_reference"], data["episode_reference"] = str(movie), str(episode)
+            config.write_text(json.dumps(data))
+            with observation_lock:
+                observations.clear()
+            result = subprocess.run(["dotnet", str(assembly), str(config), "file"],
+                                    capture_output=True, text=True, timeout=110)
+            for line in (result.stdout + "\n" + result.stderr).splitlines():
+                if line.startswith("VIVOAPK_PRIVATE_LOOPBACK_"):
+                    print(line, flush=True)
+            with observation_lock:
+                files_observed = dict(observations)
+            print("VIVOAPK_PRIVATE_LOOPBACK_FILE_OBSERVATION=" + json.dumps({
+                "statuses": files_observed,
+                "active_backend_sessions": len(app.state.private_hls_registry._entries),
+                "origin_range_reads": len(finite.calls),
+                "max_range_bytes": max((end - start + 1 for _, start, end, _ in finite.calls), default=0),
+                "nonzero_range_reads": sum(start > 0 for _, start, _, _ in finite.calls),
+            }, sort_keys=True), flush=True)
+            assert result.returncode == 0, "Finite media harness failed"
+            assert files_observed.get("open_200") == 2 and files_observed.get("close_204") == 2
+            assert files_observed.get("read_206", 0) >= 12
+            assert not any(k.endswith(("_429", "_500", "_503")) or k.startswith("db_")
+                           for k in files_observed), "Finite backend/DB admission failure"
+            assert not app.state.private_hls_registry._entries
+            assert all(pool.closed and pool.response.closed for pool in finite.pools)
+            assert all(url in finite.files and 0 <= start <= end
+                       and end - start + 1 <= 4 * 1024 * 1024
+                       for url, start, end, _ in finite.calls)
+            assert any(start == 4 * 1024 * 1024 for _, start, _, _ in finite.calls)
+            print("VIVOAPK_PRIVATE_LOOPBACK_FILE_BACKEND_UDS_AND_CLEANUP=PASS", flush=True)
             print("VIVOAPK_PRIVATE_LOOPBACK_BACKEND_UDS_AND_CLEANUP=PASS", flush=True)
         finally:
             server.should_exit = True

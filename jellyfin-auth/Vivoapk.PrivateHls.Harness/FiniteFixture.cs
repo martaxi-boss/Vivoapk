@@ -1,0 +1,137 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using Jellyfin.Plugin.VivoapkMegaAuth;
+
+internal static class FiniteFixture
+{
+    internal static async Task<int> RunAsync(PrivateHlsLoopback bridge, Func<string, string> get,
+        Guid ownerA, Guid ownerB, CancellationToken ct)
+    {
+        var a = await bridge.OpenFileAsync(ownerA, get("a"), "vod", "10", "501", null, "ios", ct);
+        var b = await bridge.OpenFileAsync(ownerB, get("b"), "series", "20", "90", "401", "webos", ct);
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false });
+        var fixtures = new[] { (Lease: a, Reference: get("movie_reference"), Label: "movie"),
+                              (Lease: b, Reference: get("episode_reference"), Label: "episode") };
+        foreach (var item in fixtures)
+        {
+            using var head = await http.SendAsync(new HttpRequestMessage(HttpMethod.Head, item.Lease.Playlist), ct);
+            long total = new FileInfo(item.Reference).Length;
+            if (head.StatusCode != HttpStatusCode.OK || head.Content.Headers.ContentLength != total
+                || !head.Headers.AcceptRanges.Contains("bytes") || total <= PrivateHlsSocketClient.FileWindowBytes)
+                throw new InvalidOperationException("Finite HEAD failed");
+            // Verify a single response spanning multiple backend windows,
+            // including a backwards seek to the very beginning afterward.
+            long first = 0, last = PrivateHlsSocketClient.FileWindowBytes + 1023;
+            foreach (var (start, end) in new[] { (first, last), (total - 512, total - 1), (0L, 63L) })
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, item.Lease.Playlist);
+                request.Headers.Range = new RangeHeaderValue(start, end);
+                using var response = await http.SendAsync(request, ct);
+                if (response.StatusCode != HttpStatusCode.PartialContent
+                    || response.Content.Headers.ContentRange?.From != start
+                    || response.Content.Headers.ContentRange?.To != end
+                    || response.Content.Headers.ContentRange?.Length != total)
+                    throw new InvalidOperationException("Finite range metadata failed");
+                byte[] actual = await response.Content.ReadAsByteArrayAsync(ct);
+                await using var input = File.OpenRead(item.Reference);
+                input.Position = start;
+                var expected = new byte[checked((int)(end - start + 1))];
+                await input.ReadExactlyAsync(expected, ct);
+                if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(actual), SHA256.HashData(expected)))
+                    throw new InvalidOperationException("Finite range content failed");
+            }
+            using var invalid = new HttpRequestMessage(HttpMethod.Get, item.Lease.Playlist);
+            invalid.Headers.TryAddWithoutValidation("Range", "bytes=0-2,6-8");
+            using var denied = await http.SendAsync(invalid, ct);
+            if (denied.StatusCode != HttpStatusCode.NotFound)
+                throw new InvalidOperationException("Multi-range accepted");
+            using var wrongRoute = await http.GetAsync(new Uri(item.Lease.Playlist, "index.m3u8"), ct);
+            using var query = await http.GetAsync(new Uri(item.Lease.Playlist, "?url=unexpected"), ct);
+            if (wrongRoute.StatusCode != HttpStatusCode.NotFound || query.StatusCode != HttpStatusCode.NotFound)
+                throw new InvalidOperationException("Unexpected finite route accepted");
+        }
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_FILE_MULTIWINDOW_AND_RANDOM_RANGE=PASS");
+
+        async Task<string[]> Decode(string input, string label, bool local, string seek)
+        {
+            var info = new ProcessStartInfo(get("ffmpeg"))
+            {
+                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            foreach (var arg in new[] { "-hide_banner", "-nostdin", "-v", "error",
+                "-protocol_whitelist", local ? "file" : "http,tcp", "-threads", "1",
+                "-ss", seek, "-i", input, "-t", "2", "-map", "0:v:0", "-map", "0:a:0",
+                "-threads:v", "1", "-threads:a", "1", "-f", "framemd5", "pipe:1" })
+                info.ArgumentList.Add(arg);
+            using var process = Process.Start(info) ?? throw new InvalidOperationException();
+            try
+            {
+                var output = process.StandardOutput.ReadToEndAsync(ct);
+                var errors = process.StandardError.ReadToEndAsync(ct);
+                await process.WaitForExitAsync(ct);
+                var records = (await output).Split('\n').Where(l =>
+                    l.StartsWith("0,", StringComparison.Ordinal) ||
+                    l.StartsWith("1,", StringComparison.Ordinal)).ToArray();
+                var diagnostic = await errors;
+                int video = records.Count(x => x.StartsWith("0,", StringComparison.Ordinal));
+                int audio = records.Length - video;
+                Console.WriteLine($"VIVOAPK_PRIVATE_LOOPBACK_FILE_DECODE={label} seek={seek} local={local} exit={process.ExitCode} video={video} audio={audio} diagnostic_bytes={diagnostic.Length}");
+                if (process.ExitCode != 0 || video < 45 || audio < 40)
+                    throw new InvalidOperationException("Finite decode failed");
+                // Compare frame payloads in stream order (PTS may differ
+                // between a local and HTTP demuxer; decoded data may not).
+                return records.Select(l => l.Split(',')[0] + ":" + l.Split(',').Last().Trim()).ToArray();
+            }
+            finally
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync();
+                }
+            }
+        }
+
+        async Task<string[]> Compare((PrivateHlsLoopback.Lease Lease, string Reference, string Label) item,
+            string seek)
+        {
+            var expected = await Decode(item.Reference, item.Label, true, seek);
+            var actual = await Decode(item.Lease.Playlist.AbsoluteUri, item.Label, false, seek);
+            // Compare each stream separately: cross-stream interleave is
+            // not a codec correctness property.
+            foreach (var prefix in new[] { "0:", "1:" })
+                if (!expected.Where(x => x.StartsWith(prefix, StringComparison.Ordinal))
+                    .SequenceEqual(actual.Where(x => x.StartsWith(prefix, StringComparison.Ordinal))))
+                    throw new InvalidOperationException("Finite decoded payload differs from reference");
+            return actual;
+        }
+
+        foreach (var seek in new[] { "0", "7", "2" })
+        {
+            var actual = await Task.WhenAll(fixtures.Select(item => Compare(item, seek)));
+            if (actual[0].Where(x => x.StartsWith("0:", StringComparison.Ordinal))
+                .SequenceEqual(actual[1].Where(x => x.StartsWith("0:", StringComparison.Ordinal))))
+                throw new InvalidOperationException("Movie and episode unexpectedly share decoded content");
+        }
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_FILE_FFMPEG_MOVIE_EPISODE_SEEK=PASS");
+        try
+        {
+            await bridge.CloseAsync(ownerB, a, ct);
+            throw new Exception("Cross-owner close accepted");
+        }
+        catch (InvalidOperationException) { }
+        await bridge.CloseAsync(ownerA, a, ct);
+        using (var retired = await http.GetAsync(a.Playlist, ct))
+            if (retired.StatusCode != HttpStatusCode.NotFound)
+                throw new InvalidOperationException("Closed file capability remains live");
+        await Compare(fixtures[1], "5");
+        await bridge.CloseAsync(ownerB, b, ct);
+        using (var retired = await http.GetAsync(b.Playlist, ct))
+            if (retired.StatusCode != HttpStatusCode.NotFound)
+                throw new InvalidOperationException("Closed episode capability remains live");
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_FILE_CLOSE_ISOLATION=PASS");
+        return 0;
+    }
+}

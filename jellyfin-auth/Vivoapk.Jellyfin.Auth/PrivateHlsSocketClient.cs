@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -72,6 +73,48 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         return (id.GetString()!, ParseGrant(json.RootElement));
     }
 
+    internal const int FileWindowBytes = 4 * 1024 * 1024;
+    internal const long MaxFileBytes = 128L * 1024 * 1024 * 1024;
+
+    internal sealed record FileInfo(long Length, string Mime);
+
+    internal async Task<(string SessionId, Grant Grant, FileInfo File)> OpenFileAsync(
+        string token, string kind, string category, string asset, string? series,
+        string platform, CancellationToken ct)
+    {
+        if (!Number.IsMatch(category) || !Number.IsMatch(asset)
+            || kind is not ("vod" or "series")
+            || (kind == "series" ? series is null || !Number.IsMatch(series) : series is not null)
+            || platform is not ("android" or "android_tv" or "ios" or "windows" or "tizen" or "webos"))
+            throw new InvalidOperationException("Invalid media identity");
+        var body = await SendAsync("open", token,
+            new { kind, category_id = category, asset_id = asset, series_id = series, platform },
+            "application/json", 4096, ct, finite: true).ConfigureAwait(false);
+        using var json = JsonDocument.Parse(body);
+        var root = json.RootElement;
+        if (!root.TryGetProperty("session_id", out var id) || id.ValueKind != JsonValueKind.String
+            || !IsId(id.GetString())
+            || !root.TryGetProperty("length", out var length) || !length.TryGetInt64(out var bytes)
+            || bytes is < 1 or > MaxFileBytes
+            || !root.TryGetProperty("content_type", out var type) || type.ValueKind != JsonValueKind.String
+            || type.GetString() is not ("video/mp4" or "video/mp2t" or "video/x-matroska"
+                or "video/webm" or "video/quicktime" or "video/x-msvideo" or "video/mpeg"))
+            throw new InvalidOperationException("Private finite media unavailable");
+        return (id.GetString()!, ParseGrant(root), new FileInfo(bytes, type.GetString()!));
+    }
+
+    internal Task<byte[]> ReadFileAsync(string token, string sessionId, FileInfo file,
+        long start, int length, CancellationToken ct)
+    {
+        if (start < 0 || start >= file.Length || length < 1 || length > FileWindowBytes
+            || length > file.Length - start)
+            throw new InvalidOperationException("Invalid finite media window");
+        var range = string.Create(CultureInfo.InvariantCulture,
+            $"bytes {start}-{start + length - 1}/{file.Length}");
+        return SendAsync("read", token, new { session_id = RequireId(sessionId), start, length },
+            file.Mime, length, ct, finite: true, expectedRange: range);
+    }
+
     private static Grant ParseGrant(JsonElement root)
     {
         if (!root.TryGetProperty("media_token", out var token) || token.ValueKind != JsonValueKind.String
@@ -83,10 +126,10 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         return new Grant(value, seconds);
     }
 
-    internal async Task<Grant> RenewAsync(string grant, string sessionId, CancellationToken ct)
+    internal async Task<Grant> RenewAsync(string grant, string sessionId, CancellationToken ct, bool finite = false)
     {
         var body = await SendAsync("renew", grant, new { session_id = RequireId(sessionId) },
-            "application/json", 4096, ct).ConfigureAwait(false);
+            "application/json", 4096, ct, finite: finite).ConfigureAwait(false);
         using var json = JsonDocument.Parse(body);
         return ParseGrant(json.RootElement);
     }
@@ -101,15 +144,15 @@ internal sealed class PrivateHlsSocketClient : IDisposable
             session_id = RequireId(sessionId), segment_id = RequireId(segmentId)
         }, "video/mp2t", 8 * 1024 * 1024, ct);
 
-    internal async Task CloseAsync(string token, string sessionId, CancellationToken ct)
+    internal async Task CloseAsync(string token, string sessionId, CancellationToken ct, bool finite = false)
         => _ = await SendAsync("close", token, new { session_id = RequireId(sessionId) },
-            null, 0, ct).ConfigureAwait(false);
+            null, 0, ct, finite: finite).ConfigureAwait(false);
 
     private static string RequireId(string id) => IsId(id) ? id
         : throw new InvalidOperationException("Invalid private media identity");
 
     private async Task<byte[]> SendAsync(string action, string token, object payload,
-        string? mime, int cap, CancellationToken ct)
+        string? mime, int cap, CancellationToken ct, bool finite = false, string? expectedRange = null)
     {
         if (string.IsNullOrEmpty(token) || token.Length > 4096
             || token.Any(c => char.IsControl(c) || char.IsWhiteSpace(c)))
@@ -118,7 +161,8 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, "_internal/media/hls/" + action)
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                "_internal/media/" + (finite ? "file/" : "hls/") + action)
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
@@ -132,7 +176,10 @@ internal sealed class PrivateHlsSocketClient : IDisposable
                     throw new InvalidOperationException("Private media unavailable");
                 return Array.Empty<byte>();
             }
-            if (response.StatusCode != HttpStatusCode.OK
+            if (response.StatusCode != (expectedRange is null ? HttpStatusCode.OK : HttpStatusCode.PartialContent)
+                || (expectedRange is not null && (response.Content.Headers.ContentRange?.ToString() != expectedRange
+                    || response.Content.Headers.ContentLength != cap))
+                || (expectedRange is null && response.Content.Headers.ContentRange is not null)
                 || !string.Equals(response.Content.Headers.ContentType?.MediaType, mime,
                     StringComparison.OrdinalIgnoreCase)
                 || response.Content.Headers.ContentEncoding.Count != 0
@@ -151,8 +198,8 @@ internal sealed class PrivateHlsSocketClient : IDisposable
                     throw new InvalidOperationException("Private media response exceeds bound");
                 output.Write(buffer, 0, count);
             }
-            if (output.Length == 0 || response.Content.Headers.ContentLength is long expected
-                && output.Length != expected)
+            if (output.Length == 0 || (expectedRange is not null && output.Length != cap)
+                || response.Content.Headers.ContentLength is long expected && output.Length != expected)
                 throw new InvalidOperationException("Private media response incomplete");
             return output.ToArray();
         }

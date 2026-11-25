@@ -16,6 +16,11 @@ try
     await using var bridge = await PrivateHlsLoopback.StartAsync(backend, ct);
     var ownerA = Guid.NewGuid();
     var ownerB = Guid.NewGuid();
+    if (args.Length == 2 && args[1] == "file")
+    {
+        checkpoint = "finite movie and episode sessions";
+        return await FiniteFixture.RunAsync(bridge, Get, ownerA, ownerB, ct);
+    }
     checkpoint = "two private sessions";
     var a = await bridge.OpenAsync(ownerA, Get("a"), "10", "101", "android", ct);
     var b = await bridge.OpenAsync(ownerB, Get("b"), "20", "101", "tizen", ct);
