@@ -18,6 +18,9 @@ PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
 MOCK = Path("/srv/projects/Vivoapk/run/backend.sock")
 CATEGORY_MODE = os.environ.get("VIVOAPK_CI_CATEGORY_MODE") == "1"
 SERVER_PLAYBACK = os.environ.get("VIVOAPK_CI_SERVER_PLAYBACK") == "1"
+LONG_CACHE = os.environ.get("VIVOAPK_CI_LONG_CACHE") == "1"
+if LONG_CACHE and not SERVER_PLAYBACK:
+    raise RuntimeError("Long cache test requires the disposable native playback lab")
 if SERVER_PLAYBACK and not CATEGORY_MODE:
     raise RuntimeError("Native lab requires category mode")
 
@@ -182,7 +185,21 @@ class SyntheticHlsHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "video/mp2t")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload)
+            if LONG_CACHE:
+                # Pace ONLY the synthetic finite fixture. At 2x its 600 kbit/s
+                # mux rate, FFmpeg stays active long enough to observe cleanup.
+                try:
+                    started = time.monotonic()
+                    sent = 0
+                    for offset in range(0, len(payload), 15000):
+                        chunk = payload[offset:offset + 15000]
+                        self.wfile.write(chunk)
+                        sent += len(chunk)
+                        time.sleep(max(0, started + sent / 150000 - time.monotonic()))
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            else:
+                self.wfile.write(payload)
             return
         if self.path.startswith("/live/") and self.path.endswith(".m3u8"):
             self.send_response(302)
@@ -395,6 +412,132 @@ def verify_native_cache_cleanup(base, item_id, info, source, route, owner_token,
     print("JELLYFIN_NATIVE_SERVER_CACHE_CLEANUP_ON_STOP=PASS")
 
 
+def native_cache_delta(base, baseline):
+    return {p: size for p, size in transcode_cache_files(base).items() if p not in baseline}
+
+
+def parse_timed_segments(body):
+    result = []
+    duration = None
+    for raw in body.decode().splitlines():
+        line = raw.strip()
+        if line.startswith("#EXTINF:"):
+            duration = float(line.split(":", 1)[1].split(",", 1)[0])
+        elif line and not line.startswith("#") and duration is not None:
+            if not 0 < duration <= 30:
+                raise RuntimeError("Unexpected synthetic segment duration")
+            result.append((duration, line))
+            duration = None
+    return result
+
+
+def verify_long_cache(base, item_id, master_route, owner_token, foreign_token,
+                      baseline, input_digest, provider):
+    # Only the generated finite loopback fixture. No provider/customer stream.
+    begin = time.monotonic()
+    requests_before = provider.requests
+    require_native_denial(master_route, owner_token, foreign_token, "long_master")
+    body = require_native_owner(master_route, owner_token, "long_master")
+    if not body.startswith(b"#EXTM3U"):
+        raise RuntimeError("Long native fixture master was not HLS")
+    media_route = master_route
+    if b"#EXT-X-STREAM-INF" in body:
+        candidates = [x.strip() for x in body.decode().splitlines()
+                      if x.strip() and not x.startswith("#")]
+        if not candidates:
+            raise RuntimeError("Long native fixture had no media playlist")
+        media_route = native_route(master_route, candidates[0], item_id)
+    body = require_native_owner(media_route, owner_token, "long_playlist")
+    timed = parse_timed_segments(body)
+    if not timed:
+        raise RuntimeError("Long native fixture had no timed segments")
+    served = 0.0
+    fetched = 0
+    early = set()
+    peak = 0
+    max_files = 0
+    last_route = None
+    for duration, relative in timed:
+        if served >= 70:
+            break
+        if time.monotonic() - begin > 100:
+            raise RuntimeError("Long native fixture exceeded bounded read interval")
+        route = native_route(media_route, relative, item_id)
+        data = require_native_owner(route, owner_token, "long_segment")
+        if len(data) < 188 or data[0] != 0x47:
+            raise RuntimeError("Long native fixture segment was not MPEG-TS")
+        served += duration
+        fetched += 1
+        last_route = route
+        observed = native_cache_delta(base, baseline)
+        peak = max(peak, sum(observed.values()))
+        max_files = max(max_files, len(observed))
+        if fetched == 1:
+            early = {p for p in observed if p.suffix.lower() == ".ts"}
+        if peak > 32 * 1024 * 1024:
+            raise RuntimeError("Synthetic cache exceeded the 32 MiB test limit")
+    if served < 60 or not early or fetched < 5:
+        raise RuntimeError("Insufficient sequential media for cache window test")
+    # Native segment cleaner runs periodically. Observe deletion of early
+    # files while later generated segments remain, without deleting anything.
+    rolling = {}
+    for _ in range(50):
+        rolling = native_cache_delta(base, baseline)
+        peak = max(peak, sum(rolling.values()))
+        max_files = max(max_files, len(rolling))
+        if peak > 32 * 1024 * 1024:
+            raise RuntimeError("Synthetic cache exceeded the 32 MiB test limit")
+        if early.difference(rolling) and any(p.suffix.lower() == ".ts" for p in rolling):
+            break
+        time.sleep(0.5)
+    removed_early = len(early.difference(rolling))
+    if not removed_early or not rolling:
+        raise RuntimeError("Native rolling cache deletion not observed")
+    require_native_denial(last_route, owner_token, foreign_token, "long_cached_segment")
+    # Final owner request proves current segment still plays. Then cease all
+    # playback requests: do NOT send a stop event or manually remove files.
+    data = require_native_owner(last_route, owner_token, "long_current_segment")
+    if len(data) < 188 or data[0] != 0x47:
+        raise RuntimeError("Current segment unavailable after rolling deletion")
+    at_disconnect = native_cache_delta(base, baseline)
+    if not at_disconnect:
+        raise RuntimeError("No native cache existed before simulated disconnect")
+    print("JELLYFIN_NATIVE_LONG_CACHE_ROLLING=" + json.dumps({
+        "fixture_duration_seconds": 360, "served_media_seconds": round(served, 3),
+        "segments_served": fetched, "early_segments_removed": removed_early,
+        "peak_sampled_cache_bytes": peak, "peak_sampled_file_count": max_files,
+        "cache_files_at_disconnect": len(at_disconnect),
+        "test_limit_bytes": 32 * 1024 * 1024,
+        "scope": "finite synthetic HLS fixture, sampled cache, not an infinite broadcast"
+    }, sort_keys=True), flush=True)
+    disconnected_at = time.monotonic()
+    remaining = at_disconnect
+    for _ in range(100):
+        time.sleep(1)
+        remaining = native_cache_delta(base, baseline)
+        if not remaining:
+            break
+        peak = max(peak, sum(remaining.values()))
+        if peak > 32 * 1024 * 1024:
+            raise RuntimeError("Abandoned synthetic cache exceeded test limit")
+    if remaining:
+        raise RuntimeError("Abandoned native session retained cache: " +
+                           json.dumps({"files": len(remaining), "bytes": sum(remaining.values())}))
+    if provider.requests <= requests_before:
+        raise RuntimeError("Synthetic media origin was not contacted")
+    if hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest() != input_digest:
+        raise RuntimeError("Synthetic source changed")
+    if request("GET", "/Users/Me", token=foreign_token)[0] != 200:
+        raise RuntimeError("Other active fixture session was affected")
+    print("JELLYFIN_NATIVE_LONG_CACHE_ABANDONED=" + json.dumps({
+        "idle_cleanup_seconds": round(time.monotonic() - disconnected_at, 1),
+        "remaining_files": 0, "peak_sampled_cache_bytes": peak,
+        "playback_stop_sent": False, "source_unchanged": True,
+        "other_session_preserved": True
+    }, sort_keys=True), flush=True)
+    print("JELLYFIN_NATIVE_LONG_CACHE_AND_IDLE_CLEANUP=PASS", flush=True)
+
+
 def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provider, mock):
     cache_baseline = transcode_cache_files(base)
     input_digest = hashlib.sha256((base / "synthetic-provider/native.ts").read_bytes()).hexdigest()
@@ -420,6 +563,10 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
             "status": code, "error": (info or {}).get("ErrorCode"),
             "source_count": len(sources), "ready_count": len(ready)}))
     route = native_route("/", ready[0]["TranscodingUrl"], item_id)
+    if LONG_CACHE:
+        verify_long_cache(base, item_id, route, owner_token, foreign_token,
+                          cache_baseline, input_digest, provider)
+        return
     # Report only alias key names, never a URI, identifier or token value.
     print("JELLYFIN_NATIVE_ROUTE_AUTH_QUERY_KEYS=" + json.dumps(sorted(
         {k for k, v in parse_qsl(urlsplit(route).query, keep_blank_values=True)
@@ -543,6 +690,7 @@ def request_png(uri, *, token):
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-native-long-cache-smoke" if LONG_CACHE else
         "vivo-jellyfin-12.4-native-ffmpeg-smoke" if SERVER_PLAYBACK else
         "vivo-jellyfin-12.4-category-smoke" if CATEGORY_MODE
         else "vivo-jellyfin-12.4-smoke")
@@ -589,10 +737,12 @@ def main():
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
             "-f", "lavfi", "-i", "sine=frequency=650:sample_rate=48000",
-            "-t", "15", "-c:v", "mpeg2video", "-g", "25", "-threads", "1",
+            "-t", "360" if LONG_CACHE else "15", "-c:v", "mpeg2video", "-g", "25", "-threads", "1",
             "-c:a", "mp2", "-ac", "2", "-b:a", "128k",
+            *(["-b:v", "380k", "-maxrate", "380k", "-bufsize", "760k",
+               "-muxrate", "600k"] if LONG_CACHE else []),
             "-f", "mpegts", str(synthetic_media / "native.ts"),
-        ], check=True, timeout=30)
+        ], check=True, timeout=120 if LONG_CACHE else 30)
     provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SyntheticHlsHandler)
     provider.media_root = synthetic_media
     provider.requests = 0
@@ -648,6 +798,19 @@ def main():
         if code != 200 or not isinstance(admin, dict) or not admin.get("AccessToken"):
             raise RuntimeError("Administrator login not working")
         token = admin["AccessToken"]
+        if LONG_CACHE:
+            code, options = request("GET", "/System/Configuration/Encoding", token=token)
+            if code != 200 or not isinstance(options, dict) or "EnableSegmentDeletion" not in options:
+                raise RuntimeError("Native encoding settings unavailable")
+            options.update({"EnableSegmentDeletion": True, "SegmentKeepSeconds": 20,
+                            "EnableThrottling": False})
+            code, _ = request("POST", "/System/Configuration/Encoding", options, token=token)
+            if code not in (200, 204):
+                raise RuntimeError("Disposable native encoding settings rejected")
+            code, actual = request("GET", "/System/Configuration/Encoding", token=token)
+            if code != 200 or not actual.get("EnableSegmentDeletion") or actual.get("SegmentKeepSeconds") != 20:
+                raise RuntimeError("Disposable native encoding settings not verified")
+            print("JELLYFIN_NATIVE_LONG_CACHE_CONFIG=PASS", flush=True)
         media_policy_fields = ("EnablePlaybackRemuxing",
                                "EnableVideoPlaybackTranscoding",
                                "EnableAudioPlaybackTranscoding",

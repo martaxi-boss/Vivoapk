@@ -43,7 +43,9 @@ internal static class NativePlaybackLab
             IsRemote = true,
             IsInfiniteStream = false,
             Container = "mpegts",
-            RunTimeTicks = TimeSpan.FromSeconds(15).Ticks,
+            // The extended fixture remains a finite, generated loopback asset.
+            RunTimeTicks = TimeSpan.FromSeconds(
+                Environment.GetEnvironmentVariable("VIVOAPK_CI_LONG_CACHE") == "1" ? 360 : 15).Ticks,
             Bitrate = 500000,
             MediaStreams = new List<MediaStream>
             {
