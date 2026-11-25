@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Controller.Session;
 using Microsoft.Extensions.Hosting;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -48,7 +49,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
             origin.UserInfo.Length == 0 && origin.Query.Length == 0 && origin.Fragment.Length == 0;
     }
 
-    private void ObserveFixtureSegment(HttpContext http, ILogger logger)
+    private void ObserveFixtureSegment(HttpContext http, Guid owner, Guid itemId, ILogger logger)
     {
         if (Environment.GetEnvironmentVariable("VIVOAPK_CI_LONG_CACHE") != "1" ||
             !HttpMethods.IsGet(http.Request.Method) || http.Response.StatusCode != 200 ||
@@ -78,26 +79,46 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         logger.LogInformation("Native fixture job observed: cleaner={Cleaner}, downloadTicks={DownloadTicks}, active={Active}",
             job!.TranscodingSegmentCleaner is not null, job.DownloadPositionTicks, job.ActiveRequestCount);
         var stopping = http.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
-        _ = RecoverCompletedFixtureAsync(manager, session, device, state, logger, stopping);
+        var sessions = http.RequestServices.GetRequiredService<ISessionManager>();
+        _ = RecoverCompletedFixtureAsync(manager, sessions, session, device, owner, itemId, state, logger, stopping);
     }
 
-    private async Task RecoverCompletedFixtureAsync(ITranscodeManager manager, string session,
-        string device, FixtureRecovery state, ILogger logger, CancellationToken stopping)
+    private async Task RecoverCompletedFixtureAsync(ITranscodeManager manager, ISessionManager sessions, string session,
+        string device, Guid owner, Guid itemId, FixtureRecovery state, ILogger logger, CancellationToken stopping)
     {
         try
         {
             // Bounded observation of this exact finite fixture, not a general
             // playback watchdog. Do not interrupt a running or paused transcode.
             var started = Environment.TickCount64;
+            var lastDiagnostic = started - 20000;
             while (Environment.TickCount64 - started < 240000)
             {
                 await Task.Delay(1000, stopping).ConfigureAwait(false);
                 var job = manager.GetTranscodingJob(session);
                 if (!ReferenceEquals(job, state.Job) || !MatchesFixtureJob(job, device, session))
                     return;
-                if (Environment.TickCount64 - Interlocked.Read(ref state.LastMediaRequest) < FixtureIdleMilliseconds ||
-                    !job!.HasExited || job.IsUserPaused || job.ActiveRequestCount > 0 ||
-                    (DateTime.UtcNow - job.LastPingDate).TotalMilliseconds < FixtureIdleMilliseconds)
+                // Native automatic progress may keep LastPingDate fresh even
+                // after the client vanished. Use the actual client check-in
+                // of the uniquely matched synthetic account/device/item.
+                var matches = sessions.Sessions.Where(candidate =>
+                    candidate.UserId == owner && string.Equals(candidate.DeviceId, device, StringComparison.Ordinal)
+                    && candidate.NowPlayingItem?.Id == itemId).Take(2).ToArray();
+                var client = matches.Length == 1 ? matches[0] : null;
+                var actualIdle = client is null || client.LastPlaybackCheckIn == default
+                    ? -1d : (DateTime.UtcNow - client.LastPlaybackCheckIn).TotalMilliseconds;
+                var mediaIdle = Environment.TickCount64 - Interlocked.Read(ref state.LastMediaRequest);
+                if (Environment.TickCount64 - lastDiagnostic >= 20000)
+                {
+                    lastDiagnostic = Environment.TickCount64;
+                    logger.LogInformation("VIVOAPK_LAB_NATIVE_JOB_STATE cleaner={Cleaner} ticks={Ticks} active={Active} exited={Exited} paused={Paused} matchedClients={Matches} realIdleMs={RealIdle} mediaIdleMs={MediaIdle} pingIdleMs={PingIdle}",
+                        job!.TranscodingSegmentCleaner is not null, job.DownloadPositionTicks, job.ActiveRequestCount,
+                        job.HasExited, job.IsUserPaused, matches.Length, (long)actualIdle, mediaIdle,
+                        (long)(DateTime.UtcNow - job.LastPingDate).TotalMilliseconds);
+                }
+                if (client is null || client.PlayState.IsPaused || actualIdle < FixtureIdleMilliseconds ||
+                    mediaIdle < FixtureIdleMilliseconds || !job!.HasExited ||
+                    job.IsUserPaused || job.ActiveRequestCount > 0)
                     continue;
 
                 // The native operation is scoped to the observed job's own
@@ -106,6 +127,11 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 var path = job.Path!;
                 if (!ReferenceEquals(manager.GetTranscodingJob(session), state.Job))
                     return;
+                if (client.NowPlayingItem?.Id != itemId || client.PlayState.IsPaused ||
+                    (DateTime.UtcNow - client.LastPlaybackCheckIn).TotalMilliseconds < FixtureIdleMilliseconds ||
+                    Environment.TickCount64 - Interlocked.Read(ref state.LastMediaRequest) < FixtureIdleMilliseconds ||
+                    job.ActiveRequestCount > 0)
+                    continue;
                 await manager.KillTranscodingJobs(device, session,
                     candidate => string.Equals(candidate, path, StringComparison.Ordinal)).ConfigureAwait(false);
                 logger.LogInformation("VIVOAPK_LAB_NATIVE_COMPLETED_SESSION_RECOVERY=PASS");
@@ -231,7 +257,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 http.Response.Headers["X-Vivoapk-Lab-Guard"] = "allowed";
                 await downstream(http).ConfigureAwait(false);
                 if (media)
-                    ObserveFixtureSegment(http, logger);
+                    ObserveFixtureSegment(http, owner, id, logger);
             });
             next(app);
         };
