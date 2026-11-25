@@ -715,13 +715,28 @@ def verify_parallel_cache_recovery(base, first_item, first_owner, first_token,
         state["index"] += 1
         report(state, "/Sessions/Playing/Progress")
 
-    def find_playlist(excluded):
-        candidates = [p for p in native_cache_delta(base, excluded)
-                      if p.suffix.lower() == ".m3u8" and len(p.stem) == 32
-                      and all(c in "0123456789abcdef" for c in p.stem.lower())]
-        if len(candidates) != 1:
-            raise RuntimeError("Cannot prove a unique native playlist for parallel job")
-        return candidates[0]
+    def find_playlist(excluded_namespaces):
+        # Identify the output namespace even before the VOD playlist is saved.
+        for _ in range(12):
+            candidates = set()
+            for p in native_cache_delta(base, baseline):
+                stem, suffix = p.stem[:32], p.stem[32:]
+                if len(stem) != 32 or any(c not in "0123456789abcdef" for c in stem.lower()):
+                    continue
+                if not ((p.suffix.lower() == ".m3u8" and not suffix) or
+                        (p.suffix.lower() == ".ts" and suffix.isascii() and suffix.isdecimal())):
+                    continue
+                target = p.with_name(stem + ".m3u8")
+                if target not in excluded_namespaces:
+                    candidates.add(target)
+            active = [p for p in candidates if len(ffmpeg_identity(p)) == 1]
+            if len(active) == 1:
+                return active[0]
+            if len(active) > 1:
+                raise RuntimeError("Ambiguous active native cache namespaces")
+            time.sleep(0.25)
+        raise RuntimeError("Cannot prove a unique active native cache namespace")
+
 
     def namespace(playlist):
         return {p: size for p, size in native_cache_delta(base, baseline).items()
@@ -751,12 +766,11 @@ def verify_parallel_cache_recovery(base, first_item, first_owner, first_token,
     a = start(first_item, first_owner, first_token, "VivoAPK-CI")
     for _ in range(4):
         consume(a)
-    pa = find_playlist(baseline)
-    before_b = transcode_cache_files(base)
+    pa = find_playlist(set())
     b = start(second_item, second_owner, second_token, "Jellyfin for Tizen")
     for _ in range(2):
         consume(b)
-    pb = find_playlist(before_b)
+    pb = find_playlist({pa})
     if pa == pb or a["session"] == b["session"]:
         raise RuntimeError("Parallel native jobs share cache or play session")
     ids_a, ids_b = ffmpeg_identity(pa), ffmpeg_identity(pb)
