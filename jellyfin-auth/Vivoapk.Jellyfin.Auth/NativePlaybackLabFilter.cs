@@ -50,6 +50,17 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 // ran, independent of a successful or unsuccessful core action.
                 var services = http.RequestServices;
                 var logger = services.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
+                // The disposable CI client presents one explicit header credential.
+                // Reject credential-free requests and query aliases before asking
+                // Jellyfin to authenticate. This is NOT a production client contract.
+                if (!http.Request.Headers.TryGetValue("X-Emby-Token", out var headerToken) ||
+                    headerToken.Count != 1 || string.IsNullOrWhiteSpace(headerToken[0]) ||
+                    http.Request.Query.Keys.Any(IsAuthenticationQueryKey))
+                {
+                    Reject(http, logger);
+                    return;
+                }
+
                 var schemes = services.GetRequiredService<IAuthenticationSchemeProvider>();
                 var scheme = await schemes.GetDefaultAuthenticateSchemeAsync().ConfigureAwait(false);
                 if (scheme is null || !Guid.TryParse(parts[1], out var id))
@@ -104,6 +115,12 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
             });
             next(app);
         };
+    }
+
+    private static bool IsAuthenticationQueryKey(string key)
+    {
+        var canonical = new string(key.Where(char.IsAsciiLetterOrDigit).ToArray()).ToLowerInvariant();
+        return canonical is "apikey" or "accesstoken" or "token" or "xembytoken" or "xmediabrowsertoken";
     }
 
     private static void Reject(HttpContext http, ILogger logger)

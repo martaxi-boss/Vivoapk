@@ -10,7 +10,7 @@ import socketserver
 import subprocess
 import threading
 import time
-from urllib.parse import urlencode, urljoin, urlsplit, parse_qsl, urlunsplit
+from urllib.parse import urlencode, urljoin, urlsplit, parse_qsl, urlunsplit, unquote
 from urllib.request import urlopen
 
 PLUGIN_ID = "e7a31bad-3643-4da2-834e-559c39cc90b1"
@@ -256,7 +256,7 @@ def native_bytes(uri, token=None):
     if token:
         headers["X-Emby-Token"] = token
         headers["Authorization"] = ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
-            'DeviceId="' + _SESSION_TEST_DEVICES[token] + '", Version="1.0.0", Token="' + token + '"')
+            'DeviceId="' + _SESSION_TEST_DEVICES.get(token, "vivoapk-ci-invalid") + '", Version="1.0.0", Token="' + token + '"')
     conn.request("GET", uri, headers=headers)
     response = conn.getresponse()
     result = (response.status, response.read(8 * 1024 * 1024),
@@ -275,16 +275,31 @@ def native_route(current, relative, item_id):
     return urlunsplit(("", "", parsed.path, parsed.query, ""))
 
 
+def is_auth_query_key(key):
+    canonical = "".join(c for c in key.lower() if c.isascii() and c.isalnum())
+    return canonical in ("apikey", "accesstoken", "token", "xembytoken", "xmediabrowsertoken")
+
+
 def strip_playback_credentials(uri):
     u = urlsplit(uri)
     return urlunsplit(("", "", u.path,
         urlencode([(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
-                   if k.lower() not in ("api_key", "access_token", "token")]), ""))
+                   if not is_auth_query_key(k)]), ""))
 
 
-def require_native_denial(uri, foreign_token, stage):
-    for name, denied_token in (("anonymous", None), ("foreign", foreign_token)):
-        status, body, guard = native_bytes(strip_playback_credentials(uri), denied_token)
+def safe_fixture_route(uri, owner_token):
+    safe = strip_playback_credentials(uri)
+    # Never print session values; a negative request must not retain its owner credential.
+    if owner_token in unquote(safe):
+        raise RuntimeError("Synthetic owner credential survived route sanitization")
+    return safe
+
+
+def require_native_denial(uri, owner_token, foreign_token, stage):
+    safe = safe_fixture_route(uri, owner_token)
+    for name, denied_token in (("anonymous", None), ("foreign", foreign_token),
+                               ("invalid", "synthetic-invalid-token")):
+        status, body, guard = native_bytes(safe, denied_token)
         if status not in (401, 403, 404) or guard != "denied" or body:
             raise RuntimeError("Native route denial failed: " + json.dumps({
                 "stage": stage, "identity": name, "status": status,
@@ -294,7 +309,7 @@ def require_native_denial(uri, foreign_token, stage):
 
 
 def require_native_owner(uri, owner_token, stage):
-    status, body, guard = native_bytes(strip_playback_credentials(uri), owner_token)
+    status, body, guard = native_bytes(safe_fixture_route(uri, owner_token), owner_token)
     if status != 200 or guard != "allowed":
         raise RuntimeError("Native owner request failed: " + json.dumps({
             "stage": stage, "status": status, "guard": guard,
@@ -325,25 +340,29 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
             "status": code, "error": (info or {}).get("ErrorCode"),
             "source_count": len(sources), "ready_count": len(ready)}))
     route = native_route("/", ready[0]["TranscodingUrl"], item_id)
+    # Report only alias key names, never a URI, identifier or token value.
+    print("JELLYFIN_NATIVE_ROUTE_AUTH_QUERY_KEYS=" + json.dumps(sorted(
+        {k for k, v in parse_qsl(urlsplit(route).query, keep_blank_values=True)
+         if is_auth_query_key(k)})))
     before = provider.requests
-    require_native_denial(route, foreign_token, "master_before_owner")
+    require_native_denial(route, owner_token, foreign_token, "master_before_owner")
     if provider.requests != before:
         raise RuntimeError("Denied requests reached the synthetic provider")
     body = require_native_owner(route, owner_token, "master")
     if not body.startswith(b"#EXTM3U"):
         raise RuntimeError("Native HLS master was not a playlist")
-    require_native_denial(route, foreign_token, "master_after_owner")
+    require_native_denial(route, owner_token, foreign_token, "master_after_owner")
     lines = [x.strip() for x in body.decode().splitlines() if x.strip()]
     if any(x.startswith("#EXT-X-STREAM-INF") for x in lines):
         media = [x for x in lines if not x.startswith("#")]
         if not media:
             raise RuntimeError("Master playlist has no media playlist")
         route = native_route(route, media[0], item_id)
-        require_native_denial(route, foreign_token, "playlist_before_owner")
+        require_native_denial(route, owner_token, foreign_token, "playlist_before_owner")
         body = require_native_owner(route, owner_token, "playlist")
         if not body.startswith(b"#EXTM3U"):
             raise RuntimeError("Native media playlist was not HLS")
-        require_native_denial(route, foreign_token, "playlist_after_owner")
+        require_native_denial(route, owner_token, foreign_token, "playlist_after_owner")
     segments = [x.strip() for x in body.decode().splitlines()
                 if x.strip() and not x.startswith("#")]
     if not segments:
@@ -352,12 +371,12 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     with out.open("wb") as dest:
         for relative in segments[:2]:
             segment = native_route(route, relative, item_id)
-            require_native_denial(segment, foreign_token, "segment_before_owner")
+            require_native_denial(segment, owner_token, foreign_token, "segment_before_owner")
             content = require_native_owner(segment, owner_token, "segment")
             if len(content) < 188 or content[0] != 0x47:
                 raise RuntimeError("Native MPEG-TS segment unavailable")
             dest.write(content)
-            require_native_denial(segment, foreign_token, "segment_after_owner")
+            require_native_denial(segment, owner_token, foreign_token, "segment_after_owner")
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                             "stream=codec_type,codec_name", "-of", "json", str(out)],
                            capture_output=True, text=True, check=True, timeout=30)
