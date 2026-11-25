@@ -216,6 +216,7 @@ jobs:
           echo "SYNTHETIC_PLUGIN_SHA256=$(sha256sum "$plugin" | cut -d ' ' -f1)" | tee -a "$evidence"
           # Exercise the previously failing gate first in the disposable native build.
           run_gate native-private-hls env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
+          run_gate native-private-file env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 VIVOAPK_CI_PRIVATE_FILE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           run_gate native-private-live-recovery env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 VIVOAPK_CI_PRIVATE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           if (( failed != 0 )); then
             echo "PRIVATE_HLS_GATE_FAILED_BEFORE_REMAINING_NATIVE_REGRESSION=1" | tee -a "$evidence"

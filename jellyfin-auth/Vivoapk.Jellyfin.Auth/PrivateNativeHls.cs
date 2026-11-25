@@ -14,17 +14,21 @@ internal sealed class PrivateNativeHls(string socketPath, string keyPath) : IAsy
     private PrivateHlsSocketClient? _client;
     private PrivateHlsLoopback? _bridge;
 
-    private sealed record BoundLease(string Category, string Asset, string Platform,
-        PrivateHlsLoopback.Lease Lease);
+    private sealed record BoundLease(string Kind, string Category, string Asset, string? Series,
+        string Platform, PrivateHlsLoopback.Lease Lease);
 
     internal async Task<MediaSourceInfo?> BindSourceAsync(Guid owner, string token,
-        string category, string asset, string platform, MediaSourceInfo source, CancellationToken ct)
+        string category, string asset, string platform, MediaSourceInfo source, CancellationToken ct,
+        string kind = "live", string? series = null)
     {
         // The metadata is supplied by the authorized host, not guessed from
         // the catalogue or an arbitrary client URL. The transport replaces
         // the input path with its own opaque, process-private capability.
         if (owner == Guid.Empty || source.SupportsDirectPlay || !source.SupportsTranscoding
-            || source.RequiresOpening || source.RequiresClosing)
+            || source.RequiresOpening || source.RequiresClosing
+            || kind is not ("live" or "vod" or "series")
+            || (kind == "series" ? string.IsNullOrEmpty(series) : series is not null)
+            || (kind != "live" && source.IsInfiniteStream))
             return null;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -39,12 +43,15 @@ internal sealed class PrivateNativeHls(string socketPath, string keyPath) : IAsy
             }
             if (!_leases.TryGetValue(owner, out var lease))
             {
-                var opened = await _bridge.OpenAsync(owner, token, category, asset, platform, ct)
-                    .ConfigureAwait(false);
-                lease = new BoundLease(category, asset, platform, opened);
+                var opened = kind == "live"
+                    ? await _bridge.OpenAsync(owner, token, category, asset, platform, ct).ConfigureAwait(false)
+                    : await _bridge.OpenFileAsync(owner, token, kind, category, asset, series, platform, ct)
+                        .ConfigureAwait(false);
+                lease = new BoundLease(kind, category, asset, series, platform, opened);
                 _leases.Add(owner, lease);
             }
-            if (lease.Category != category || lease.Asset != asset || lease.Platform != platform)
+            if (lease.Kind != kind || lease.Category != category || lease.Asset != asset
+                || lease.Series != series || lease.Platform != platform)
                 return null;
             // Keep Id unset: ChannelManager.NormalizeMediaSources assigns the
             // actual item's native GUID (same contract as the passing finite

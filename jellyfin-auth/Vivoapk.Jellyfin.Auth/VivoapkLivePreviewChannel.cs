@@ -673,7 +673,8 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     .GetRequiredService<PrivateNativeHls>();
                 var privateSource = privateLab is null ? null : await PrivateHlsNativeLab.CreateSourceAsync(
                     privateLab, snapshot.Owner, snapshot.Username, session.Value.Token, session.Value.Origin,
-                    kind, categoryId, providerId, platform, cancellationToken).ConfigureAwait(false);
+                    kind, categoryId, providerId, seriesId, extension, platform, cancellationToken)
+                    .ConfigureAwait(false);
                 return privateSource is null ? Array.Empty<MediaSourceInfo>() : new[] { privateSource };
             }
 #endif

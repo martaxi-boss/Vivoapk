@@ -23,6 +23,9 @@ LONG_CACHE = os.environ.get("VIVOAPK_CI_LONG_CACHE") == "1"
 INFINITE_LIVE = os.environ.get("VIVOAPK_CI_INFINITE_LIVE") == "1"
 PRIVATE_HLS = os.environ.get("VIVOAPK_CI_PRIVATE_HLS") == "1"
 PRIVATE_LIVE = os.environ.get("VIVOAPK_CI_PRIVATE_LIVE") == "1"
+PRIVATE_FILE = os.environ.get("VIVOAPK_CI_PRIVATE_FILE") == "1"
+if PRIVATE_FILE and (not PRIVATE_HLS or PRIVATE_LIVE):
+    raise RuntimeError("Private file requires a separate private backend gate")
 if PRIVATE_LIVE and not PRIVATE_HLS:
     raise RuntimeError("Private live requires private HLS gate")
 if PRIVATE_HLS and (not SERVER_PLAYBACK or LONG_CACHE or INFINITE_LIVE):
@@ -1847,6 +1850,7 @@ def request_png(uri, *, token):
 def main():
     global DATAROOT
     base = Path(os.environ["RUNNER_TEMP"]) / (
+        "vivo-jellyfin-12.4-private-file-smoke" if PRIVATE_FILE else
         "vivo-jellyfin-12.4-private-live-smoke" if PRIVATE_LIVE else
         "vivo-jellyfin-12.4-private-hls-smoke" if PRIVATE_HLS else
         "vivo-jellyfin-12.4-infinite-live-smoke" if INFINITE_LIVE else
@@ -1920,7 +1924,7 @@ def main():
     }
     if PRIVATE_HLS:
         from private_backend_fixture import PrivateBackend
-        private_backend = PrivateBackend(base, mock.statuses, live=PRIVATE_LIVE)
+        private_backend = PrivateBackend(base, mock.statuses, live=PRIVATE_LIVE, finite=PRIVATE_FILE)
         mock.tokens = private_backend.tokens
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     env = os.environ.copy()
@@ -2222,6 +2226,45 @@ def main():
         if pilot_item_id == item_id_b:
             raise RuntimeError("Multiuser plugin indexed same Jellyfin item ID for both customers")
         if SERVER_PLAYBACK:
+            if PRIVATE_FILE:
+                # Browse actual native channel folders, not manually supplied
+                # provider URLs or a fabricated Jellyfin item GUID.
+                def browse_path(channel, owner, token, roots, names):
+                    items = roots
+                    selected = None
+                    for index, name in enumerate(names):
+                        matches = [entry for entry in items if entry.get("Name") == name]
+                        if len(matches) != 1:
+                            raise RuntimeError("Private finite fixture item missing")
+                        selected = matches[0]
+                        if index == len(names) - 1:
+                            return selected["Id"]
+                        code, body = request("GET", "/Channels/" + channel + "/Items?UserId=" + owner
+                            + "&FolderId=" + selected["Id"], token=token)
+                        if code != 200 or not (body or {}).get("Items"):
+                            raise RuntimeError("Private finite fixture folder not browseable")
+                        items = body["Items"]
+                    raise RuntimeError("Empty finite fixture path")
+                movie = browse_path(channel_id, account_a, customer["AccessToken"], root_folders_a,
+                                    ("Filmes", "Filmes Azul", "Filme Azul"))
+                episode = browse_path(pilot_b[0]["Id"], account_b, customer_b["AccessToken"], root_folders_b,
+                                      ("Séries", "Séries Verde", "Série Verde", "Temporada 1", "Episódio Verde"))
+                if movie == episode:
+                    raise RuntimeError("Native finite media item IDs crossed")
+                for victim, attacker, token in ((movie, account_b, customer_b["AccessToken"]),
+                                                 (episode, account_a, customer["AccessToken"])):
+                    code, _ = request("POST", "/Items/" + victim + "/PlaybackInfo?UserId=" + attacker,
+                                      {}, token=token)
+                    if code not in (401, 403, 404):
+                        raise RuntimeError("Foreign finite PlaybackInfo accepted")
+                if private_backend.count() != 0:
+                    raise RuntimeError("Browsing/foreign denial unexpectedly opened private media")
+                print("JELLYFIN_PRIVATE_NATIVE_FILE_CATALOGUE_AND_FOREIGN_DENIAL=PASS", flush=True)
+                verify_private_native(movie, account_a, customer["AccessToken"],
+                                      episode, account_b, customer_b["AccessToken"],
+                                      base, private_backend, mock)
+                print("JELLYFIN_PRIVATE_NATIVE_FILE_MOVIE_EPISODE_DECODE_AND_STOP=PASS", flush=True)
+                return
             if PRIVATE_LIVE:
                 verify_parallel_infinite_live(base, pilot_item_id, account_a, customer["AccessToken"],
                                               item_id_b, account_b, customer_b["AccessToken"],
