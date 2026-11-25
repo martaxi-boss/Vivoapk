@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
+using MediaBrowser.Common.Extensions;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Channels;
@@ -58,7 +59,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
 
     public string Name => ChannelNameFor(_slot, _smartTv);
     public string Description => "Canais da subscrição Mega OTT autenticada (teste limitado).";
-    public string DataVersion => "vivoapk-native-catalog-root-v15-two-client-direct-hls-profiles";
+    public string DataVersion => "vivoapk-native-catalog-root-v16-scoped-folders";
     // Embedded local preview artwork only. NOT the official logo of any station.
     // Never download upstream logos, query external image URLs or store credentials.
     private const string ChannelCoverPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABjElEQVR42u3dO4oCQQBFUfdgKEYm4gYEt+CGXYHrMTEwMzBTlLa7iq5XfeCGQw28M9AfxFmttwfN2MoEAAAIAAABACAAAAQAgAAAEAAAAgBAAAAIAAABACAAAAQAgAAAEAAA6gpgf728iv4VPQBUGqj2+V0BFN+o6uH9XAPeZiqyVI0ze74Il92r8fUbvQsqtVr76zd9Gzpxu/anD3gOGD1iyvoBD2IjpgxaP+NJ+K9Bs9aPeRUxcNa49ZPeBf2+pYm44Yl/Gfdt5dz1896Gfm4dvX7q6+g+pp8KMOSPcTkBAAAAAAAA8wHsTudFBQAAAAAAAAAA8A1gczh2EwAAAAAAqAhwuz+GN/y0iT8DAACAxV4D/hoIAAAAAAAAAAAAAAAAAADMC/DjkHHHAgAAAAAAAAAAZAGUOg0AAAA+FeFTEQAAAPDhXAAAAAAAAAAAAAEAIAAANAeA/AsTAAIAoInvCs39GlEAAAAAAOAiLAAABACAAAAQAAACAEAAAAgAAAEAIAAABACAAPTVE+Jq1wctAnKeAAAAAElFTkSuQmCC";
@@ -233,8 +234,20 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         InternalChannelItemQuery query, CancellationToken cancellationToken)
     {
         var snapshot = ForUser(query.UserId);
+        // ChannelManager reconciles missing items after a successful result.
+        // Never represent denial or a failed refresh as an authoritative empty list.
         if (snapshot is null)
-            return EmptyResult();
+            throw new ResourceNotFoundException("Channel catalogue unavailable");
+        var folderId = query.FolderId;
+        var folderPrefix = MediaIdPrefix + "folder:";
+        if (!string.IsNullOrEmpty(folderId))
+        {
+            if (!folderId.StartsWith(folderPrefix, StringComparison.Ordinal))
+                throw new ResourceNotFoundException("Channel folder unavailable");
+            folderId = folderId[folderPrefix.Length..];
+            if (folderId.Length == 0)
+                throw new ResourceNotFoundException("Channel folder unavailable");
+        }
         List<ChannelItemInfo> list;
         if (!snapshot.CategoryNavigation)
         {
@@ -248,7 +261,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 IsLiveStream = true
             }).ToList();
         }
-        else if (string.IsNullOrEmpty(query.FolderId))
+        else if (string.IsNullOrEmpty(folderId))
         {
             // This first-level folder deliberately prevents Jellyfin's
             // GetLatestChannelItems automatic one-level refresh from eagerly
@@ -265,16 +278,16 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                     continue;
                 list.Add(new ChannelItemInfo
                 {
-                    Id = id, Name = name,
+                    Id = folderPrefix + id, Name = name,
                     Type = ChannelItemType.Folder,
                     FolderType = ChannelFolderType.Container,
                     MediaType = ChannelMediaType.Video
                 });
             }
         }
-        else if (query.FolderId is "vivo:live-root" or "vivo:vod-root" or "vivo:series-root")
+        else if (folderId is "vivo:live-root" or "vivo:vod-root" or "vivo:series-root")
         {
-            var entries = query.FolderId switch
+            var entries = folderId switch
             {
                 "vivo:vod-root" => snapshot.MovieCategories,
                 "vivo:series-root" => snapshot.SeriesCategories,
@@ -282,28 +295,28 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             };
             list = entries.Select(category => new ChannelItemInfo
             {
-                Id = category.ExternalId, Name = category.Title,
+                Id = folderPrefix + category.ExternalId, Name = category.Title,
                 Type = ChannelItemType.Folder,
                 FolderType = ChannelFolderType.Container,
                 MediaType = ChannelMediaType.Video
             }).ToList();
         }
-        else if (query.FolderId.StartsWith("cat:", StringComparison.Ordinal))
+        else if (folderId.StartsWith("cat:", StringComparison.Ordinal))
         {
-            var parts = query.FolderId.Split(':');
+            var parts = folderId.Split(':');
             if (parts.Length != 3 || !Digits(parts[2]))
-                return EmptyResult();
+                throw new ResourceNotFoundException("Channel folder unavailable");
             var kind = parts[1];
             var authorized = KindCategories(snapshot, kind);
             var category = authorized?.FirstOrDefault(entry =>
-                string.Equals(entry.ExternalId, query.FolderId, StringComparison.Ordinal));
+                string.Equals(entry.ExternalId, folderId, StringComparison.Ordinal));
             if (category is null)
-                return EmptyResult();
+                throw new ResourceNotFoundException("Channel folder unavailable");
             var entries = await FetchCategoryItemsAsync(
                 snapshot, category.ProviderId, kind, cancellationToken)
                 .ConfigureAwait(false);
             if (entries is null)
-                return EmptyResult();
+                throw new IOException("Channel catalogue refresh unavailable");
             list = new List<ChannelItemInfo>(entries.Count);
             foreach (var entry in entries)
             {
@@ -313,7 +326,7 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 {
                     list.Add(new ChannelItemInfo
                     {
-                        Id = "show:" + category.ProviderId + ":" + entry.Id,
+                        Id = folderPrefix + "show:" + category.ProviderId + ":" + entry.Id,
                         Name = entry.Title,
                         Type = ChannelItemType.Folder,
                         FolderType = ChannelFolderType.Series,
@@ -339,19 +352,19 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 }
             }
         }
-        else if (query.FolderId.StartsWith("show:", StringComparison.Ordinal))
+        else if (folderId.StartsWith("show:", StringComparison.Ordinal))
         {
-            var parts = query.FolderId.Split(':');
+            var parts = folderId.Split(':');
             if (parts.Length != 3 || !Digits(parts[1]) || !Digits(parts[2]) ||
                 !HasCategory(snapshot, "series", parts[1]))
-                return EmptyResult();
+                throw new ResourceNotFoundException("Channel folder unavailable");
             var detail = await FetchSeriesAsync(snapshot, parts[1], parts[2],
                 cancellationToken).ConfigureAwait(false);
             if (detail is null)
-                return EmptyResult();
+                throw new IOException("Channel series refresh unavailable");
             list = detail.Seasons.Select(season => new ChannelItemInfo
             {
-                Id = "season:" + parts[1] + ":" + parts[2] + ":" + season.Id,
+                Id = folderPrefix + "season:" + parts[1] + ":" + parts[2] + ":" + season.Id,
                 Name = season.Title,
                 Type = ChannelItemType.Folder,
                 FolderType = ChannelFolderType.Season,
@@ -363,17 +376,19 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 SeriesName = detail.Title
             }).ToList();
         }
-        else if (query.FolderId.StartsWith("season:", StringComparison.Ordinal))
+        else if (folderId.StartsWith("season:", StringComparison.Ordinal))
         {
-            var parts = query.FolderId.Split(':');
+            var parts = folderId.Split(':');
             if (parts.Length != 4 || !Digits(parts[1]) || !Digits(parts[2]) ||
                 !Digits(parts[3]) || !HasCategory(snapshot, "series", parts[1]))
-                return EmptyResult();
+                throw new ResourceNotFoundException("Channel folder unavailable");
             var detail = await FetchSeriesAsync(snapshot, parts[1], parts[2],
                 cancellationToken).ConfigureAwait(false);
-            if (detail is null || !detail.Seasons.Any(x =>
+            if (detail is null)
+                throw new IOException("Channel series refresh unavailable");
+            if (!detail.Seasons.Any(x =>
                     string.Equals(x.Id, parts[3], StringComparison.Ordinal)))
-                return EmptyResult();
+                throw new ResourceNotFoundException("Channel folder unavailable");
             list = detail.Episodes
                 .Where(episode => string.Equals(
                     episode.SeasonId, parts[3], StringComparison.Ordinal))
@@ -395,8 +410,10 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         }
         else
         {
-            return EmptyResult();
+            throw new ResourceNotFoundException("Channel folder unavailable");
         }
+        if (!ReferenceEquals(ForUser(query.UserId), snapshot))
+            throw new IOException("Channel catalogue changed during refresh");
         var total = list.Count;
         if (query.StartIndex is > 0)
             list = list.Skip(query.StartIndex.Value).ToList();
@@ -550,11 +567,6 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
             return false;
         return true;
     }
-
-    private static ChannelItemResult EmptyResult() => new()
-    {
-        Items = new List<ChannelItemInfo>(), TotalRecordCount = 0
-    };
 
     public async Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(
         string id, CancellationToken cancellationToken)

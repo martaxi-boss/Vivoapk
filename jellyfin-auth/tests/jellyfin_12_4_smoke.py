@@ -253,8 +253,11 @@ class Connection(http.client.HTTPConnection):
         self.sock.connect(self.path)
 
 _SESSION_TEST_DEVICES = {}
+_SESSION_TEST_CLIENTS = {}
 
-def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
+def request(method, uri, data=None, token=None, client_name=None):
+    # Preserve the client family associated with the test token.
+    client_name = client_name or _SESSION_TEST_CLIENTS.get(token, "VivoAPK-CI")
     def clean(value):
         return "".join(ch for ch in str(value).lower() if ch.isascii() and ch.isalnum())[:48]
     identity = (data or {}).get("Username", "") if (
@@ -283,6 +286,7 @@ def request(method, uri, data=None, token=None, client_name="VivoAPK-CI"):
     if (uri == "/Users/AuthenticateByName" and code == 200
             and isinstance(parsed, dict) and parsed.get("AccessToken")):
         _SESSION_TEST_DEVICES[parsed["AccessToken"]] = device_id
+        _SESSION_TEST_CLIENTS[parsed["AccessToken"]] = client_name
     return code, parsed
 
 def native_bytes(uri, token=None):
@@ -290,7 +294,7 @@ def native_bytes(uri, token=None):
     headers = {"Accept": "*/*"}
     if token:
         headers["X-Emby-Token"] = token
-        headers["Authorization"] = ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
+        headers["Authorization"] = ('MediaBrowser Client="' + _SESSION_TEST_CLIENTS.get(token, "VivoAPK-CI") + '", Device="CI", '
             'DeviceId="' + _SESSION_TEST_DEVICES.get(token, "vivoapk-ci-invalid") + '", Version="1.0.0", Token="' + token + '"')
     conn.request("GET", uri, headers=headers)
     response = conn.getresponse()
@@ -669,7 +673,9 @@ def verify_parallel_cache_recovery(base, first_item, first_owner, first_token,
                    if x.get("SupportsTranscoding") is True and x.get("TranscodingUrl")]
         session = (info or {}).get("PlaySessionId")
         if code != 200 or len(sources) != 1 or not session:
-            raise RuntimeError("Parallel native profile negotiation failed")
+            raise RuntimeError("Parallel native profile negotiation failed: " + json.dumps({
+                "status": code, "client": client, "source_count": len((info or {}).get("MediaSources", [])),
+                "ready_count": len(sources), "session_present": bool(session)}))
         source = sources[0]
         route = native_route("/", source["TranscodingUrl"], item)
         body = require_native_owner(route, token, "parallel_master")
@@ -988,7 +994,7 @@ def request_png(uri, *, token):
     conn = Connection(DATAROOT / "run/jellyfin.sock")
     headers = {
         "Accept": "image/png",
-        "Authorization": ('MediaBrowser Client="VivoAPK-CI", Device="CI", '
+        "Authorization": ('MediaBrowser Client="' + _SESSION_TEST_CLIENTS.get(token, "VivoAPK-CI") + '", Device="CI", '
                           'DeviceId="' + _SESSION_TEST_DEVICES.get(token, "vivoapk-ci-vivoapkci") + '", Version="1.0.0", Token="' + token + '"'),
         "X-Emby-Token": token,
     }
@@ -1334,12 +1340,30 @@ def main():
                 token=customer_b["AccessToken"])
             if code != 200 or not isinstance(pilot_items_b, dict):
                 raise RuntimeError("Cannot browse native category folder B")
-            code, foreign_folder = request(
-                "GET", "/Channels/" + channel_id + "/Items?UserId=" + account_a
-                + "&FolderId=" + folder_id_b,
-                token=customer["AccessToken"])
-            if code == 200 and (foreign_folder or {}).get("Items"):
-                raise RuntimeError("CROSS_ACCOUNT_CATEGORY_FOLDER_BYPASS")
+            # Denials must never reconcile/delete the victim's indexed items.
+            root_a = next(x["Id"] for x in root_folders_a if x.get("Name") == "TV ao vivo")
+            root_b = next(x["Id"] for x in root_folders_b if x.get("Name") == "TV ao vivo")
+            for own_channel, own_id, own_token, foreign_ids in (
+                (channel_id, account_a, customer["AccessToken"], (root_b, folder_id_b)),
+                (pilot_b[0]["Id"], account_b, customer_b["AccessToken"], (root_a, folder_id_a)),
+            ):
+                for foreign_id in foreign_ids:
+                    code, foreign_folder = request(
+                        "GET", "/Channels/" + own_channel + "/Items?UserId=" + own_id
+                        + "&FolderId=" + foreign_id, token=own_token)
+                    if code not in (401, 403, 404):
+                        raise RuntimeError("CROSS_ACCOUNT_CATEGORY_FOLDER_NOT_REJECTED: HTTP " + str(code))
+            # Verify original IDs without reopening a parent folder.
+            for own_id, own_token, original_items in (
+                (account_a, customer["AccessToken"], pilot_items["Items"]),
+                (account_b, customer_b["AccessToken"], pilot_items_b["Items"]),
+            ):
+                for original in original_items:
+                    status, item = request("GET", "/Users/" + own_id + "/Items/" + original["Id"],
+                                           token=own_token)
+                    if status != 200 or (item or {}).get("Id") != original["Id"]:
+                        raise RuntimeError("Foreign folder denial destroyed an owner's indexed item")
+            print("JELLYFIN_SYNTHETIC_FOREIGN_FOLDER_NONDESTRUCTIVE_DENIAL=PASS")
             print("JELLYFIN_SYNTHETIC_NATIVE_CATEGORY_FOLDERS_B=PASS")
             print("JELLYFIN_SYNTHETIC_CATEGORY_FOLDER_ISOLATION=PASS")
         names_b = [item.get("Name") for item in pilot_items_b.get("Items", [])]
@@ -1457,7 +1481,13 @@ def main():
                         {}, token=own_token, client_name=client_name)
                     sources = info.get("MediaSources", []) if isinstance(info, dict) else []
                     if status != 200 or len(sources) != 1:
-                        raise RuntimeError("Private multimedia playback source not available")
+                        item_status, _ = request(
+                            "GET", "/Users/" + owner + "/Items/" + video_id, token=own_token,
+                            client_name=client_name)
+                        raise RuntimeError("Private multimedia playback source not available: " + json.dumps({
+                            "kind": expected_kind, "owner_fixture": who,
+                            "playback_status": status, "item_status": item_status,
+                            "source_count": len(sources)}))
                     source = sources[0]
                     provider_url = str(source.get("Path") or "")
                     if ("/" + expected_kind + "/" not in provider_url or
