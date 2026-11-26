@@ -250,8 +250,9 @@ jobs:
           install -m 0644 jellyfin-auth/Vivoapk.Jellyfin.Auth/meta.json "$bundle/meta.json"
           if [[ "${VIVOAPK_CI_TS_ONLY:-0}" == "1" ]]; then
             git fetch --no-tags --depth=1 origin 48a4b00805854bf681c6d45c82af93f5a6c64f5f
-            git diff --quiet 48a4b00805854bf681c6d45c82af93f5a6c64f5f HEAD -- backend jellyfin-auth infra
-            echo VALIDATED_TS_CANDIDATE_SOURCE_UNCHANGED=PASS | tee -a "$evidence"
+            git diff --quiet 48a4b00805854bf681c6d45c82af93f5a6c64f5f HEAD -- backend jellyfin-auth infra ':!jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateHlsLoopback.cs'
+            echo "c40dbc5a1fabb65f278dc11c97abe495ca005066199d556081f95fee738e7740  jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateHlsLoopback.cs" | sha256sum -c -
+            echo VALIDATED_TS_CANDIDATE_SOURCE_EXCEPT_PINNED_TRANSPORT_FIX_UNCHANGED=PASS | tee -a "$evidence"
             mkdir -p "$RUNNER_TEMP/private-ts"
             run_gate regular-private-ts-recovery env RUNNER_TEMP="$RUNNER_TEMP/private-ts" VIVOAPK_CI_PRIVATE_TS=1 VIVOAPK_CI_REGULAR_PRIVATE=1 VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 VIVOAPK_CI_PRIVATE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
             echo "ISOLATED_TS_GATE_EXIT=$failed" | tee -a "$evidence"

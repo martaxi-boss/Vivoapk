@@ -520,7 +520,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         var ct = lifetime.Token;
         // A sequential probe and one native encoder are admitted per lease.
         // A second reader cannot consume or steal bytes from the first.
-        if (!entry.TsReader.Wait(0))
+        if (!await entry.TsReader.WaitAsync(TimeSpan.FromSeconds(6), ct).ConfigureAwait(false))
             throw new InvalidOperationException("Private TS reader busy");
         try
         {
@@ -528,7 +528,10 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             {
                 var bytes = await ReadTsWindowAsync(id, entry, probe, ct).ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
-                http.Response.ContentType = "video/mp2t";
+                // Headers become immutable after the first response window.
+                // A continuous stream must keep writing its body afterwards.
+                if (!http.Response.HasStarted)
+                    http.Response.ContentType = "video/mp2t";
                 if (probe)
                     http.Response.ContentLength = bytes.Length;
                 using var writeDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
