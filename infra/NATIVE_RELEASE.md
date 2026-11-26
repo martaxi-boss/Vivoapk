@@ -62,3 +62,17 @@ The unit tests use temporary directories and simulated service controls.
 
 No production approval is added here. No service, configuration, database,
 private media or actual production binary is changed by this preparation.
+
+## Isolated staging (not activation)
+
+`native_release_stage.py` pins the exact nine-gate candidate 0994990c and
+stages backend, official portable FFmpeg and the CI bundle as separate
+bounded phases under the project's own native-release-stage directory.
+Each verifies production baseline and service PIDs before and after.
+Backend checks the existing dependency pins and migration tree with a
+synthetic in-memory database and denied requests under vivoapksvc. FFmpeg
+checks the official archive and both executable hashes and decodes synthetic
+H264/AAC as jellyfinpink. The bundle phase requires an already authenticated
+GitHub CLI; if unavailable, it reports a blocker rather than publishing
+signed URLs or installing another transport. No service restart, actual
+subscriber data, environment file modification or production approval.
