@@ -1748,7 +1748,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
     }
     baseline = transcode_cache_files(base)
 
-    def negotiate(item, owner, token, other, *, play=True):
+    def negotiate(item, owner, token, other, *, play=True, seek_start=False):
         code, info = request("POST", "/Items/" + item + "/PlaybackInfo?UserId=" + owner,
             {"DeviceProfile": profile, "AutoOpenLiveStream": True,
              "EnableDirectPlay": False, "EnableDirectStream": False, "EnableTranscoding": True,
@@ -1792,10 +1792,22 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                          if line and not line.startswith("#"))
             route = native_route(master, media, item)
             body = require_native_owner(route, token, "private_playlist")
-        segments = [native_route(route, line, item) for line in body.decode().splitlines()
-                    if line and not line.startswith("#")]
+        timed = parse_timed_segments(body)
+        segments = [native_route(route, line, item) for _, line in timed]
         if not segments:
             raise RuntimeError("Private native stream has no segments")
+        # Choose a complete later segment from the native playlist rather
+        # than inventing a URL or relying on a tiny final fractional segment.
+        late_index = None
+        positions = []
+        elapsed = 0.0
+        for index, (duration, _) in enumerate(timed):
+            positions.append(elapsed)
+            if elapsed >= 3 and duration >= 2:
+                late_index = index
+            elapsed += duration
+        if seek_start and (not PRIVATE_FILE or late_index is None):
+            raise RuntimeError("Finite seek fixture lacks a later complete segment")
         require_native_denial(segments[0], token, other, "private_segment_foreign")
         # Reject a stale/forged play session even under the correct owner's
         # token and item. The exact dynamic playlist contract is main/<n>.ts.
@@ -1814,7 +1826,8 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                                    original.query, ""))
         require_denied_response(native_bytes(forged_route, token),
                                 "private_finite_forged_playlist", "owner")
-        segment = require_native_owner(segments[0], token, "private_segment")
+        selected = late_index if seek_start else 0
+        segment = require_native_owner(segments[selected], token, "private_segment")
         if b"#EXTM3U" in segment or len(segment) < 188 or segment[0] != 0x47:
             raise RuntimeError("Private native media not MPEG-TS")
         session = info.get("PlaySessionId") or next(
@@ -1822,7 +1835,8 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         if not session:
             raise RuntimeError("Missing native private play session")
         return {"item": item, "token": token, "session": session, "source": source["Id"],
-                "route": master, "segment": segments[0], "data": segment}
+                "route": master, "segment": segments[selected], "data": segment,
+                "segments": segments, "positions": positions, "late_index": late_index}
 
     a = negotiate(item_a, owner_a, token_a, token_b)
     b = negotiate(item_b, owner_b, token_b, token_a)
@@ -1928,6 +1942,100 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
     if transcode_cache_files(base).keys() - baseline.keys():
         raise RuntimeError("Private native stop left transcoding cache")
     if PRIVATE_FILE:
+        # Native seek certification with fresh bindings. Start at a later
+        # segment BEFORE requesting segment zero so a backward seek must
+        # handle a missing earlier segment, not just replay the first GET.
+        sa = negotiate(item_a, owner_a, token_a, token_b, seek_start=True)
+        sb = negotiate(item_b, owner_b, token_b, token_a, seek_start=True)
+        if private_backend.count() != 2 or sa["session"] == sb["session"]:
+            raise RuntimeError("Seek fixture lacks two independent leases")
+
+        def gray_frames(path, start=None, duration=.8):
+            args = ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error"]
+            if start is not None:
+                args += ["-ss", str(start)]
+            args += ["-i", str(path), "-t", str(duration), "-map", "0:v:0",
+                     "-vf", "scale=32:18,format=gray", "-f", "rawvideo", "pipe:1"]
+            data = subprocess.run(args, capture_output=True, check=True, timeout=30).stdout
+            size = 32 * 18
+            if len(data) < size or len(data) % size:
+                raise RuntimeError("Seek sample did not decode valid reference frames")
+            return [data[i:i+size] for i in range(0, len(data), size)]
+
+        def verify_seek_media(label, phase, payload, expected, wrong):
+            path = base / ("private-seek-" + label + "-" + phase + ".ts")
+            original = base / ("private-native-" + label + ".mp4")
+            path.write_bytes(payload)
+            try:
+                decoded = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin",
+                    "-v", "error", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0",
+                    "-f", "framemd5", "pipe:1"], capture_output=True,
+                    text=True, check=True, timeout=30).stdout
+                video = sum(line.startswith("0,") for line in decoded.splitlines())
+                audio = sum(line.startswith("1,") for line in decoded.splitlines())
+                if video < 20 or audio < 20:
+                    raise RuntimeError("Native seek segment lacked decoded video/audio")
+                sample = gray_frames(path)[0]
+                def distance(position):
+                    start = max(0, position - .24)
+                    candidates = gray_frames(original, start, 1.0)
+                    return min(sum(abs(x-y) for x, y in zip(sample, frame)) / len(sample)
+                               for frame in candidates)
+                expected_error, wrong_error = distance(expected), distance(wrong)
+                if expected_error > 12 or expected_error + .5 >= wrong_error:
+                    raise RuntimeError("Native seek picture does not match expected timeline: " +
+                        json.dumps({"fixture": label, "phase": phase,
+                                    "expected_error": round(expected_error, 3),
+                                    "wrong_error": round(wrong_error, 3)}))
+                print("JELLYFIN_PRIVATE_NATIVE_SEEK_DECODE=" + json.dumps({
+                    "fixture": label, "phase": phase, "position_seconds": expected,
+                    "video_frames": video, "audio_frames": audio,
+                    "expected_picture_error": round(expected_error, 3),
+                    "other_position_error": round(wrong_error, 3),
+                }, sort_keys=True), flush=True)
+            finally:
+                path.unlink(missing_ok=True)
+
+        for label, state, other in (("a", sa, sb), ("b", sb, sa)):
+            late = state["late_index"]
+            late_time = state["positions"][late]
+            token = state["token"]
+            verify_seek_media(label, "late_initial", state["data"], late_time, 0)
+            require_native_denial(state["segments"][late], token, other["token"],
+                                  "private_seek_foreign")
+            early_data = require_native_owner(state["segments"][0], token,
+                                              "private_seek_backward")
+            verify_seek_media(label, "backward", early_data, 0, late_time)
+            late_data = require_native_owner(state["segments"][late], token,
+                                             "private_seek_forward")
+            verify_seek_media(label, "forward", late_data, late_time, 0)
+            # Other account's existing route and lease stay usable after each seek.
+            require_native_owner(other["segments"][other["late_index"]],
+                                 other["token"], "private_seek_surviving_account")
+            if private_backend.count() != 2:
+                raise RuntimeError("Native seek changed private lease count")
+        # These alternate routes are intentionally not certified in the lab.
+        # Prove the existing fail-closed policy without pretending that
+        # physical clients can already use the alternate stop/seek API.
+        for state, other in ((sa, sb), (sb, sa)):
+            code, _ = request("DELETE", "/Videos/ActiveEncodings?" + urlencode({
+                "DeviceId": _SESSION_TEST_DEVICES[state["token"]],
+                "PlaySessionId": state["session"]}), token=other["token"])
+            if code != 404 or private_backend.count() != 2:
+                raise RuntimeError("Uncertified active encoding route was not denied")
+        if stop(sa, token_a) not in (200, 204) or private_backend.count() != 1:
+            raise RuntimeError("Seek movie did not retire its lease")
+        require_native_owner(sb["segments"][sb["late_index"]], token_b,
+                             "private_seek_episode_after_movie_stop")
+        if stop(sb, token_b) not in (200, 204) or private_backend.count() != 0:
+            raise RuntimeError("Seek episode did not retire its lease")
+        deadline = time.monotonic() + 20
+        while transcode_cache_files(base).keys() - baseline.keys() and time.monotonic() < deadline:
+            time.sleep(.4)
+        if transcode_cache_files(base).keys() - baseline.keys():
+            raise RuntimeError("Native seek left transcoding cache")
+        print("JELLYFIN_PRIVATE_NATIVE_MOVIE_EPISODE_SEEK_ISOLATION=PASS", flush=True)
+
         # 1. Stop a negotiation that has never issued a native media GET.
         # 2. Abandon another negotiation without stop or playback reports.
         # 3. Abandon a played item with no matching NowPlaying client.
