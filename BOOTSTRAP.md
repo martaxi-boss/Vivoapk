@@ -219,6 +219,14 @@ Esta decisão não autoriza a redistribuição de conteúdos sem direitos, a pub
 
 ## Organização e higiene
 
+### Revisão 26/11 — continuidade sem acumular experiências
+
+- Candidato `08c81ee8c5d924d7865ce0138e49af65c054c694`, no mesmo ramo `vivoapk/authorized-http-media-20261126`: altera apenas o ensaio de loopback sintético, o workflow e `.gitignore`. Gera MPEG-TS com vídeo e áudio artificiais, converte por pipe e alimenta o ensaio privado HLS/socket já existente. Não é adaptação instalada da entrada real, não contacta o fornecedor nem contorna a recusa 401. [CI MPEG-TS #45839460891](https://github.com/martaxi-boss/Vivoapk/actions/runs/45839460891) e [regressão #45839460973](https://github.com/martaxi-boss/Vivoapk/actions/runs/45839460973) iniciadas; verificar conclusão e marcadores internos. A revisão backend r107 preparada na VPS permanece `302db7cc` (sem mudança de código produtivo no novo commit).
+- Inventário Git: 32 ramos no momento da revisão, `main` e ramo candidato identificados como referências atuais; restantes 30 requerem confirmação de ancestralidade, dependências e referências de rollback antes de remoção. Nenhum artefacto gerado (bin/obj, caches, binários ou arquivos) encontrado na árvore de main (100 ficheiros) ou do candidato anterior (139 ficheiros). Regras de exclusão de saídas .NET adicionadas à main e candidato. Não apagar ramos únicos não integrados; o conector disponível não oferece remoção de refs.
+- [Ferrari r109 #45839571106](https://github.com/martaxi-boss/VPS/actions/runs/45839571106), pedido `96cbfc4c36d40b54f4f2f328c4f1384ab25b3272`: inventário limitado dos estágios de VivoAPK e remoção exclusivamente da antiga pasta `bundle` se vazia e com `bundle-verified` confirmado; preservar r100, r107, backups, logs de recuperação e todos os ficheiros. Verificar relatório interno antes de afirmar remoção. Nenhum acesso ao cofre ou alterações de subscrição. Não desinstalar o serviço Jellyfin com nome histórico `jellyfin-pink.service`.
+
+
+
 `main` é a referência estável do código e contrato; a produção fica fixada a revisões verificadas por componente. Não fazer checkout da main por cima do backend ativo. Não promover experiências antigas. Preservar rollback e dados de subscrições. A execução é Ferrari/REA pela ponte existente GitHub Actions → SSH → VPS. Consultar o [arquivo histórico](docs/HISTORICO_BOOTSTRAP_20261125.md) para provas, relatórios de versões e decisões revogadas; o arquivo nunca define a arquitetura atual. Os relatórios anteriores em `docs/` são evidências datadas, não instruções vigentes.
 
 ## Critério final de aceitação

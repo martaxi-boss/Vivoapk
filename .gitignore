@@ -31,3 +31,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# Disposable .NET build and test outputs (never commit)
+**/bin/
+**/obj/
+**/TestResults/
+*.pdb
+*.trx
