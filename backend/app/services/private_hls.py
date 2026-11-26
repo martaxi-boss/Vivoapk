@@ -1,8 +1,8 @@
 """Private, bounded HLS reader for an already authorized live asset.
 
 No public route, new listener, disk cache, decryption or provider access at
-import time. Only clear, muxed MPEG-TS playlists on the exact authorized HTTPS
-origin are supported. Other HLS features and redirects fail closed. Output
+import time. Only clear, muxed MPEG-TS playlists on the exact authorized origin
+are supported (HTTPS by default, HTTP only by explicit server policy). Other HLS features and redirects fail closed. Output
 contains session-local random handles instead of any upstream URL.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlsplit
 import httpcore
 
 from app.schemas import CatalogKind, EntitlementState
-from app.services.media_body import MediaReadError, _default_pool, _header
+from app.services.media_body import MediaReadError, _default_pool, _header, _require_media_transport
 from app.services.media_origin import AuthorizedMediaOrigin
 from app.url_safety import (
     DNSResolutionFailure,
@@ -56,9 +56,12 @@ def _reject() -> MediaReadError:
 
 def _origin_key(url: str) -> tuple[str, str, int]:
     parsed = urlsplit(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None:
         raise _reject()
-    return parsed.scheme, parsed.hostname.casefold(), parsed.port or 443
+    port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+    if not 1 <= port <= 65535:
+        raise _reject()
+    return parsed.scheme, parsed.hostname.casefold(), port
 
 
 def _safe_uri(base: str, raw: str, origin: str) -> str:
@@ -263,13 +266,13 @@ class PrivateHlsSession:
         source: AuthorizedMediaOrigin,
         *,
         entitlement: Callable[[], EntitlementState],
+        allow_authorized_http: bool = False,
         resolver: Resolver = system_resolver,
         pool_factory: Callable[[ResolvedOutboundTarget], httpcore.ConnectionPool] = _default_pool,
     ) -> None:
         if source.asset.kind is not CatalogKind.LIVE or source.extension != "m3u8":
             raise _reject()
-        if not source.origin.startswith("https://"):
-            raise MediaReadError("Secure HLS origin not available")
+        _require_media_transport(source, allow_authorized_http=allow_authorized_http)
         self._source = source
         self._entitlement = entitlement
         self._resolver = resolver

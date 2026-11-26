@@ -1,7 +1,7 @@
 """Bounded private media-body reader, not wired to a public route.
 
 Unlike the catalogue transport, this does not buffer the entire response.
-TLS verification, public IP pinning, strict single-range response validation
+TLS verification for HTTPS, public IP pinning, strict single-range response validation
 and explicit cleanup are mandatory. Unverified redirects and HLS playlists
 fail closed. No actual provider access is enabled by adding this module.
 """
@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpcore
 import httpx
@@ -48,6 +49,14 @@ class MediaBody:
     content_range: str | None
     chunks: Iterator[bytes]
     etag: str | None = None
+
+
+def _require_media_transport(source: AuthorizedMediaOrigin, *, allow_authorized_http: bool) -> None:
+    # Source is server-owned, resolved from an authenticated provider subscription.
+    # HTTP is an explicit compatibility policy, not a TLS downgrade or fallback.
+    scheme = urlsplit(source.origin).scheme
+    if scheme != "https" and not (scheme == "http" and allow_authorized_http is True):
+        raise MediaReadError("Secure media origin not available")
 
 
 def _default_pool(target: ResolvedOutboundTarget) -> httpcore.ConnectionPool:
@@ -97,6 +106,7 @@ def open_media_body(
     source: AuthorizedMediaOrigin,
     *,
     range_header: str | None = None,
+    allow_authorized_http: bool = False,
     if_match: str | None = None,
     max_bytes: int = 64 * 1024 * 1024,
     max_seconds: float = 60.0,
@@ -109,11 +119,7 @@ def open_media_body(
         raise MediaReadError("Invalid media read bounds")
     if source.extension == "m3u8":
         raise MediaReadError("Manifest delivery not implemented")
-    # The secure transport must not silently send new media requests with
-    # credentials in plaintext. HTTP-only origins need an explicit, separate
-    # reviewed provider policy. No guessed HTTPS upgrade is attempted.
-    if not source.origin.lower().startswith("https://"):
-        raise MediaReadError("Secure media origin not available")
+    _require_media_transport(source, allow_authorized_http=allow_authorized_http)
     requested_range = _range(range_header)
     headers = [(b"Accept", b"video/*"), (b"Accept-Encoding", b"identity")]
     if range_header is not None:

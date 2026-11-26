@@ -15,6 +15,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from threading import Lock
 from typing import Literal
 
@@ -28,7 +29,7 @@ from app.config import Settings
 from app.db import get_db
 from app.schemas import CatalogKind, ClientPlatform, EntitlementState
 from app.services.catalog import CatalogDenied, CatalogService, mapping_id_for_token
-from app.services.media_body import MediaReadError
+from app.services.media_body import MediaReadError, open_media_body
 from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.private_hls import PrivateHlsSession
 from app.services.private_file import MAX_FILE_BYTES, MAX_WINDOW_BYTES, PrivateFileSession
@@ -212,8 +213,13 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
     app.state.private_hls_registry = registry
     app.state.private_hls_factory = lambda source: PrivateHlsSession(
         source, entitlement=lambda: EntitlementState.UNAVAILABLE,
+        allow_authorized_http=settings.private_media_allow_authorized_http,
     )
-    app.state.private_file_factory = PrivateFileSession
+    app.state.private_file_factory = lambda source: PrivateFileSession(
+        source, body_reader=partial(
+            open_media_body, allow_authorized_http=settings.private_media_allow_authorized_http,
+        ),
+    )
 
     def credential(request: Request) -> str:
         key = settings.private_media_key

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     entitlement_monitor_key: SecretStr | None = None
     # Disabled until the complete native Jellyfin transport is certified.
     private_hls_enabled: bool = False
+    # Explicit compatibility for HTTP origins assigned by the authenticated Mega API.
+    # Credentials and media on that upstream hop are NOT encrypted. Never a client option.
+    private_media_allow_authorized_http: bool = False
     private_media_key: SecretStr | None = None
     auth_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
     auth_rate_per_username: int = Field(default=10, ge=1, le=100)
@@ -45,6 +48,8 @@ class Settings(BaseSettings):
                 raise ValueError("SESSION_SIGNING_KEY must be set to a non-default value")
             if len(signing_key.encode()) < 32:
                 raise ValueError("SESSION_SIGNING_KEY must be at least 32 bytes")
+        if self.private_media_allow_authorized_http and not self.private_hls_enabled:
+            raise ValueError("Authorized HTTP media requires private media routes")
         if self.private_hls_enabled:
             key = self.private_media_key.get_secret_value() if self.private_media_key else ""
             monitor = self.entitlement_monitor_key

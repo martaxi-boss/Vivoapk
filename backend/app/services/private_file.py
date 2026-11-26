@@ -1,7 +1,7 @@
 """Bounded private random-access file sessions for authorized VOD and episodes.
 
 No public URL, disk cache, provider credential or arbitrary upstream request is
-accepted. Reads reuse the pinned HTTPS body transport and authenticate before
+accepted. Reads reuse the pinned body transport (HTTPS by default) and authenticate before
 and after each bounded byte window. The backend's existing session registry
 serializes operations and applies the same capacity to live and finite media.
 This is not a Jellyfin/FFmpeg delivery adapter yet.
@@ -74,7 +74,7 @@ class PrivateFileSession:
                     or body.content_type != self._info.content_type or body.etag != self._validator):
                 raise MediaReadError("Private media representation changed")
             # Never accumulate more than a bounded window. The lower reader
-            # also enforces exact framing, TLS, DNS pinning and a deadline.
+            # also enforces exact framing, TLS for HTTPS, DNS pinning and a deadline.
             data = bytearray()
             for chunk in body.chunks:
                 if len(data) + len(chunk) > expected_bytes:
