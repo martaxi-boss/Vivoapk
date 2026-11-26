@@ -76,3 +76,17 @@ H264/AAC as jellyfinpink. The bundle phase requires an already authenticated
 GitHub CLI; if unavailable, it reports a blocker rather than publishing
 signed URLs or installing another transport. No service restart, actual
 subscriber data, environment file modification or production approval.
+
+## Coordinated transaction
+
+The coordinator uses a single durable journal and lock for four DLLs, plugin
+opt-in XML, two systemd drop-ins and two newly provisioned private key files.
+No production service adapter is approved by this module. A future host
+adapter must supply fixed destinations and pinned bytes, verify complete
+Jellyfin/backend stops, reload unit definitions, start backend then Jellyfin,
+and verify health and admin identity. On error it restores all nine files
+and verifies old health. On explicit rollback after a running release, it
+preserves legitimate plugin slot updates and restores only the opt-in flag.
+An unrelated immutable file change or corrupt backup blocks recovery.
+The existing checkout, staged FFmpeg runtime and original unit definitions
+are not overwritten. No secret values are recorded in the journal or Git.
