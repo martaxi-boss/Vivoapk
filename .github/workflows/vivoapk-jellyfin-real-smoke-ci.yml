@@ -3,11 +3,23 @@ on:
   push:
     paths:
       - "jellyfin-auth/**"
+      - "backend/app/private_media_api.py"
+      - "backend/app/services/private_ts.py"
+      - "backend/app/services/media_origin.py"
+      - "backend/app/services/catalog.py"
+      - "backend/app/config.py"
+      - "backend/tests/synthetic_ts_origin.py"
       - "infra/native_release_manifest.py"
       - ".github/workflows/vivoapk-jellyfin-real-smoke-ci.yml"
   pull_request:
     paths:
       - "jellyfin-auth/**"
+      - "backend/app/private_media_api.py"
+      - "backend/app/services/private_ts.py"
+      - "backend/app/services/media_origin.py"
+      - "backend/app/services/catalog.py"
+      - "backend/app/config.py"
+      - "backend/tests/synthetic_ts_origin.py"
       - "infra/native_release_manifest.py"
       - ".github/workflows/vivoapk-jellyfin-real-smoke-ci.yml"
   workflow_dispatch:
@@ -32,7 +44,6 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      VIVOAPK_CI_TS_ONLY: "1"
       VIVOAPK_NATIVE_PRIVATE_DATABASE_URL: postgresql+psycopg://vivoapk_fixture:disposable-native-fixture-only@127.0.0.1:5432/vivoapk_native_private_ci
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -248,16 +259,6 @@ jobs:
             install -m 0644 "$runtime_dir/$dll" "$bundle/$dll"
           done
           install -m 0644 jellyfin-auth/Vivoapk.Jellyfin.Auth/meta.json "$bundle/meta.json"
-          if [[ "${VIVOAPK_CI_TS_ONLY:-0}" == "1" ]]; then
-            git fetch --no-tags --depth=1 origin 48a4b00805854bf681c6d45c82af93f5a6c64f5f
-            git diff --quiet 48a4b00805854bf681c6d45c82af93f5a6c64f5f HEAD -- backend jellyfin-auth infra ':!jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateHlsLoopback.cs'
-            echo "c40dbc5a1fabb65f278dc11c97abe495ca005066199d556081f95fee738e7740  jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateHlsLoopback.cs" | sha256sum -c -
-            echo VALIDATED_TS_CANDIDATE_SOURCE_EXCEPT_PINNED_TRANSPORT_FIX_UNCHANGED=PASS | tee -a "$evidence"
-            mkdir -p "$RUNNER_TEMP/private-ts"
-            run_gate regular-private-ts-recovery env RUNNER_TEMP="$RUNNER_TEMP/private-ts" VIVOAPK_CI_PRIVATE_TS=1 VIVOAPK_CI_REGULAR_PRIVATE=1 VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_PRIVATE_HLS=1 VIVOAPK_CI_PRIVATE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
-            echo "ISOLATED_TS_GATE_EXIT=$failed" | tee -a "$evidence"
-            exit "$failed"
-          fi
           run_gate standard python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           run_gate category env VIVOAPK_CI_CATEGORY_MODE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           mkdir -p "$RUNNER_TEMP/catalog-race"
@@ -287,7 +288,7 @@ jobs:
             "$VIVOAPK_EXPECTED_FFMPEG" "$(dirname "$VIVOAPK_EXPECTED_FFMPEG")/ffprobe" \
             "$GITHUB_SHA" "$GITHUB_RUN_ID"
       - name: Preserve exact ordinary-plugin candidate after all integrated gates
-        if: success() && env.VIVOAPK_CI_TS_ONLY != '1' 
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: vivoapk-native-regular-candidate-${{ github.sha }}

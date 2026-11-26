@@ -1,5 +1,30 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Estado confirmado — entrada TS nativa e recusa real — 26/11/2026 18:06 UTC
+
+Produção preservada em `0994990c024b159eebd44528041746f557596d27` (r100). Código candidato executável: `8df4bf687a6dfcd3f66612da304691f312427a88`, ramo `vivoapk/authorized-http-media-20261126`. Não instalado em produção.
+
+### Correção realizada
+
+Entrada MPEG-TS contínua acrescentada ao adaptador privado já existente, sem novo leitor/serviço e sem reconstruir autenticação, catálogo ou seleção de DNS. Configuração explícita no servidor; formato autorizado antes da ligação; amostra limitada e sequencial para FFprobe, seguida de ligação persistente para FFmpeg nativo; memória limitada, isolamento/grants/revalidação existentes. Sem fallback/repetição após 401/403. O default continua HLS. Corrigidos dois defeitos demonstrados no transporte TS: tentativa de modificar Content-Type após início da resposta e disputa na reabertura do leitor. Nenhuma dependência global instalada.
+
+### Validação e limites
+
+- [Backend #45870214552](https://github.com/martaxi-boss/Vivoapk/actions/runs/45870214552): PASS. [Build corrigido #45872376647](https://github.com/martaxi-boss/Vivoapk/actions/runs/45872376647) e [loopback HLS/file #45872376659](https://github.com/martaxi-boss/Vivoapk/actions/runs/45872376659): PASS.
+- [Integração #45870214664](https://github.com/martaxi-boss/Vivoapk/actions/runs/45870214664): seis gates anteriores PASS; gate TS inicialmente bloqueado pela colisão de pasta temporária. Após separar a pasta, [#45871824760](https://github.com/martaxi-boss/Vivoapk/actions/runs/45871824760) expôs a escrita tardia do header. Ambas as falhas foram corrigidas.
+- **[Integração TS corrigida #45872376651](https://github.com/martaxi-boss/Vivoapk/actions/runs/45872376651): SUCCESS**, ISOLATED_TS_GATE_EXIT=0. Fontes sintéticas MPEG2/MP2, duas tarefas FFmpeg nativas; 42,4 s em simultâneo, 57/45 s de media, caches separadas. Abandono sem Stop: primeira tarefa/cache/lease desapareceram após 82,25 s enquanto a segunda manteve processo e serviu mais 28 segmentos. Restart do encoder, reabertura após abandono/Stop, negação das rotas antigas e limpeza final PASS. Artefacto 15143239331 com CRC verificado, SHA-256 `43f286be0ea985ccc655d401c0cfce0286a6f8bca86aa30a15f178a5f5056235`. Plugin SHA-256 `467710371335bf97146c34b5651f681a114032ef250de50f24ff8a42a5511953`. Estes são resultados de laboratório; não certificam capacidade VPS, media real ou dispositivos físicos.
+- [Ferrari/REA/Ruflo r118 #45870728814](https://github.com/martaxi-boss/VPS/actions/runs/45870728814): 33 asserções do contrato TS PASS na VPS sobre fonte sintética, isolamento/limpeza/revogação e 401/403 terminais; serviços preservados. Evidência SHA-256 `abb210eae3b1f4b2acdad2ec9f4b5df13683506224264035358a233bf558d041`. R116 falhou por ausência de pytest; não foi contado como aprovação. Revisão r119/fecho r120 limitados ao contrato.
+- O workflow completo fica restaurado para execuções futuras, incluindo diretório próprio TS e triggers do backend relevantes. Este fecho altera somente documentação/workflow; não repete os gates anteriores nem fabrica um bundle instalável aprovado pelo conjunto completo.
+
+### Bloqueio real demonstrado
+
+**[r121 #45871678416](https://github.com/martaxi-boss/VPS/actions/runs/45871678416)**: linha de teste existente, identidade/validade/origem atribuída confirmadas, conta ativa, formato TS anunciado e zero ligações ocupadas. RTP1 encontrada no catálogo e autorizada pelo serviço. UMA ligação explícita ao TS na origem geral atribuída respondeu **HTTP 401 antes do corpo**, antes de FFprobe/FFmpeg. Encerramento imediato; nenhuma tentativa seguinte em canal/DNS/família/rota/UA/túnel. Sem segredos ou media guardados. source_decode_pass=false; production_activation=false; production_unchanged=true; physical_clients_certified=0. Artefacto 15141574692 íntegro, evidência SHA-256 `719e99291b25b2756ebf45ef1a5c7a0bbfac82912a5ff1499a8fbad96bdd6f8a`.
+
+O HLS já tinha devolvido 401 em r108; o ensaio TS novo prova que mudar apenas o formato não resolveu a recusa observada. A origem da resposta HTTP foi identificada; a condição interna do fornecedor que a provoca permanece desconhecida. O login ativo não demonstra permissão efetiva de media nesta ligação. A prova histórica PINK existe, mas não identifica inequivocamente qual combinação canal/extensão venceu. Não afirmar incompatibilidade geral do Jellyfin nem atribuir uma causa interna sem evidência.
+
+Antes de novo ensaio real, esclarecer qual interface e condições de reprodução o fornecedor autoriza para esta linha a partir da VPS. Não procurar contornar a recusa. TV/VOD/séries reais, continuidade prolongada, concorrência/revogação reais e as seis plataformas continuam por certificar. Não remover PINK/backups nem desinstalar jellyfin-pink.service com a migração por concluir.
+
+
 ## Entrada TS privada em implementação — 26/11/2026
 
 Novo candidato no mesmo ramo, ainda NÃO instalado nem certificado: o backend passa a aceitar contrato LIVE MPEG-TS explícito por configuração de servidor (HLS mantém-se por omissão), exige formato anunciado na autenticação e pertença ao catálogo, usa os DNS por plataforma existentes e grants privados. O adaptador existente serve /stream.ts ao FFmpeg nativo e uma amostra separada limitada ao FFprobe, sem novo decoder/serviço, URLs externas nos clientes, ficheiros de media ou fallback após 401/403. Probe e reprodução abrem ligações sequenciais; uma ligação aceite persiste entre janelas limitadas, é encerrada no abandono/restart/expiração. Negação de autorização retira a sessão e não permite reabertura pelo reset. Novos ensaios sintéticos cobrem framing, entradas inválidas/encriptadas, grants/isolamento/revogação e percurso TS privado no servidor Jellyfin real, incluindo recuperação paralela. Resultados ainda pendentes. Nenhum acesso adicional a media Mega nem alteração da produção r100; a implementação não resolve por si a recusa r108. Não promover sem revisão e provas reais autorizadas.
