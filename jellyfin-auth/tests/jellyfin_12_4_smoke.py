@@ -1876,11 +1876,42 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                 "segments": segments, "positions": positions, "late_index": late_index,
                 "runtime_seconds": runtime_seconds}
 
+    # Native finite HLS can continue writing A's segments while B negotiates.
+    # A difference between two time-based snapshots is NOT an ownership
+    # boundary. The pinned DynamicHlsController names each output playlist
+    # <stem>.m3u8 and its segments <stem><index>.ts in the same directory.
+    # Discover the distinct playlist during each authorized negotiation,
+    # then enumerate its entire namespace dynamically, including later files.
+    def cache_namespace(playlist, files=None):
+        files = native_cache_delta(base, baseline) if files is None else files
+        stem = playlist.stem
+        return {p: size for p, size in files.items()
+                if p.parent == playlist.parent and (p == playlist
+                    or (p.suffix == ".ts" and p.stem.startswith(stem)
+                        and p.stem[len(stem):].isascii()
+                        and p.stem[len(stem):].isdigit()))}
+
+    def discover_playlist(exclude):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            files = native_cache_delta(base, baseline)
+            candidates = [p for p in files if p.suffix == ".m3u8" and p not in exclude]
+            if len(candidates) > 1:
+                raise RuntimeError("Ambiguous finite HLS playlist attribution")
+            if len(candidates) == 1:
+                playlist = candidates[0]
+                if (playlist.stem and all(ch in "0123456789abcdefABCDEF" for ch in playlist.stem)
+                        and any(p.suffix == ".ts" and size >= 188
+                                for p, size in cache_namespace(playlist, files).items())):
+                    return playlist
+            time.sleep(.1)
+        raise RuntimeError("Finite HLS playlist namespace not observed")
+
     a = negotiate(item_a, owner_a, token_a, token_b)
-    a_cache = set(transcode_cache_files(base)) - baseline.keys()
+    a_playlist = discover_playlist(set())
     b = negotiate(item_b, owner_b, token_b, token_a)
-    b_cache = set(transcode_cache_files(base)) - baseline.keys() - a_cache
-    if private_backend.count() != 2 or a["session"] == b["session"]:
+    b_playlist = discover_playlist({a_playlist})
+    if a_playlist == b_playlist or private_backend.count() != 2 or a["session"] == b["session"]:
         raise RuntimeError("Two private native sessions not independently admitted")
     digests = []
     for label, state in (("a", a), ("b", b)):
@@ -1987,19 +2018,34 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
     ):
         if reset_encoder(a, token, **overrides) != 404 or private_backend.count() != 2:
             raise RuntimeError("Foreign or ambiguous encoder reset accepted")
-    if not a_cache or not b_cache:
-        raise RuntimeError("Encoder restart cache namespaces missing")
     b_before = require_native_owner(b["segment"], token_b, "before_encoder_restart")
+    observed = native_cache_delta(base, baseline)
+    a_cache = cache_namespace(a_playlist, observed)
+    b_cache = cache_namespace(b_playlist, observed)
+    if (not a_cache or not b_cache or a_cache.keys() & b_cache.keys()
+            or set(observed) != (a_cache.keys() | b_cache.keys())):
+        raise RuntimeError("Encoder restart cache namespaces not uniquely attributed")
     if reset_encoder(a, token_a) != 204 or private_backend.count() != 2:
         raise RuntimeError("Own encoder restart did not preserve both leases")
-    remaining = transcode_cache_files(base)
-    if a_cache.intersection(remaining) or not b_cache.issubset(remaining):
-        raise RuntimeError("Encoder restart did not isolate cache cleanup")
+    remaining = native_cache_delta(base, baseline)
+    a_remaining = cache_namespace(a_playlist, remaining)
+    b_remaining = cache_namespace(b_playlist, remaining)
+    evidence = {"first_files_before": len(a_cache), "first_files_after": len(a_remaining),
+                "second_files_before": len(b_cache), "second_files_after": len(b_remaining),
+                "second_files_lost": len(b_cache.keys() - b_remaining.keys()),
+                "leases": private_backend.count()}
+    print("JELLYFIN_PRIVATE_NATIVE_ENCODER_CACHE_ISOLATION=" + json.dumps(evidence,
+          sort_keys=True), flush=True)
+    if a_remaining or not b_cache.keys() <= b_remaining.keys():
+        raise RuntimeError("Encoder restart did not isolate cache cleanup: " + json.dumps(evidence))
     if require_native_owner(b["segment"], token_b, "after_encoder_restart") != b_before:
         raise RuntimeError("Other account's cached playback changed")
     resumed = require_native_owner(a["segment"], token_a, "after_own_encoder_restart")
     if len(resumed) < 188 or resumed[0] != 0x47 or private_backend.count() != 2:
         raise RuntimeError("Owner could not resume on the same authorized lease")
+    restarted = discover_playlist({b_playlist})
+    if restarted == b_playlist or not cache_namespace(restarted):
+        raise RuntimeError("Resumed encoder did not recreate an independent cache namespace")
     print("JELLYFIN_PRIVATE_NATIVE_ENCODER_RESTART_ISOLATION=PASS", flush=True)
     print("JELLYFIN_PRIVATE_NATIVE_LEGACY_REPORT_ISOLATION=PASS", flush=True)
 
