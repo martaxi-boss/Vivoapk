@@ -62,8 +62,9 @@ jobs:
           test -x "$ffmpeg_bin"
           echo "$(dirname "$ffmpeg_bin")" >> "$GITHUB_PATH"
           "$ffmpeg_bin" -version | sed -n '1p'
-      - name: Live regression and finite movie/episode seek over Unix socket and PostgreSQL
+      - name: Synthetic MPEG-TS input to private HLS, finite media and socket lifecycle
         env:
+          VIVOAPK_LOOPBACK_TS_INPUT: "1"
           VIVOAPK_LOOPBACK_DATABASE_URL: postgresql+psycopg://vivoapk_fixture:disposable-loopback-fixture-only@127.0.0.1:5432/vivoapk_loopback_ci
         shell: bash
         run: |

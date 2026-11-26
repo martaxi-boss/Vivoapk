@@ -1,6 +1,7 @@
 """Disposable backend-over-UDS/actual C# loopback/FFmpeg integration gate.
 
-Generate two lawful synthetic HLS assets; no real provider request, credentials,
+Generate two lawful synthetic HLS assets, optionally from raw MPEG-TS over a
+local pipe; no real provider request, credentials,
 public listener, VPS operation, or Jellyfin installation. The test compiles
 the same adapter source as the plugin but does not register it in Jellyfin.
 """
@@ -44,16 +45,36 @@ from test_private_hls import ORIGIN, Origin, response
 def generate(ffmpeg, folder, suffix, frequency):
     folder.mkdir()
     video = "testsrc2=size=160x90:rate=25" if suffix == "a" else "smptebars=size=160x90:rate=25"
+    # Only generated test patterns and tones. Exercise the gap between a raw
+    # MPEG-TS input and the already certified private HLS/socket adapter.
+    # The test has no network input, provider credentials or fallback behavior.
+    if os.environ.get("VIVOAPK_LOOPBACK_TS_INPUT") == "1":
+        raw = subprocess.run([
+            ffmpeg, "-hide_banner", "-nostdin", "-v", "error",
+            "-f", "lavfi", "-i", video,
+            "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000",
+            "-t", "6", "-c:v", "mpeg2video", "-threads:v", "1",
+            "-b:v", "380k", "-g", "25", "-c:a", "mp2", "-b:a", "128k",
+            "-muxrate", "600k", "-f", "mpegts", "pipe:1",
+        ], check=True, capture_output=True, timeout=30).stdout
+        assert 188 * 3 <= len(raw) <= 2 * 1024 * 1024 and len(raw) % 188 == 0
+        assert all(raw[i] == 0x47 for i in range(0, len(raw), 188))
+        inputs = ["-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0",
+                  "-map", "0:v:0", "-map", "0:a:0"]
+        input_args = {"input": raw}
+        print("VIVOAPK_PRIVATE_LOOPBACK_SYNTHETIC_TS_INPUT=PASS", flush=True)
+    else:
+        inputs = ["-f", "lavfi", "-i", video,
+                  "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000"]
+        input_args = {}
     subprocess.run([
-        ffmpeg, "-hide_banner", "-nostdin", "-v", "error",
-        "-f", "lavfi", "-i", video,
-        "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000",
+        ffmpeg, "-hide_banner", "-nostdin", "-v", "error", *inputs,
         "-t", "6", "-c:v", "libx264", "-preset", "ultrafast", "-threads:v", "1",
         "-pix_fmt", "yuv420p", "-g", "50", "-keyint_min", "50", "-sc_threshold", "0",
         "-c:a", "aac", "-threads:a", "1", "-f", "hls", "-hls_time", "2",
         "-hls_list_size", "0", "-hls_segment_filename", str(folder / "s%03d.ts"),
         str(folder / "index.m3u8"),
-    ], check=True, capture_output=True, timeout=30)
+    ], check=True, capture_output=True, timeout=30, **input_args)
     playlist = (folder / "index.m3u8").read_text()
     segments = {p.name: p.read_bytes() for p in folder.glob("*.ts")}
     assert len(segments) == 3 and "#EXT-X-ENDLIST" in playlist
