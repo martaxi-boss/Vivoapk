@@ -1748,7 +1748,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
     }
     baseline = transcode_cache_files(base)
 
-    def negotiate(item, owner, token, other, *, play=True, seek_start=False):
+    def negotiate(item, owner, token, other, *, play=True, seek_start=False, boundary=False):
         code, info = request("POST", "/Items/" + item + "/PlaybackInfo?UserId=" + owner,
             {"DeviceProfile": profile, "AutoOpenLiveStream": True,
              "EnableDirectPlay": False, "EnableDirectStream": False, "EnableTranscoding": True,
@@ -1796,18 +1796,27 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         segments = [native_route(route, line, item) for _, line in timed]
         if not segments:
             raise RuntimeError("Private native stream has no segments")
-        # Choose a complete later segment from the native playlist rather
-        # than inventing a URL or relying on a tiny final fractional segment.
+        # Jellyfin v12.4 EncodingHelper.GetFastSeekCommandLineParameter
+        # clamps native input seek to runtime minus five seconds. Test the
+        # normal seek inside that interval and separately observe the tail.
         late_index = None
+        tail_index = None
         positions = []
         elapsed = 0.0
+        runtime_ticks = source.get("RunTimeTicks")
+        runtime_seconds = runtime_ticks / 10000000 if isinstance(runtime_ticks, int) else 0
         for index, (duration, _) in enumerate(timed):
             positions.append(elapsed)
             if elapsed >= 6 and duration >= 2:
-                late_index = index
+                if elapsed <= runtime_seconds - 5:
+                    late_index = index
+                else:
+                    tail_index = index
             elapsed += duration
+        if boundary:
+            late_index = tail_index
         if seek_start and (not PRIVATE_FILE or late_index is None):
-            raise RuntimeError("Finite seek fixture lacks a later complete segment")
+            raise RuntimeError("Finite seek fixture lacks required interior or tail segment")
         require_native_denial(segments[0], token, other, "private_segment_foreign")
         # Reject a stale/forged play session even under the correct owner's
         # token and item. The exact dynamic playlist contract is main/<n>.ts.
@@ -1836,7 +1845,8 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             raise RuntimeError("Missing native private play session")
         return {"item": item, "token": token, "session": session, "source": source["Id"],
                 "route": master, "segment": segments[selected], "data": segment,
-                "segments": segments, "positions": positions, "late_index": late_index}
+                "segments": segments, "positions": positions, "late_index": late_index,
+                "runtime_seconds": runtime_seconds}
 
     a = negotiate(item_a, owner_a, token_a, token_b)
     b = negotiate(item_b, owner_b, token_b, token_a)
@@ -2050,7 +2060,59 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             time.sleep(.4)
         if transcode_cache_files(base).keys() - baseline.keys():
             raise RuntimeError("Native seek left transcoding cache")
-        print("JELLYFIN_PRIVATE_NATIVE_MOVIE_EPISODE_SEEK_ISOLATION=PASS", flush=True)
+        print("JELLYFIN_PRIVATE_NATIVE_MOVIE_EPISODE_INTERIOR_SEEK_ISOLATION=PASS", flush=True)
+
+        # Keep the original late-initial scenario as an independent tail
+        # diagnostic. Do not call clamped content a successful exact seek.
+        # A fresh negotiation avoids reading already-generated cache.
+        for label, item, owner, token, other in (
+            ("a", item_a, owner_a, token_a, token_b),
+            ("b", item_b, owner_b, token_b, token_a),
+        ):
+            tail = negotiate(item, owner, token, other, seek_start=True, boundary=True)
+            position = tail["positions"][tail["late_index"]]
+            clamp = tail["runtime_seconds"] - 5
+            if position <= clamp or private_backend.count() != 1:
+                raise RuntimeError("Tail diagnostic does not exercise upstream clamp")
+            original = base / ("private-native-" + label + ".mp4")
+            target = base / ("private-tail-diagnostic-" + label + ".ts")
+            target.write_bytes(tail["data"])
+            try:
+                decoded = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin",
+                    "-v", "error", "-i", str(target), "-map", "0:v:0", "-map", "0:a:0",
+                    "-f", "framemd5", "pipe:1"], capture_output=True,
+                    text=True, check=True, timeout=30).stdout
+                video = sum(line.startswith("0,") for line in decoded.splitlines())
+                audio = sum(line.startswith("1,") for line in decoded.splitlines())
+                sample = marker_sample(target, .4)
+                exact = marker_sample(original, position + .4)
+                clamped = marker_sample(original, clamp + .4)
+                if video < 20 or audio < 20 or abs(exact-clamped) < 40:
+                    raise RuntimeError("Tail diagnostic reference/decoding is insufficient")
+                exact_error, clamp_error = abs(sample-exact), abs(sample-clamped)
+                if exact_error <= 20 and exact_error + 20 < clamp_error:
+                    result = "EXACT"
+                elif clamp_error <= 20 and clamp_error + 20 < exact_error:
+                    result = "KNOWN_UPSTREAM_CLAMP_NOT_CERTIFIED"
+                else:
+                    result = "UNEXPLAINED_MISMATCH"
+                print("JELLYFIN_PRIVATE_NATIVE_TAIL_SEEK_OBSERVATION=" + json.dumps({
+                    "fixture": label, "requested_seconds": position,
+                    "upstream_clamp_seconds": clamp, "observed_marker": round(sample, 3),
+                    "exact_marker": round(exact, 3), "clamp_marker": round(clamped, 3),
+                    "video_frames": video, "audio_frames": audio, "result": result,
+                }, sort_keys=True), flush=True)
+                if result == "UNEXPLAINED_MISMATCH":
+                    raise RuntimeError("Tail seek did not match either independently measured reference")
+            finally:
+                target.unlink(missing_ok=True)
+            if stop(tail, token) not in (200, 204) or private_backend.count() != 0:
+                raise RuntimeError("Tail seek diagnostic left a private lease")
+        deadline = time.monotonic() + 20
+        while transcode_cache_files(base).keys() - baseline.keys() and time.monotonic() < deadline:
+            time.sleep(.4)
+        if transcode_cache_files(base).keys() - baseline.keys():
+            raise RuntimeError("Tail seek diagnostic left transcoding cache")
 
         # 1. Stop a negotiation that has never issued a native media GET.
         # 2. Abandon another negotiation without stop or playback reports.
