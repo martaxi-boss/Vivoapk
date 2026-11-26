@@ -198,10 +198,10 @@ def stage_backend():
     # the installed source, without touching the installed checkout.
     installed = ["git", "-c", "safe.directory=" + str(pf.SOURCE), "-C", str(pf.SOURCE)]
     candidate = ["git", "-C", str(checkout)]
-    for rel in ("backend/pyproject.toml", "backend/alembic", "backend/alembic.ini", "backend/app/models"):
+    for rel in ("backend/pyproject.toml", "backend/alembic", "backend/alembic.ini", "backend/app/models.py"):
         a = run(installed + ["ls-tree", ORIGINAL_SHA, "--", rel]).strip()
         b = run(candidate + ["ls-tree", SOURCE_SHA, "--", rel]).strip()
-        require(a == b, "backend_dependency_or_schema_tree_changed")
+        require(bool(a) and a == b, "backend_dependency_or_schema_tree_changed")
     require(VENV.is_file(), "backend_venv_missing")
     result = json.loads(run([str(VENV), "-I", "-B", "-c", BACKEND_PROBE,
         str(checkout / "backend")], timeout=20, user="vivoapksvc",
