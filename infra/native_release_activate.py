@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import secrets
 import signal
 import socket
@@ -34,7 +35,10 @@ APPROVED_SOURCE = "0994990c024b159eebd44528041746f557596d27"
 APPROVED_BUNDLE = "54ba20844f871177869d8359a43bfd2003ca59a963e7a26b2c120cca2a52a3da"
 APPROVED_REHEARSAL = "45802135112"
 ENCODING = host.JELLY / "config/encoding.xml"
-BASELINE_FILE = host.STATE / (APPROVED_SOURCE + "-host-baseline.json")
+# Keep the original recovery and all its backups intact. This is a
+# separate, fixed retry of the SAME independently approved candidate.
+ATTEMPT_STATE = host.STATE / "attempt-r100"
+BASELINE_FILE = ATTEMPT_STATE / (APPROVED_SOURCE + "-host-baseline.json")
 UNITS = (pf.SERVER, pf.BACKEND)
 
 
@@ -160,6 +164,39 @@ def ready(unit, path, endpoint):
     return pf.active(unit) and pf.prop(unit, "SubState") == "running" and pf.socket_ok(path, endpoint)
 
 
+def jellyfin_startup_complete():
+    # Upstream 12.4 Program.cs starts Kestrel BEFORE RunStartupTasksAsync.
+    # The public info socket alone therefore does not imply readiness.
+    # Accept only the completion marker from the CURRENT systemd invocation
+    # and main PID; never a stale marker from an earlier launch.
+    unit = pf.SERVER
+    pid = pf.prop(unit, "MainPID")
+    invocation = pf.prop(unit, "InvocationID")
+    if not re.fullmatch(r"[1-9][0-9]*", pid) or not re.fullmatch(r"[a-f0-9]{32}", invocation):
+        return False
+    try:
+        result = subprocess.run(["journalctl", "--no-pager", "-u", unit,
+            "_SYSTEMD_INVOCATION_ID=" + invocation, "_PID=" + pid,
+            "--grep", "Startup complete", "-n", "4", "-o", "json"],
+            capture_output=True, text=True, timeout=10)
+        if result.returncode:
+            return False
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+    complete = any(record.get("_PID") == pid
+        and record.get("_SYSTEMD_INVOCATION_ID") == invocation
+        and re.search(r"\bStartup complete\s+\d", str(record.get("MESSAGE", "")))
+        for record in records)
+    return bool(complete and pf.prop(unit, "MainPID") == pid
+                and pf.prop(unit, "InvocationID") == invocation)
+
+
+def jellyfin_ready():
+    return (ready(pf.SERVER, host.JELLY/"run/jellyfin.sock", "/System/Info/Public")
+            and jellyfin_startup_complete())
+
+
 def stop_pair():
     for unit in UNITS:
         ctl("stop", "--no-block", unit)
@@ -171,8 +208,7 @@ def start_pair():
     wait_until(lambda: ready(pf.BACKEND, host.ROOT/"run/backend.sock", "/openapi.json"),
                24, "activation_backend_not_ready")
     ctl("start", "--no-block", pf.SERVER)
-    wait_until(lambda: ready(pf.SERVER, host.JELLY/"run/jellyfin.sock", "/System/Info/Public"),
-               40, "activation_jellyfin_not_ready")
+    wait_until(jellyfin_ready, 75, "activation_jellyfin_startup_tasks_not_complete")
 
 
 def same_protected(baseline):
@@ -300,16 +336,27 @@ def load_baseline():
     return value
 
 
+def previous_recovery_closed():
+    tx = coord.CoordinatedTransaction(host.TARGETS, host.STATE, APPROVED_SOURCE,
+        lambda: None, lambda: None, lambda: None, lambda side: None)
+    phase, records = tx.load()
+    require(phase == "rolled_back", "activation_previous_recovery_not_closed")
+    tx.check(records, "old")
+
+
 def execute(action):
     pin()
     require(os.geteuid()==0,"activation_root_required")
     report={"phase":"coordinated-"+action,"source":APPROVED_SOURCE,
-            "rehearsal":APPROVED_REHEARSAL,"installed":False,
+            "rehearsal":APPROVED_REHEARSAL,"attempt":"r100","installed":False,
             "real_subscriber_playback_certified":False,"activation_allowed":True}
     if action=="activate":
-        host.check_host()
+        previous_recovery_closed()
+        host.check_host(transaction_state=ATTEMPT_STATE)
+        require(jellyfin_ready(), "activation_original_startup_incomplete")
         root_dir(host.STATE.parent,0o700)
         root_dir(host.STATE,0o700,private=True)
+        root_dir(ATTEMPT_STATE,0o700,private=True)
         for name in ("backend-dropin","server-dropin"):
             root_dir(host.TARGETS[name].parent,0o755)
         baseline=baseline_record()
@@ -358,6 +405,7 @@ def execute(action):
     def health(side):
         nonlocal failure
         try:
+            require(jellyfin_ready(),"activation_health_before_startup_completion")
             if side=="old":
                 same_protected(baseline)
                 require(pf.inspect()["baseline_pass"],"activation_original_baseline_failed")
@@ -369,17 +417,28 @@ def execute(action):
                 failure=str(exc) if isinstance(exc,Blocked) else type(exc).__name__
             raise
 
-    tx=coord.CoordinatedTransaction(host.TARGETS,host.STATE,APPROVED_SOURCE,stop,reload,start,health)
-    result=tx.activate(candidate) if action=="activate" else tx.rollback()
+    tx=coord.CoordinatedTransaction(host.TARGETS,ATTEMPT_STATE,APPROVED_SOURCE,stop,reload,start,health)
+    try:
+        result=tx.activate(candidate) if action=="activate" else tx.rollback()
+    except Blocked as exc:
+        # Preserve both original and recovery errors. Never hide the cause
+        # behind the aggregate transaction failure as happened in r96.
+        report.update(result="needs_review",failure=failure or tx.activation_failure or str(exc),
+                      transaction_failure=tx.activation_failure,
+                      rollback_failure=tx.rollback_failure,
+                      journal_present=(tx.save/"journal.json").is_file(),
+                      rollback_verified=False)
+        return report
     report.update(result=result,installed=result=="committed",rollback_verified=result in (
-        "rolled_back","rolled_back_after_failure"),failure=failure,
+        "rolled_back","rolled_back_after_failure"),failure=failure or tx.activation_failure,
+        transaction_failure=tx.activation_failure,rollback_failure=tx.rollback_failure,
         services_healthy=all(pf.active(u) for u in pf.PROTECTED),
         protected_pids_preserved=all(pf.prop(u,"MainPID")==v for u,v in baseline["protected_pids"].items()))
     if report["installed"]:
         report.update(four_loaded_dlls_verified=True,backend_selection_verified=True,
             ffmpeg_selection_verified=True,private_route_denial_cases=6,
             jellyfin_unauthenticated_denied=True,admin_preserved=True,
-            private_network_preserved=True)
+            private_network_preserved=True,startup_completion_verified=True)
     return report
 
 
@@ -400,7 +459,7 @@ def main():
     except (Exception,KeyboardInterrupt) as exc:
         print(json.dumps({"phase":"coordinated-"+action,"installed":False,
             "reason":str(exc) if isinstance(exc,(Blocked,pf.Blocked)) else type(exc).__name__,
-            "journal_present":(host.STATE/APPROVED_SOURCE/"journal.json").is_file(),
+            "journal_present":(ATTEMPT_STATE/APPROVED_SOURCE/"journal.json").is_file(),
             "real_subscriber_playback_certified":False},sort_keys=True),flush=True)
         return 1
 

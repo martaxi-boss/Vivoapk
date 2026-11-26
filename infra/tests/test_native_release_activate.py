@@ -1,5 +1,6 @@
 """Host adapter tests: no real systemctl, credentials or database writes."""
 import os
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -30,6 +31,41 @@ class ActivationAdapterTests(unittest.TestCase):
             self.assertEqual(ctl.call_args_list,[call("start","--no-block",a.pf.BACKEND),
                 call("start","--no-block",a.pf.SERVER)])
             self.assertEqual(wait.call_count,2)
+            self.assertIs(wait.call_args_list[-1].args[0], a.jellyfin_ready)
+
+    def test_public_socket_alone_never_ready(self):
+        with patch.object(a,"ready",return_value=True),patch.object(a,"jellyfin_startup_complete",return_value=False):
+            self.assertFalse(a.jellyfin_ready())
+
+    def test_current_invocation_completion_required(self):
+        invocation = "a"*32
+        fields={"MainPID":"1234","InvocationID":invocation}
+        record={"_PID":"1234","_SYSTEMD_INVOCATION_ID":invocation,
+                "MESSAGE":"[INF] Main: Startup complete 0:00:07.1"}
+        result=Mock(returncode=0,stdout=json.dumps(record))
+        with patch.object(a.pf,"prop",side_effect=lambda u,k:fields[k]),patch.object(a.subprocess,"run",return_value=result):
+            self.assertTrue(a.jellyfin_startup_complete())
+            record["_SYSTEMD_INVOCATION_ID"]="b"*32
+            result.stdout=json.dumps(record)
+            self.assertFalse(a.jellyfin_startup_complete())
+            record["_SYSTEMD_INVOCATION_ID"]=invocation
+            record["_PID"]="1222"
+            result.stdout=json.dumps(record)
+            self.assertFalse(a.jellyfin_startup_complete())
+            record["_PID"]="1234"
+            record["MESSAGE"]="Application startup complete"
+            result.stdout=json.dumps(record)
+            self.assertFalse(a.jellyfin_startup_complete())
+            result.stdout=""
+            self.assertFalse(a.jellyfin_startup_complete())
+
+    def test_invocation_changes_after_completion_read(self):
+        invocation="a"*32
+        record={"_PID":"1234","_SYSTEMD_INVOCATION_ID":invocation,
+                "MESSAGE":"Startup complete 0:00:07"}
+        with patch.object(a.pf,"prop",side_effect=["1234",invocation,"1235"]), \
+             patch.object(a.subprocess,"run",return_value=Mock(returncode=0,stdout=json.dumps(record))):
+            self.assertFalse(a.jellyfin_startup_complete())
 
     def test_stopped_requires_no_control_or_main_process(self):
         fields={"ActiveState":"inactive","MainPID":"0","ControlPID":"0","ControlGroup":""}

@@ -111,6 +111,8 @@ class CoordinatedTransaction:
         self.state, self.source = state, source
         self.save = state / source
         self.stop, self.reload, self.start, self.health = stop, reload, start, health
+        self.activation_failure = None
+        self.rollback_failure = None
         checked_directory(state)
         if state.stat().st_uid != os.geteuid() or state.stat().st_mode & 0o077:
             raise Blocked("coordinated_state_not_private")
@@ -294,10 +296,12 @@ class CoordinatedTransaction:
                 self.check(records, "new", after_start=True)
                 self.write_journal("committed", records)
                 return "committed"
-            except (Exception, KeyboardInterrupt):
+            except (Exception, KeyboardInterrupt) as exc:
+                self.activation_failure = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
                 try:
                     self.restore_locked()
-                except Exception:
+                except Exception as recovery:
+                    self.rollback_failure = str(recovery) if isinstance(recovery, Blocked) else type(recovery).__name__
                     raise Blocked("coordinated_recovery_requires_review") from None
                 return "rolled_back_after_failure"
 

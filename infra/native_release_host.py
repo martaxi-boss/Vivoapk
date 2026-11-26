@@ -123,7 +123,7 @@ def private_env(key):
     return ("PRIVATE_HLS_ENABLED=true\nPRIVATE_MEDIA_KEY=" + key + "\n").encode("ascii")
 
 
-def check_host():
+def check_host(transaction_state=None):
     first = pf.inspect()
     require(first["baseline_pass"], "host_baseline_not_safe")
     verify_stage()
@@ -147,7 +147,8 @@ def check_host():
             pf.prop(pf.SERVER, "MemoryMax") == "1677721600", "host_resource_policy_changed")
     for name in coord.NEW_ONLY:
         require(not os.path.lexists(TARGETS[name]), "host_new_destination_exists")
-    require(not os.path.lexists(STATE/stage.SOURCE_SHA), "host_existing_transaction")
+    selected_state = STATE if transaction_state is None else transaction_state
+    require(not os.path.lexists(selected_state/stage.SOURCE_SHA), "host_existing_transaction")
     env = (VAULT/"backend-runtime.env").lstat()
     require(stat.S_ISREG(env.st_mode) and env.st_uid == 0 and not env.st_mode & 0o077,
             "host_existing_env_not_private")

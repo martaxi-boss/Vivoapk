@@ -96,7 +96,10 @@ class CoordinatedTests(unittest.TestCase):
 
     def test_failed_postflight_recovers_all(self):
         self.fail_new = True
-        self.assertEqual(self.tx().activate(self.changes), "rolled_back_after_failure")
+        tx = self.tx()
+        self.assertEqual(tx.activate(self.changes), "rolled_back_after_failure")
+        self.assertEqual(tx.activation_failure, "RuntimeError")
+        self.assertIsNone(tx.rollback_failure)
         self.assert_old()
         self.assertTrue(self.active)
 

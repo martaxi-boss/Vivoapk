@@ -119,3 +119,18 @@ rollback uses the saved root-private baseline and journal. A hard process
 kill or machine crash requires explicit recovery, not a promise of automatic
 recovery. The adapter cannot certify actual subscriber media or physical
 client compatibility; these remain separate tests.
+
+## r96 readiness correction and isolated retry
+
+The original activation r96 performed postflight before the upstream server
+completed RunStartupTasksAsync. Historical journal r98 shows that the
+restored original startup-completion marker arrived at 10:39:55.575 UTC,
+after the activation/recovery runner had exited at 10:39:50.479. The
+public-info socket was not a sufficient readiness signal. Require the
+actual Startup complete marker from the current systemd invocation and
+main PID, both before postflight and during recovery. Preserve separate
+activation and recovery error codes. An independently verified closed old
+journal and exact original files are mandatory before the fixed r100 retry.
+The retry keeps the original journal and backups and uses a separate state
+directory, not a new service or a new binary. Never accept stale journal
+markers or weaken the existing postflight checks.
