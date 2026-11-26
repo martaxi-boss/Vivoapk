@@ -1450,6 +1450,34 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
 
             first_reopened = start(first_item, first_owner, first_token)
             assert_retired(a, first_reopened)
+            # Restart just A's live encoder without retiring its backend
+            # lease, with B still consuming its independently tracked job.
+            reset_route = "/Videos/ActiveEncodings?" + urlencode({
+                "DeviceId": _SESSION_TEST_DEVICES[first_token],
+                "PlaySessionId": first_reopened["session"]})
+            previous_identity = first_reopened["identity"]
+            previous_job = first_reopened["job"]
+            status, _ = request("DELETE", reset_route, token=second_token)
+            if status != 404 or previous_identity not in jobs() or b["identity"] not in jobs():
+                raise RuntimeError("Foreign live encoder reset not denied")
+            status, _ = request("DELETE", reset_route, token=first_token)
+            if (status != 204 or previous_identity in jobs() or files_for(previous_job)
+                    or private_backend.count() != 2 or b["identity"] not in jobs()):
+                raise RuntimeError("Live encoder reset did not isolate process/cache/lease")
+            consume(b)
+            before_restart = set(jobs())
+            first_reopened["next"] = None
+            first_reopened["count"] = 0
+            first_reopened["seconds"] = 0
+            consume(first_reopened)
+            current = jobs()
+            fresh = set(current) - before_restart
+            if len(fresh) != 1 or b["identity"] not in current:
+                raise RuntimeError("Live restart failed to create independent encoder")
+            first_reopened["identity"] = next(iter(fresh))
+            first_reopened["job"] = current[first_reopened["identity"]]
+            decode(first_reopened, "encoder-restarted")
+            print("JELLYFIN_PRIVATE_NATIVE_LIVE_ENCODER_RESTART_ISOLATION=PASS", flush=True)
             for _ in range(4):
                 consume(first_reopened)
                 consume(b)
@@ -1849,7 +1877,9 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                 "runtime_seconds": runtime_seconds}
 
     a = negotiate(item_a, owner_a, token_a, token_b)
+    a_cache = set(transcode_cache_files(base)) - baseline.keys()
     b = negotiate(item_b, owner_b, token_b, token_a)
+    b_cache = set(transcode_cache_files(base)) - baseline.keys() - a_cache
     if private_backend.count() != 2 or a["session"] == b["session"]:
         raise RuntimeError("Two private native sessions not independently admitted")
     digests = []
@@ -1914,6 +1944,65 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         raise RuntimeError("Playback reports changed private lease count")
     print("JELLYFIN_PRIVATE_NATIVE_AUXILIARY_REPORT_ISOLATION=PASS", flush=True)
 
+    def legacy_report(state, token, method="POST", *, owner_path=None, progress=False, **overrides):
+        prefix = "/Users/" + owner_path if owner_path is not None else ""
+        path = prefix + "/PlayingItems/" + state["item"] + ("/Progress" if progress else "")
+        args = {"PlaySessionId": state["session"], "MediaSourceId": state["source"],
+                "PositionTicks": 20000000, "PlayMethod": "Transcode"}
+        args.update(overrides)
+        return request(method, path + "?" + urlencode(args, doseq=True), token=token)[0]
+
+    for progress in (False, True):
+        for owner_path in (None, owner_a):
+            if legacy_report(a, token_a, owner_path=owner_path, progress=progress) != 204:
+                raise RuntimeError("Authorized legacy playback report rejected")
+            if legacy_report(a, token_b, owner_path=owner_path, progress=progress) != 404:
+                raise RuntimeError("Foreign legacy playback report accepted")
+            if legacy_report(a, token_a, owner_path=owner_path, progress=progress,
+                             PlaySessionId=b["session"]) != 404:
+                raise RuntimeError("Cross-session legacy playback report accepted")
+            if legacy_report(a, token_a, owner_path=owner_path, progress=progress,
+                             MediaSourceId=b["source"]) != 404:
+                raise RuntimeError("Cross-source legacy playback report accepted")
+    if (legacy_report(a, token_a, owner_path=owner_b) != 404
+            or legacy_report(a, token_a, UserId=owner_b) != 404
+            or legacy_report(a, token_a, PlaySessionId=[a["session"], b["session"]]) != 404
+            or legacy_report(a, token_a, LiveStreamId="alternate") != 404
+            or legacy_report(a, token_b, "DELETE", owner_path=owner_a) != 404):
+        raise RuntimeError("Legacy report accepted contradictory identity")
+
+    def reset_encoder(state, token, **overrides):
+        args = {"DeviceId": _SESSION_TEST_DEVICES[state["token"]],
+                "PlaySessionId": state["session"]}
+        args.update(overrides)
+        return request("DELETE", "/Videos/ActiveEncodings?" + urlencode(args, doseq=True),
+                       token=token)[0]
+
+    for token, overrides in (
+        (token_b, {}),
+        (token_a, {"DeviceId": _SESSION_TEST_DEVICES[token_b]}),
+        (token_a, {"PlaySessionId": b["session"]}),
+        (token_a, {"PlaySessionId": [a["session"], b["session"]]}),
+        (token_a, {"PlaySessionId": ""}),
+    ):
+        if reset_encoder(a, token, **overrides) != 404 or private_backend.count() != 2:
+            raise RuntimeError("Foreign or ambiguous encoder reset accepted")
+    if not a_cache or not b_cache:
+        raise RuntimeError("Encoder restart cache namespaces missing")
+    b_before = require_native_owner(b["segment"], token_b, "before_encoder_restart")
+    if reset_encoder(a, token_a) != 204 or private_backend.count() != 2:
+        raise RuntimeError("Own encoder restart did not preserve both leases")
+    remaining = transcode_cache_files(base)
+    if a_cache.intersection(remaining) or not b_cache.issubset(remaining):
+        raise RuntimeError("Encoder restart did not isolate cache cleanup")
+    if require_native_owner(b["segment"], token_b, "after_encoder_restart") != b_before:
+        raise RuntimeError("Other account's cached playback changed")
+    resumed = require_native_owner(a["segment"], token_a, "after_own_encoder_restart")
+    if len(resumed) < 188 or resumed[0] != 0x47 or private_backend.count() != 2:
+        raise RuntimeError("Owner could not resume on the same authorized lease")
+    print("JELLYFIN_PRIVATE_NATIVE_ENCODER_RESTART_ISOLATION=PASS", flush=True)
+    print("JELLYFIN_PRIVATE_NATIVE_LEGACY_REPORT_ISOLATION=PASS", flush=True)
+
     if stop(a, token_b) != 404 or private_backend.count() != 2:
         raise RuntimeError("Foreign native stop was not isolated")
     mock.statuses["synthetic-mega-user"] = "EXPIRED"
@@ -1941,11 +2030,14 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         raise RuntimeError("Retired auxiliary report affected current playback")
     require_native_owner(reopened["segment"], token_a, "private_finite_reopened_segment")
     require_native_owner(b["segment"], token_b, "private_finite_survivor_after_reopen")
-    if stop(reopened, token_a) not in (200, 204) or private_backend.count() != 1:
-        raise RuntimeError("Reopened finite stop did not retire its own lease")
+    if (reset_encoder(a, token_a) != 404 or legacy_report(a, token_a, "DELETE") != 404
+            or legacy_report(a, token_a, progress=True) != 404):
+        raise RuntimeError("Retired alternate route reached a current session")
+    if legacy_report(reopened, token_a, "DELETE") != 204 or private_backend.count() != 1:
+        raise RuntimeError("Legacy stop did not retire reopened lease")
     print("JELLYFIN_PRIVATE_NATIVE_FINITE_REOPEN_AND_SESSION_DENIAL=PASS", flush=True)
-    if stop(b, token_b) not in (200, 204) or private_backend.count() != 0:
-        raise RuntimeError("Second private native stop did not close backend")
+    if legacy_report(b, token_b, "DELETE", owner_path=owner_b) != 204 or private_backend.count() != 0:
+        raise RuntimeError("Scoped legacy stop did not close backend")
     deadline = time.monotonic() + 20
     while transcode_cache_files(base).keys() - baseline.keys() and time.monotonic() < deadline:
         time.sleep(.4)
@@ -2040,15 +2132,14 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                                  other["token"], "private_seek_surviving_account")
             if private_backend.count() != 2:
                 raise RuntimeError("Native seek changed private lease count")
-        # These alternate routes are intentionally not certified in the lab.
-        # Prove the existing fail-closed policy without pretending that
-        # physical clients can already use the alternate stop/seek API.
+        # Even after successful seeking, another account cannot reset
+        # the native encoder. The earlier gate checks authorized restart.
         for state, other in ((sa, sb), (sb, sa)):
             code, _ = request("DELETE", "/Videos/ActiveEncodings?" + urlencode({
                 "DeviceId": _SESSION_TEST_DEVICES[state["token"]],
                 "PlaySessionId": state["session"]}), token=other["token"])
             if code != 404 or private_backend.count() != 2:
-                raise RuntimeError("Uncertified active encoding route was not denied")
+                raise RuntimeError("Foreign active encoding route was not denied")
         if stop(sa, token_a) not in (200, 204) or private_backend.count() != 1:
             raise RuntimeError("Seek movie did not retire its lease")
         require_native_owner(sb["segments"][sb["late_index"]], token_b,

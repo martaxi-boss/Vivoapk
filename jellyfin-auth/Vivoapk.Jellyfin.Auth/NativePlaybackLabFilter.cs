@@ -268,12 +268,27 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                             await PrivateFixtureReportAsync(http, downstream, stopped).ConfigureAwait(false);
                         return;
                     }
-                    // Alternate legacy controllers are not certified for
-                    // private playback; keep them fail-closed in this lab.
-                    if (parts.Any(p => p.Equals("PlayingItems", StringComparison.OrdinalIgnoreCase))
-                        || route.Equals("/Videos/ActiveEncodings", StringComparison.OrdinalIgnoreCase))
+                    if (route.Equals("/Videos/ActiveEncodings", StringComparison.OrdinalIgnoreCase))
                     {
-                        Reject(http, log);
+                        var ids = http.Request.Query["PlaySessionId"];
+                        var devices = http.Request.Query["DeviceId"];
+                        var item = ids.Count == 1 ? _privateLive.ItemForSession(ids[0]!) : Guid.Empty;
+                        if (!HttpMethods.IsDelete(http.Request.Method) || item == Guid.Empty
+                            || devices.Count != 1 || string.IsNullOrEmpty(devices[0])
+                            || http.Request.Query.Any(p => p.Value.Count != 1))
+                        {
+                            Reject(http, log);
+                            return;
+                        }
+                        var encodingOwner = await NativePlaybackAuthorization.AuthorizeAsync(
+                            http, item, NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+                        await _privateLive.RestartEncodingAsync(http, encodingOwner, item,
+                            ids[0]!, devices[0]!).ConfigureAwait(false);
+                        return;
+                    }
+                    if (parts.Any(p => p.Equals("PlayingItems", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        await LegacyFixtureReportAsync(http, downstream, parts, log).ConfigureAwait(false);
                         return;
                     }
                 }
@@ -418,6 +433,50 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 finally { _privateLive.EndNegotiation(owner); }
             }
         }
+    }
+
+    // Only the exact pinned PlaystateController legacy paths, with a single
+    // explicit session and consistent route/query owner and media identity.
+    private async Task LegacyFixtureReportAsync(HttpContext http, RequestDelegate downstream,
+        string[] parts, ILogger logger)
+    {
+        bool scoped = parts.Length >= 4 && parts[0].Equals("Users", StringComparison.OrdinalIgnoreCase);
+        int offset = scoped ? 2 : 0;
+        bool progress = parts.Length == offset + 3
+            && parts[^1].Equals("Progress", StringComparison.OrdinalIgnoreCase);
+        bool stopped = HttpMethods.IsDelete(http.Request.Method);
+        var query = http.Request.Query;
+        var ids = query["PlaySessionId"];
+        var sources = query["MediaSourceId"];
+        if ((!progress && parts.Length != offset + 2)
+            || (stopped ? progress : !HttpMethods.IsPost(http.Request.Method))
+            || !parts[offset].Equals("PlayingItems", StringComparison.OrdinalIgnoreCase)
+            || !Guid.TryParse(parts[offset + 1], out var item) || item == Guid.Empty
+            || ids.Count != 1 || !Guid.TryParse(ids[0], out _)
+            || query.Any(p => p.Value.Count != 1)
+            || (sources.Count == 1 && !string.IsNullOrEmpty(sources[0])
+                && (!Guid.TryParse(sources[0], out var sourceItem) || sourceItem != item))
+            || query["LiveStreamId"].Any(v => !string.IsNullOrEmpty(v))
+            || query["Params"].Any(v => !string.IsNullOrEmpty(v)))
+        {
+            Reject(http, logger);
+            return;
+        }
+        var owner = await NativePlaybackAuthorization.AuthorizeAsync(http, item,
+            NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+        var userIds = query["UserId"];
+        var devices = query["DeviceId"];
+        if (owner == Guid.Empty || (scoped && (!Guid.TryParse(parts[1], out var routeOwner) || routeOwner != owner))
+            || (userIds.Count == 1 && (!Guid.TryParse(userIds[0], out var queryOwner) || queryOwner != owner))
+            || (devices.Count == 1 && devices[0] != http.User.FindFirst("Jellyfin-DeviceId")?.Value))
+        {
+            Reject(http, logger);
+            return;
+        }
+        if (stopped)
+            await _privateLive.StopAsync(http, downstream, owner, item, ids[0]!).ConfigureAwait(false);
+        else
+            await _privateLive.ReportAsync(http, downstream, owner, item, ids[0]!).ConfigureAwait(false);
     }
 
     private async Task PrivateFixtureReportAsync(HttpContext http, RequestDelegate downstream, bool stopped)

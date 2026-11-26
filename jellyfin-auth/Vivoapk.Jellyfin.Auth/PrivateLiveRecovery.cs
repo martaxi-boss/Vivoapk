@@ -347,6 +347,78 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         }
     }
 
+    // ActiveEncodings is used to restart an encoder without ending playback.
+    // Do not forward to the native fire-and-forget wildcard action. Wait for
+    // the exact bound job/cache to be removed while holding admission closed,
+    // but retain the private media capability and its inactivity watchdog.
+    internal async Task RestartEncodingAsync(HttpContext http, Guid owner, Guid item,
+        string session, string requestedDevice)
+    {
+        var device = http.User.FindFirst("Jellyfin-DeviceId")?.Value;
+        if (owner == Guid.Empty || string.IsNullOrEmpty(device)
+            || !string.Equals(requestedDevice, device, StringComparison.Ordinal)
+            || !_states.TryGetValue(session, out var state)
+            || state.Owner != owner || state.Item != item || state.Device != device)
+        {
+            Deny(http);
+            return;
+        }
+        var services = http.RequestServices;
+        var manager = services.GetRequiredService<ITranscodeManager>();
+        var lab = services.GetRequiredService<PrivateNativeHls>();
+        var job = manager.GetTranscodingJob(session);
+        if (job is not null && (job.Type != TranscodingJobType.Hls
+            || string.IsNullOrEmpty(job.Path) || job.MediaSource?.Path != state.SourcePath
+            || !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted)
+                .ConfigureAwait(false)))
+        {
+            Deny(http);
+            return;
+        }
+        lock (state.Gate)
+        {
+            if (state.Recovering || state.InFlight != 0
+                || !_states.TryGetValue(session, out var active) || !ReferenceEquals(active, state)
+                || !ReferenceEquals(manager.GetTranscodingJob(session), job)
+                || (job is not null && (job.ActiveRequestCount > 0
+                    || (state.Job is not null && !ReferenceEquals(state.Job, job)
+                        && (!state.Finite || state.Job.Path != job.Path)))))
+            {
+                Deny(http);
+                return;
+            }
+            state.Recovering = true;
+        }
+        try
+        {
+            if (job is not null)
+            {
+                var path = job.Path!;
+                await manager.KillTranscodingJobs(device, session,
+                    candidate => string.Equals(candidate, path, StringComparison.Ordinal))
+                    .ConfigureAwait(false);
+            }
+            if (manager.GetTranscodingJob(session) is not null)
+            {
+                Deny(http);
+                return;
+            }
+            lock (state.Gate)
+                state.Job = null;
+            http.Response.Headers.CacheControl = "no-store";
+            if (diagnosticHeader is not null)
+                http.Response.Headers[diagnosticHeader] = "allowed";
+            http.Response.StatusCode = StatusCodes.Status204NoContent;
+            services.GetRequiredService<ILogger<PrivateLiveRecovery>>()
+                .LogInformation("VIVOAPK_PRIVATE_NATIVE_ENCODER_RESTART_READY=PASS");
+        }
+        finally
+        {
+            lock (state.Gate)
+                state.Recovering = false;
+        }
+    }
+
     // Explicit stop must retire the same observed native job and lease.
     // Hold the state closed to media requests while native Stop is in flight.
     // A stale stop must never close the next playback for the same owner.
@@ -375,6 +447,7 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
         lock (state.Gate)
         {
             if (state.Recovering || state.InFlight != 0
+                || !_states.TryGetValue(session, out var active) || !ReferenceEquals(active, state)
                 || !ReferenceEquals(manager.GetTranscodingJob(session), job)
                 || (job is not null && state.Job is not null && !ReferenceEquals(state.Job, job)
                     && (!state.Finite || state.Job.Path != job.Path)))
