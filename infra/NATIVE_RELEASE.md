@@ -104,3 +104,18 @@ file changes restore with simulated service controls. It additionally checks
 access under the actual service user/group and confirms www-data cannot read
 a synthetic key with the planned permissions. Real service activation still
 requires a reviewed host service adapter and postflight/rollback approval.
+
+## Fixed production activation adapter
+
+The independently reviewed source and archive are pinned to the r95
+rehearsal. The adapter uses only the nine known destinations, confirms both
+systemd services stopped before replacements and starts the backend before
+Jellyfin. It checks actual assembly mappings, backend working directory,
+FFmpeg display path, protected service PIDs, admin fingerprint, private
+network and bounded unauthenticated endpoint denials. Private keys are
+locally generated and never appear in command arguments or reports. A
+failed health check triggers the existing coordinated rollback; an explicit
+rollback uses the saved root-private baseline and journal. A hard process
+kill or machine crash requires explicit recovery, not a promise of automatic
+recovery. The adapter cannot certify actual subscriber media or physical
+client compatibility; these remain separate tests.
