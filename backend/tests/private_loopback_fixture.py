@@ -5,6 +5,7 @@ local pipe; no real provider request, credentials,
 public listener, VPS operation, or Jellyfin installation. The test compiles
 the same adapter source as the plugin but does not register it in Jellyfin.
 """
+import http.server
 import json
 from collections import Counter
 import os
@@ -152,6 +153,73 @@ def generate_file(ffmpeg, path, suffix, frequency, *, timeline_marker=False):
     return path.read_bytes()
 
 
+def verify_native_ts_probe(ffmpeg, assembly, base):
+    """Local generated raw MPEG-TS, no provider or backend media request."""
+    ffprobe = shutil.which("ffprobe")
+    assert ffprobe is not None
+    raw = subprocess.run([
+        ffmpeg, "-hide_banner", "-nostdin", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=25",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-t", "12", "-c:v", "mpeg2video", "-threads:v", "1",
+        "-b:v", "380k", "-g", "25", "-c:a", "mp2", "-b:a", "128k",
+        "-muxrate", "600k", "-f", "mpegts", "pipe:1",
+    ], check=True, capture_output=True, timeout=30).stdout
+    assert 188 * 3 <= len(raw) <= 2 * 1024 * 1024 and len(raw) % 188 == 0
+    route = "/vivoapk/" + secrets.token_hex(24) + "/stream.ts"
+    stopped = threading.Event()
+    observations = Counter()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            observations["requests"] += 1
+            if self.path != route:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            # No Content-Length; keep the test transport open until the probe
+            # has enough metadata or the harness tears down the fixture.
+            self.connection.settimeout(5)
+            try:
+                while not stopped.is_set():
+                    for offset in range(0, len(raw), 188 * 64):
+                        if stopped.is_set():
+                            return
+                        self.wfile.write(raw[offset:offset + 188 * 64])
+                        time.sleep(.005)
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        config = base / "native-ts-probe.json"
+        config.write_text(json.dumps({
+            "ffprobe": ffprobe,
+            "ts_probe_uri": f"http://127.0.0.1:{server.server_port}{route}",
+        }))
+        result = subprocess.run(["dotnet", str(assembly), str(config), "ts-probe"],
+                                capture_output=True, text=True, timeout=35)
+        for line in (result.stdout + "\n" + result.stderr).splitlines():
+            if line.startswith("VIVOAPK_PRIVATE_LOOPBACK_"):
+                print(line, flush=True)
+        assert result.returncode == 0, "Native MPEG-TS metadata probe failed"
+        assert observations["requests"] == 1, "Unadmitted path was requested"
+    finally:
+        stopped.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "Synthetic TS fixture did not stop"
+
+
 def main():
     ffmpeg = shutil.which("ffmpeg")
     assert ffmpeg is not None
@@ -165,6 +233,7 @@ def main():
     assert db_url.database == "vivoapk_loopback_ci" and db_url.username == "vivoapk_fixture"
     with tempfile.TemporaryDirectory(prefix="vivoapk-loopback-") as temp:
         base = pathlib.Path(temp)
+        verify_native_ts_probe(ffmpeg, assembly, base)
         routes, accounts, tokens = {}, {}, {}
         upstream = ConcurrentOrigin(routes)
         settings = Settings(

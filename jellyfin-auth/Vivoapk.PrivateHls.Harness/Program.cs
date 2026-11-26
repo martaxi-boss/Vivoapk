@@ -11,6 +11,33 @@ try
     string Get(string name) => root.GetProperty(name).GetString()!;
     using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(75));
     var ct = limit.Token;
+    if (args.Length == 2 && args[1] == "ts-probe")
+    {
+        checkpoint = "explicit continuous MPEG-TS metadata";
+        var uri = new Uri(Get("ts_probe_uri"));
+        var metadata = await PrivateMediaProbe.ReadContinuousTsAsync(Get("ffprobe"), uri, ct);
+        if (metadata.Container != "mpegts" || metadata.DurationTicks is not null
+            || metadata.Streams.Count != 2
+            || !metadata.Streams.Any(s => s.Video && s.Codec == "mpeg2video"
+                && s.Width == 160 && s.Height == 90)
+            || !metadata.Streams.Any(s => !s.Video && s.Codec == "mp2"
+                && s.SampleRate == 48000))
+            throw new InvalidOperationException("Unexpected typed TS metadata");
+        foreach (var invalid in new[] {
+            new Uri(uri, "index.m3u8"), new Uri(uri, "stream.ts?unexpected=1"),
+            new UriBuilder(uri) { Host = "192.0.2.1" }.Uri,
+        })
+        {
+            try
+            {
+                await PrivateMediaProbe.ReadContinuousTsAsync(Get("ffprobe"), invalid, ct);
+                throw new Exception("Unadmitted TS path accepted");
+            }
+            catch (InvalidOperationException) { }
+        }
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_NATIVE_TS_PROBE=PASS");
+        return 0;
+    }
     using var backend = new PrivateHlsSocketClient(Get("socket"), Get("key"));
     checkpoint = "loopback binding";
     await using var bridge = await PrivateHlsLoopback.StartAsync(backend, ct);
