@@ -224,3 +224,50 @@ def test_window_bound_and_conflicting_sequence():
     body[0] = media().replace(b"s10.ts", b"other.ts")
     with pytest.raises(MediaReadError):
         player.refresh()
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_origin_denial_has_fixed_diagnostic_and_revokes_session(status, caplog):
+    denied = response(b"private-provider-text", status=status)
+    upstream = Origin({ROOT: lambda: denied})
+    reader = session(upstream, [EntitlementState.ACTIVE])
+    with pytest.raises(MediaReadError):
+        reader.refresh()
+    assert denied.reads == 0 and denied.closed and upstream.pools[0].closed
+    assert caplog.messages == [f"private_hls_origin_denied stage=manifest status={status}"]
+    with pytest.raises(MediaReadError):
+        reader.refresh()
+    assert upstream.calls == [ROOT]
+    reader.close()
+
+
+def test_origin_denial_on_segment_revokes_only_affected_session(caplog):
+    denied = response(b"private-provider-text", status=401)
+    uri = ORIGIN + "/muxed/s10.ts?private=fixture-secret"
+    upstream = Origin({ROOT: lambda: response(media()), uri: lambda: denied})
+    state = [EntitlementState.ACTIVE]
+    a, b = session(upstream, state), session(upstream, state)
+    first = handles(a.refresh())[0]
+    b.refresh()
+    with pytest.raises(MediaReadError):
+        a.read_segment(first)
+    assert caplog.messages == ["private_hls_origin_denied stage=segment status=401"]
+    assert denied.reads == 0 and denied.closed
+    before = len(upstream.calls)
+    with pytest.raises(MediaReadError):
+        a.refresh()
+    assert len(upstream.calls) == before
+    assert b.refresh().startswith("#EXTM3U")
+    a.close()
+    b.close()
+
+
+def test_successful_ts_response_is_distinct_from_origin_denial(caplog):
+    wrong_container = response(TS, b"video/mp2t")
+    upstream = Origin({ROOT: lambda: wrong_container})
+    reader = session(upstream, [EntitlementState.ACTIVE])
+    with pytest.raises(MediaReadError):
+        reader.refresh()
+    assert caplog.messages == ["private_hls_input_format_mismatch expected=hls received=mpegts"]
+    assert wrong_container.reads == 0 and wrong_container.closed
+    assert upstream.calls == [ROOT]
+    reader.close()

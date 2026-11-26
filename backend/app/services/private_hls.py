@@ -7,6 +7,7 @@ contains session-local random handles instead of any upstream URL.
 """
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import time
@@ -31,6 +32,7 @@ from app.url_safety import (
     system_resolver,
 )
 
+_LOG = logging.getLogger(__name__)
 _MANIFEST_CAP = 128 * 1024
 _SEGMENT_CAP = 8 * 1024 * 1024
 _MAX_WINDOW = 48
@@ -319,10 +321,25 @@ class PrivateHlsSession:
                 ) as response:
                     # No redirect, upstream URL or arbitrary HTTP headers are
                     # forwarded, including Set-Cookie, Location and auth headers.
+                    stage = "manifest" if manifest else "segment"
+                    if response.status in (401, 403):
+                        # Authorization denial is not a container/codec error.
+                        # Never read or log the upstream body, URI, or headers.
+                        # Revoke this session; do not try another source/format.
+                        _LOG.warning("private_hls_origin_denied stage=%s status=%d",
+                                     stage, response.status)
+                        self._deny()
                     if response.status != 200:
+                        _LOG.warning("private_hls_origin_unavailable stage=%s", stage)
                         raise _reject()
                     mime = _header(response.headers, b"content-type")
                     encoding = _header(response.headers, b"content-encoding")
+                    if manifest and mime is not None and mime.lower() == "video/mp2t":
+                        # The origin returned a TS container, not an HLS manifest.
+                        # Distinguish this from authorization failure, but do not
+                        # reinterpret or automatically switch the media contract.
+                        _LOG.warning("private_hls_input_format_mismatch expected=hls received=mpegts")
+                        raise _reject()
                     if (mime is None or mime.lower() not in types
                             or (encoding is not None and encoding.lower() != "identity")
                             or _header(response.headers, b"content-range") is not None):
