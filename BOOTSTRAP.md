@@ -1,5 +1,15 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Investigação atual de reprodução — 26/11/2026, 17:27 UTC
+
+[Ferrari/REA/Ruflo r112](https://github.com/martaxi-boss/VPS/actions/runs/45867836029), pedido `0da06c74d37eec3f2930f3dddd06a171abd44d97`, artefacto 15141750499: CRC exterior/interior OK, report.status=completed, evidência SHA-256 `7051af7f1a023725e018ee8fb099e52e671a0080a822c11c6428fe89e12b0214`. Leitura da linha de teste existente pela API oficial e autenticação Xtream: ambas famílias ativas, HTTP 200, allowed_output_formats presente com TS e HLS, 0/2 ligações ocupadas; identidade/validade e mapping iguais ao fornecedor. Nenhum pedido de media, alteração de subscrição ou segredo emitido; quatro serviços/PIDs inalterados. A ocupação atual não prova a ocupação no r108, e formatos anunciados não garantem acesso à media.
+
+Artefacto r108 reaberto: primeira resposta upstream HLS HTTP 401, nas duas famílias, antes de manifesto/segmentos/FFprobe/FFmpeg. Recusa localizada na resposta da origem; razão interna continua desconhecida. Não atribuir a falta de HLS anunciado, codec ou demuxer; não tentar outro formato/rota/UA/túnel após a recusa. A prova histórica PINK usou Media3 via WireGuard e o teste Extreme percorreu m3u8/ts sem identificar no marcador qual venceu; não afirmar que essa prova certifica exclusivamente TS nem confundir com o XtreamPlaybackUrlFactory de outro caminho PINK.
+
+Candidato de código `e4746d1b` continua validado só com fixtures; CI #45847563775 success/COMBINED_LAB_GATE_EXIT=0 verificada sem repetição. ReadContinuousTsAsync existe, mas o percurso real continua HLS: catálogo → hls/open → loopback /index.m3u8. Falta transporte privado contínuo admitido, consumo/reabertura probe→FFmpeg e validação real de TS, condicionado à interface de media autorizada. Produção permanece `0994990c`, sem deploy/restart. Zero clientes físicos certificados. [Relatório detalhado no ramo candidato](https://github.com/martaxi-boss/Vivoapk/blob/vivoapk/authorized-http-media-20261126/docs/PLAYBACK_PATH_AUDIT_20261126.md).
+
+Bloqueio para aceitação real: confirmar pelo canal oficial do fornecedor a permissão e interface de media para a linha/arquitetura Jellyfin na VPS e a razão do 401. Nenhuma mensagem enviada ao fornecedor. Não pedir credenciais novamente nem reconstruir login/DNS/catálogo. A missão de diagnóstico não equivale à conclusão do projeto.
+
 **Regra vinculativa ATUAL — 25/11/2026: o proprietário confirma expressamente a autorização de passagem e processamento de áudio e vídeo em tempo real pela VPS, para reprodução nas aplicações oficiais Jellyfin.** Esta decisão prevalece sobre todas as regras anteriores de transmissão exclusivamente direta. Os ensaios históricos abaixo não definem a arquitetura atual.
 Este documento é a fonte de verdade do funcionamento pretendido para clientes. Ler antes de qualquer alteração ao VivoAPK, ao plugin Jellyfin, aos DNS ou à VPS. O histórico de experiências com Pink IPTV e Vivo Player não altera este contrato.
 
