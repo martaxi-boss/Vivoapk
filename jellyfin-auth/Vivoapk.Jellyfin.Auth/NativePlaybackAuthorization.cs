@@ -177,6 +177,8 @@ internal static class NativePlaybackAuthorization
         var user = users.GetUserById(owner);
         var item = user is null ? null : library.GetItemById<BaseItem>(itemId, user);
         if (user is null || item is null || !accountAllowed(user.Username)
+            || (NativePrivatePlaybackMode.Required && !string.Equals(user.AuthenticationProviderId,
+                typeof(MegaAuthenticationProvider).FullName, StringComparison.Ordinal))
             || item.IsFolder || item.GetPlayAccess(user) != PlayAccess.Full || !item.IsVisible(user))
             return Guid.Empty;
         var channel = services.GetServices<IChannel>().OfType<VivoapkLivePreviewChannel>()

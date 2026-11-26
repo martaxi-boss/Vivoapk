@@ -97,8 +97,8 @@ using (var handler = new SyntheticHandler("{\"code\":\"SUCCESS\"}", HttpStatusCo
 Console.WriteLine($"VivoAPK Jellyfin auth and monitor synthetic checks: {passed}/{passed} PASS");
 
 // Read the actual ordinary plugin DLL, not a source-linked harness or a
-// reflection load of all Jellyfin-dependent types. The three shared classes
-// must exist, while the lab registration and fixture-only transport do not.
+// reflection load of all Jellyfin-dependent types. The shared guard and
+// regular opt-in must exist; the fixture-only transport must not.
 var assembly = typeof(MegaResolverClient).Assembly;
 using (var dll = File.OpenRead(assembly.Location))
 using (var pe = new PEReader(dll))
@@ -108,7 +108,7 @@ using (var pe = new PEReader(dll))
         reader.GetString(reader.GetTypeDefinition(h).Name)).ToHashSet(StringComparer.Ordinal);
     if (!names.Contains("PrivateNativeHls") || !names.Contains("PrivateLiveRecovery")
         || !names.Contains("PrivatePlaybackResponse") || names.Contains("PrivateHlsNativeLab")
-        || names.Contains("NativePlaybackLabFilter"))
+        || !names.Contains("NativePlaybackFilter") || !names.Contains("NativePrivatePlaybackMode"))
         throw new InvalidOperationException("Ordinary plugin shared/fixture type boundary failed.");
 }
 Console.WriteLine("VIVOAPK_REGULAR_DLL_SHARED_NATIVE_CORE=PASS");

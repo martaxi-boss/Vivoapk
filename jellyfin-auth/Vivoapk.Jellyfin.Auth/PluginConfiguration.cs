@@ -23,6 +23,10 @@ public sealed class PluginConfiguration : BasePluginConfiguration
     // Opt-in only. Categories appear as native Jellyfin folders; no global IPTV list.
     public bool CategoryNavigation { get; set; } = false;
 
+    // Requires a separate, trusted host opt-in. Default releases do not
+    // activate private server playback just by registering the guard.
+    public bool NativePrivatePlayback { get; set; } = false;
+
     // Disposable test build only; normal releases ignore this field.
     public bool NativeServerPlaybackLab { get; set; } = false;
 

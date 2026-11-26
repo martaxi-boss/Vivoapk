@@ -24,6 +24,9 @@ INFINITE_LIVE = os.environ.get("VIVOAPK_CI_INFINITE_LIVE") == "1"
 PRIVATE_HLS = os.environ.get("VIVOAPK_CI_PRIVATE_HLS") == "1"
 PRIVATE_LIVE = os.environ.get("VIVOAPK_CI_PRIVATE_LIVE") == "1"
 PRIVATE_FILE = os.environ.get("VIVOAPK_CI_PRIVATE_FILE") == "1"
+REGULAR_PRIVATE = os.environ.get("VIVOAPK_CI_REGULAR_PRIVATE") == "1"
+if REGULAR_PRIVATE and not PRIVATE_HLS:
+    raise RuntimeError("Regular private proof requires private backend fixture")
 if PRIVATE_FILE and (not PRIVATE_HLS or PRIVATE_LIVE):
     raise RuntimeError("Private file requires a separate private backend gate")
 if PRIVATE_LIVE and not PRIVATE_HLS:
@@ -365,7 +368,7 @@ def native_bytes(uri, token=None, *, auth_headers=None):
     conn.request("GET", uri, headers=headers)
     response = conn.getresponse()
     result = (response.status, response.read(8 * 1024 * 1024),
-              response.getheader("X-Vivoapk-Lab-Guard"))
+              response.getheader("X-Vivoapk-Playback-Guard"))
     conn.close()
     return result
 
@@ -1907,10 +1910,52 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             time.sleep(.1)
         raise RuntimeError("Finite HLS playlist namespace not observed")
 
+    def verify_metadata(item, owner, token):
+        # Read actual owner metadata with maximal relevant requested fields,
+        # including deprecated API aliases, before and during playback.
+        paths = [
+            "/Items/" + item + "?" + urlencode({"UserId": owner, "Fields": "Path,MediaSources,MediaStreams"}),
+            "/Users/" + owner + "/Items/" + item + "?Fields=Path,MediaSources,MediaStreams",
+            "/Items?" + urlencode({"UserId": owner, "Ids": item, "Fields": "Path,MediaSources,MediaStreams"}),
+            "/Sessions",
+        ]
+        before = private_backend.count()
+        successful = 0
+        for uri in paths:
+            status, body, _ = native_bytes(uri, token)
+            if status not in (200, 401, 403, 404):
+                raise RuntimeError("Metadata audit returned unexpected status: " + str(status))
+            successful += status == 200
+            if any(value in body.lower() for value in (
+                    b"/vivoapk/", b"%2fvivoapk%2f", b"private-hls-", b"private-media.key",
+                    b"/srv/projects/vivoapk/run/", b"fixture-private-password", b"synthetic-mega-password")):
+                raise RuntimeError("Regular metadata exposed private source material")
+        if not successful or private_backend.count() != before:
+            raise RuntimeError("Metadata audit lacked an actual response or opened a media lease")
+        print("JELLYFIN_REGULAR_NATIVE_METADATA_NO_LEAK=PASS", flush=True)
+
+    if REGULAR_PRIVATE:
+        verify_metadata(item_a, owner_a, token_a)
+        verify_metadata(item_b, owner_b, token_b)
+        for query, data in (
+            ({"UserId": owner_b}, {}),
+            ({"UserId": owner_a}, {"UserId": owner_b}),
+            ({"UserId": owner_a}, {"MediaSourceId": item_b}),
+            ({"UserId": owner_a}, {"LiveStreamId": "alternate"}),
+        ):
+            status, _ = request("POST", "/Items/" + item_a + "/PlaybackInfo?" + urlencode(query),
+                                data, token=token_a)
+            if status != 404 or private_backend.count() != 0:
+                raise RuntimeError("Regular negotiation accepted inconsistent selector")
+        print("JELLYFIN_REGULAR_NATIVE_NEGOTIATION_SELECTORS=PASS", flush=True)
+
     a = negotiate(item_a, owner_a, token_a, token_b)
     a_playlist = discover_playlist(set())
     b = negotiate(item_b, owner_b, token_b, token_a)
     b_playlist = discover_playlist({a_playlist})
+    if REGULAR_PRIVATE:
+        verify_metadata(item_a, owner_a, token_a)
+        verify_metadata(item_b, owner_b, token_b)
     if a_playlist == b_playlist or private_backend.count() != 2 or a["session"] == b["session"]:
         raise RuntimeError("Two private native sessions not independently admitted")
     digests = []
@@ -2416,6 +2461,13 @@ def main():
         "JELLYFIN_Kestrel__SocketPath": str(DATAROOT / "run/jellyfin.sock"),
         "JELLYFIN_Kestrel__SocketPermissions": "0660"
     })
+    if REGULAR_PRIVATE:
+        env.update({
+            "VIVOAPK_NATIVE_PRIVATE_PLAYBACK": "1",
+            "VIVOAPK_PRIVATE_MEDIA_SOCKET": "/srv/projects/Vivoapk/run/private-hls-fixture.sock",
+            "VIVOAPK_PRIVATE_MEDIA_KEY_FILE": "/srv/projects/Vivoapk/run/private-hls-fixture.key",
+            "VIVOAPK_PRIVATE_FFPROBE": shutil.which("ffprobe"),
+        })
     log = (base / "logs/jellyfin-launch.log").open("w")
     cmd = [
         os.environ["JELLYFIN_TEST_BINARY"], "--datadir", str(DATAROOT),
@@ -2497,7 +2549,8 @@ def main():
                           {"Enabled": True, "ProvisionPrivateLibraries": True, "MonitorEntitlements": True,
                            "PilotLiveChannels": True, "FullLiveCatalog": not CATEGORY_MODE,
                            "CategoryNavigation": CATEGORY_MODE,
-                           "NativeServerPlaybackLab": SERVER_PLAYBACK}, token=token)
+                           "NativeServerPlaybackLab": SERVER_PLAYBACK and not REGULAR_PRIVATE,
+                           "NativePrivatePlayback": REGULAR_PRIVATE}, token=token)
         if code not in (200, 204):
             raise RuntimeError("VivoAPK plugin test configuration rejected")
         code, customer = request("POST", "/Users/AuthenticateByName", {
@@ -2505,6 +2558,8 @@ def main():
         if code != 200 or not isinstance(customer, dict) or not customer.get("AccessToken"):
             raise RuntimeError("Synthetic Mega OTT auth / automatic identity creation failed")
         print("JELLYFIN_SYNTHETIC_MEGA_LOGIN=PASS")
+        if REGULAR_PRIVATE:
+            print("JELLYFIN_REGULAR_NATIVE_PRIVATE_OPT_IN=PASS", flush=True)
         code, _ = request("POST", "/Users/AuthenticateByName", {
             "Username": "synthetic-mega-user", "Pw": "wrong"})
         if code == 200:

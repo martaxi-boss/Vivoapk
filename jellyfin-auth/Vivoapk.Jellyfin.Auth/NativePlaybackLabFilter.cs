@@ -1,4 +1,3 @@
-#if VIVOAPK_NATIVE_PLAYBACK_LAB
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
@@ -24,18 +23,18 @@ using System.Text.RegularExpressions;
 namespace Jellyfin.Plugin.VivoapkMegaAuth;
 
 /// <summary>
-/// Disposable synthetic fixture only. Enforce authorization before the media
-/// endpoint pipeline, rather than assuming every HLS response runs an MVC
-/// action filter. Not compiled into the normal plugin.
+/// Native private playback guard, inactive in the ordinary default mode.
+/// The old non-private fixture observer is used only by the separate lab.
+/// No real provider media is enabled without an explicit trusted host opt-in.
 /// </summary>
-public sealed class NativePlaybackLabFilter : IStartupFilter
+public sealed class NativePlaybackFilter : IStartupFilter
 {
     // The experiment is compiled only into the disposable fixture plugin.
     // No filesystem sweep, global cache deletion, external process or service.
     private const long FixtureIdleMilliseconds = 80000;
     private readonly ConcurrentDictionary<string, FixtureRecovery> _recoveries = new(StringComparer.OrdinalIgnoreCase);
 
-    private readonly PrivateLiveRecovery _privateLive = new("X-Vivoapk-Lab-Guard");
+    private readonly PrivateLiveRecovery _privateLive = new("X-Vivoapk-Playback-Guard");
 
     private sealed class FixtureRecovery(TranscodingJob job)
     {
@@ -225,7 +224,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         {
             app.Use(async (HttpContext http, RequestDelegate downstream) =>
             {
-                if (!NativePlaybackLab.Enabled)
+                if (!NativePlaybackLab.Enabled && !NativePrivatePlaybackMode.Required)
                 {
                     await downstream(http).ConfigureAwait(false);
                     return;
@@ -239,10 +238,20 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 var info = parts.Length >= 3 &&
                     parts[0].Equals("Items", StringComparison.OrdinalIgnoreCase) &&
                     parts[2].Equals("PlaybackInfo", StringComparison.OrdinalIgnoreCase);
-                if (PrivateHlsNativeLab.Enabled)
+                if (NativePrivatePlaybackMode.Required &&
+                    ((parts.Length > 0 && parts[0].Equals("LiveStreams", StringComparison.OrdinalIgnoreCase))
+                    || (parts.Length >= 3 && parts[0].Equals("Items", StringComparison.OrdinalIgnoreCase)
+                        && (parts[2].Equals("Download", StringComparison.OrdinalIgnoreCase)
+                            || parts[2].Equals("File", StringComparison.OrdinalIgnoreCase)))
+                    || (info && parts.Length != 3)))
+                {
+                    Reject(http, http.RequestServices.GetRequiredService<ILogger<NativePlaybackFilter>>());
+                    return;
+                }
+                if (NativePrivatePlaybackMode.PrivateRoutes)
                 {
                     var route = "/" + string.Join("/", parts);
-                    var log = http.RequestServices.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
+                    var log = http.RequestServices.GetRequiredService<ILogger<NativePlaybackFilter>>();
                     if (route.Equals("/Sessions/Playing/Ping", StringComparison.OrdinalIgnoreCase))
                     {
                         var ids = http.Request.Query["PlaySessionId"];
@@ -253,7 +262,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                             return;
                         }
                         var pingOwner = await NativePlaybackAuthorization.AuthorizeAsync(
-                            http, item, NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+                            http, item, NativePrivatePlaybackMode.IsAccountAllowed).ConfigureAwait(false);
                         await _privateLive.ReportAsync(http, downstream, pingOwner, item, ids[0]!)
                             .ConfigureAwait(false);
                         return;
@@ -281,7 +290,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                             return;
                         }
                         var encodingOwner = await NativePlaybackAuthorization.AuthorizeAsync(
-                            http, item, NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+                            http, item, NativePrivatePlaybackMode.IsAccountAllowed).ConfigureAwait(false);
                         await _privateLive.RestartEncodingAsync(http, encodingOwner, item,
                             ids[0]!, devices[0]!).ConfigureAwait(false);
                         return;
@@ -301,14 +310,14 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 // Fixture-only response marker proves that the guard actually
                 // ran, independent of a successful or unsuccessful core action.
                 var services = http.RequestServices;
-                var logger = services.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
+                var logger = services.GetRequiredService<ILogger<NativePlaybackFilter>>();
                 if (!Guid.TryParse(parts[1], out var id))
                 {
                     Reject(http, logger);
                     return;
                 }
                 var owner = await NativePlaybackAuthorization.AuthorizeAsync(
-                    http, id, NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+                    http, id, NativePrivatePlaybackMode.IsAccountAllowed).ConfigureAwait(false);
                 if (owner == Guid.Empty)
                 {
                     Reject(http, logger);
@@ -316,14 +325,32 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 }
 
                 http.Response.Headers.CacheControl = "no-store";
-                http.Response.Headers["X-Vivoapk-Lab-Guard"] = "allowed";
-                if (PrivateHlsNativeLab.Enabled && info)
+                http.Response.Headers["X-Vivoapk-Playback-Guard"] = "allowed";
+                if (NativePrivatePlaybackMode.PrivateRoutes && info)
                     await PrivatePlaybackInfoAsync(http, downstream, owner, id).ConfigureAwait(false);
-                else if (PrivateHlsNativeLab.Enabled && media)
-                    await _privateLive.HandleAsync(http, downstream, owner, id, logger).ConfigureAwait(false);
+                else if (NativePrivatePlaybackMode.PrivateRoutes && media)
+                {
+                    if (NativePrivatePlaybackMode.Required)
+                    {
+                        var user = services.GetRequiredService<IUserManager>().GetUserById(owner);
+                        var entity = user is null ? null :
+                            services.GetRequiredService<ILibraryManager>().GetItemById<BaseItem>(id, user);
+                        if (!NativePrivatePlaybackMode.AllowsCacheKey(entity?.ExternalId))
+                        {
+                            Reject(http, logger);
+                            return;
+                        }
+                        NativePrivatePlaybackMode.EnterSourceScope(http, owner, entity!.ExternalId!);
+                    }
+                    try
+                    {
+                        await _privateLive.HandleAsync(http, downstream, owner, id, logger).ConfigureAwait(false);
+                    }
+                    finally { NativePrivatePlaybackMode.ExitSourceScope(http); }
+                }
                 else
                     await downstream(http).ConfigureAwait(false);
-                if (media)
+                if (media && !NativePrivatePlaybackMode.Required)
                     ObserveFixtureSegment(http, owner, id, logger);
             });
             next(app);
@@ -341,19 +368,17 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         string? cacheKey = null;
         IMemoryCache? cache = null;
         var services = http.RequestServices;
-        var logger = services.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
-        if (PrivateHlsNativeLab.Enabled)
+        var logger = services.GetRequiredService<ILogger<NativePlaybackFilter>>();
+        if (NativePrivatePlaybackMode.PrivateRoutes)
         {
             var user = services.GetRequiredService<IUserManager>().GetUserById(owner);
             var entity = user is null ? null :
                 services.GetRequiredService<ILibraryManager>().GetItemById<BaseItem>(item, user);
             cacheKey = entity?.ExternalId;
-            if (cacheKey is null ||
-                !Regex.IsMatch(cacheKey, PrivateHlsNativeLab.FileEnabled
-                    ? @"\Aslot:[0-9]{1,3}:(?:general|tv):(?:vod:110:501:mp4|ep:220:601:701:mp4)\z"
-                    : @"\Aslot:[0-9]{1,3}:(?:general|tv):live:(?:10|20):42\z",
-                    RegexOptions.CultureInvariant) ||
-                !_privateLive.TryBeginNegotiation(owner))
+            if (!NativePrivatePlaybackMode.AllowsCacheKey(cacheKey)
+                || (NativePrivatePlaybackMode.Required
+                    && !await ValidateNegotiationSelectorsAsync(http, owner, item).ConfigureAwait(false))
+                || !_privateLive.TryBeginNegotiation(owner))
             {
                 Reject(http, logger);
                 return;
@@ -368,7 +393,11 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         try
         {
             if (reserved)
+            {
                 cache!.Remove(cacheKey!);
+                if (NativePrivatePlaybackMode.Required)
+                    NativePrivatePlaybackMode.EnterSourceScope(http, owner, cacheKey!);
+            }
             await downstream(http).ConfigureAwait(false);
             if (buffer.Length > 512 * 1024)
                 throw new InvalidOperationException("Oversized fixture playback response");
@@ -383,7 +412,9 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                     if (node is not JsonObject response || response["MediaSources"] is not JsonArray sources
                         || sources.Count != 1 || sources[0] is not JsonObject media
                         || media["TranscodingUrl"] is not JsonValue url || !url.TryGetValue<string>(out var route)
-                        || string.IsNullOrEmpty(route) || !await _privateLive.BindAsync(node, owner, item, http)
+                        || string.IsNullOrEmpty(route)
+                        || (NativePrivatePlaybackMode.Required && !IsNativeHlsRoute(route, item))
+                        || !await _privateLive.BindAsync(node, owner, item, http)
                             .ConfigureAwait(false))
                         throw new InvalidOperationException("Private fixture play session not bound");
                     bound = true;
@@ -413,6 +444,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
         }
         finally
         {
+            NativePrivatePlaybackMode.ExitSourceScope(http);
             http.Response.Body = original;
             if (reserved)
             {
@@ -433,6 +465,69 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
                 finally { _privateLive.EndNegotiation(owner); }
             }
         }
+    }
+
+    private static bool IsNativeHlsRoute(string route, Guid item)
+    {
+        if (route.StartsWith("//", StringComparison.Ordinal) || route.Contains("://", StringComparison.Ordinal)
+            || route.Contains('\\') || route.Contains('#'))
+            return false;
+        var path = route.Split('?', 2)[0].TrimStart('/').Split('/');
+        return path.Length == 3 && path[0].Equals("Videos", StringComparison.OrdinalIgnoreCase)
+            && Guid.TryParse(path[1], out var actual) && actual == item
+            && (path[2].Equals("master.m3u8", StringComparison.OrdinalIgnoreCase)
+                || path[2].Equals("main.m3u8", StringComparison.OrdinalIgnoreCase)
+                || path[2].Equals("live.m3u8", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static async Task<bool> ValidateNegotiationSelectorsAsync(HttpContext http, Guid owner, Guid item)
+    {
+        bool Valid(string name, string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return true;
+            if (name.Equals("UserId", StringComparison.OrdinalIgnoreCase))
+                return Guid.TryParse(value, out var id) && id == owner;
+            if (name.Equals("MediaSourceId", StringComparison.OrdinalIgnoreCase))
+                return Guid.TryParse(value, out var id) && id == item;
+            if (name.Equals("LiveStreamId", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Params", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (name.Equals("DeviceId", StringComparison.OrdinalIgnoreCase))
+                return value == http.User.FindFirst("Jellyfin-DeviceId")?.Value;
+            return true;
+        }
+        if ((!HttpMethods.IsPost(http.Request.Method) && !HttpMethods.IsGet(http.Request.Method))
+            || http.Request.Query.Any(p => p.Value.Count != 1 || !Valid(p.Key, p.Value[0])))
+            return false;
+        var length = http.Request.ContentLength;
+        if (length is null or 0)
+            return !http.Request.Headers.ContainsKey("Transfer-Encoding");
+        if (length is < 0 or > 262144 || !HttpMethods.IsPost(http.Request.Method))
+            return false;
+        http.Request.EnableBuffering(32768, 262144);
+        try
+        {
+            using var json = await JsonDocument.ParseAsync(http.Request.Body,
+                cancellationToken: http.RequestAborted).ConfigureAwait(false);
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var prop in json.RootElement.EnumerateObject())
+            {
+                if (!names.Add(prop.Name))
+                    return false;
+                if (new[] { "UserId", "MediaSourceId", "LiveStreamId", "Params", "DeviceId" }
+                    .Contains(prop.Name, StringComparer.OrdinalIgnoreCase)
+                    && prop.Value.ValueKind != JsonValueKind.Null
+                    && (prop.Value.ValueKind != JsonValueKind.String || !Valid(prop.Name, prop.Value.GetString())))
+                    return false;
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or JsonException or IOException)
+        {
+            return false;
+        }
+        finally { http.Request.Body.Position = 0; }
     }
 
     // Only the exact pinned PlaystateController legacy paths, with a single
@@ -463,7 +558,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
             return;
         }
         var owner = await NativePlaybackAuthorization.AuthorizeAsync(http, item,
-            NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
+            NativePrivatePlaybackMode.IsAccountAllowed).ConfigureAwait(false);
         var userIds = query["UserId"];
         var devices = query["DeviceId"];
         if (owner == Guid.Empty || (scoped && (!Guid.TryParse(parts[1], out var routeOwner) || routeOwner != owner))
@@ -481,7 +576,7 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
 
     private async Task PrivateFixtureReportAsync(HttpContext http, RequestDelegate downstream, bool stopped)
     {
-        var logger = http.RequestServices.GetRequiredService<ILogger<NativePlaybackLabFilter>>();
+        var logger = http.RequestServices.GetRequiredService<ILogger<NativePlaybackFilter>>();
         if (http.Request.ContentLength is not long length || length is < 1 or > 16384)
         {
             Reject(http, logger);
@@ -528,8 +623,8 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
             return;
         }
         var owner = await NativePlaybackAuthorization.AuthorizeAsync(http, item,
-            NativePlaybackLab.IsFixtureAccount).ConfigureAwait(false);
-        if (PrivateHlsNativeLab.Enabled)
+            NativePrivatePlaybackMode.IsAccountAllowed).ConfigureAwait(false);
+        if (NativePrivatePlaybackMode.PrivateRoutes)
         {
             if (owner == Guid.Empty)
             {
@@ -558,10 +653,9 @@ public sealed class NativePlaybackLabFilter : IStartupFilter
     private static void Reject(HttpContext http, ILogger logger)
     {
         logger.LogInformation("Native playback laboratory: access refused");
-        http.Response.Headers["X-Vivoapk-Lab-Guard"] = "denied";
+        http.Response.Headers["X-Vivoapk-Playback-Guard"] = "denied";
         http.Response.Headers.CacheControl = "no-store";
         http.Response.StatusCode = StatusCodes.Status404NotFound;
         http.Response.ContentLength = 0;
     }
 }
-#endif

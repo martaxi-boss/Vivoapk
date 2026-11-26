@@ -581,7 +581,11 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
         }
         if (snapshot is null)
             return Array.Empty<MediaSourceInfo>();
-        if (NativePlaybackLab.Enabled &&
+        if (NativePrivatePlaybackMode.Required
+            && (!snapshot.CategoryNavigation || !NativePrivatePlaybackMode.CanBind(
+                _httpContextAccessor?.HttpContext, snapshot.Owner, id)))
+            return Array.Empty<MediaSourceInfo>();
+        if (NativePlaybackLab.Enabled && !NativePrivatePlaybackMode.Required &&
             (!NativePlaybackLab.IsFixtureAccount(snapshot.Username) ||
              NativePlaybackLab.AuthenticatedOwner(_httpContextAccessor?.HttpContext?.User) != snapshot.Owner ||
              !snapshot.CategoryNavigation))
@@ -662,8 +666,19 @@ public sealed class VivoapkLivePreviewChannel : IChannel, IRequiresMediaInfoCall
                 return Array.Empty<MediaSourceInfo>();
         }
 
-        // The URL is passed to the client's own Jellyfin player. It is NOT a
-        // Jellyfin relay/transcode URL and never lands in the item database.
+        // The ordinary opt-in uses the private socket and server-observed
+        // stream metadata. No direct provider fallback after a failed probe.
+        if (NativePrivatePlaybackMode.Required)
+        {
+            var transport = _httpContextAccessor?.HttpContext?.RequestServices
+                .GetRequiredService<PrivateNativeHls>();
+            var source = transport is null || string.IsNullOrEmpty(session.Value.Token) ? null
+                : await NativePrivatePlaybackMode.CreateSourceAsync(transport, snapshot.Owner,
+                    session.Value.Token, categoryId, providerId, platform, kind, seriesId,
+                    cancellationToken).ConfigureAwait(false);
+            return source is null ? Array.Empty<MediaSourceInfo>() : new[] { source };
+        }
+        // Legacy default policy is unchanged until the host explicitly opts in.
         if (NativePlaybackLab.Enabled)
         {
 #if VIVOAPK_NATIVE_PLAYBACK_LAB

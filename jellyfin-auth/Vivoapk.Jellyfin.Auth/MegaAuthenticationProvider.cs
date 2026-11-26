@@ -90,9 +90,10 @@ public sealed class MegaAuthenticationProvider : IAuthenticationProvider, IRequi
             _logger.LogInformation("Created restricted VivoAPK Jellyfin identity.");
         }
 
-        // Laboratory only. Normal builds preserve the current production policy.
-        var serverPlayback = NativePlaybackLab.Enabled &&
-            NativePlaybackLab.IsFixtureAccount(canonicalUsername);
+        // Normal opt-in is separate from synthetic lab compilation.
+        var serverPlayback = NativePrivatePlaybackMode.Required
+            ? NativePrivatePlaybackMode.Active
+            : NativePlaybackLab.Enabled && NativePlaybackLab.IsFixtureAccount(canonicalUsername);
         var mediaPolicyChanged = false;
         foreach (var permission in new[] {
             PermissionKind.EnablePlaybackRemuxing,

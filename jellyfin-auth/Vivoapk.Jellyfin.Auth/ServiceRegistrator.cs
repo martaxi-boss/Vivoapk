@@ -12,10 +12,8 @@ public sealed class ServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
         services.AddHttpContextAccessor();
-#if VIVOAPK_NATIVE_PLAYBACK_LAB
-        services.AddSingleton<IStartupFilter, NativePlaybackLabFilter>();
-        services.AddSingleton<PrivateNativeHls>(_ => PrivateHlsNativeLab.CreateTransport());
-#endif
+        services.AddSingleton<IStartupFilter, NativePlaybackFilter>();
+        services.AddSingleton<PrivateNativeHls>(_ => NativePrivatePlaybackMode.CreateTransport());
         services.AddSingleton<IAuthenticationProvider, MegaAuthenticationProvider>();
         // ChannelManager persists item IDs under a global ChannelId. Isolate
         // the channel itself, not merely its user-dependent cache key.
