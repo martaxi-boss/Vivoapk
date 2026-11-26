@@ -18,6 +18,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("SESSION_SIGNING_KEY", "fixture-signing-key-native-private-test")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend/tests"))
+from app.clients.xtream import XtreamAuthResult
 from app.config import Settings
 from app.db import Base
 from app.main import create_app
@@ -163,8 +164,10 @@ class PrivateBackend:
             def authenticate(inner, **kwargs):
                 label = "synthetic-mega-user" if kwargs["username"] == "sub-a" else "synthetic-mega-user-b"
                 state = statuses[label]
-                return SimpleNamespace(code="SUCCESS" if state == "ACTIVE" else state,
-                                       account_expires_at=None)
+                return XtreamAuthResult(
+                    code="SUCCESS" if state == "ACTIVE" else state,
+                    allowed_output_formats=inner.allowed_output_formats if state == "ACTIVE" else None,
+                )
         self.app.state.mega_client_factory = lambda: FakeMega(self.accounts)
         self.app.state.xtream_client_factory = Xtream
         self.app.state.catalog_client_factory = Catalogue
