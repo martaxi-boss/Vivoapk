@@ -322,3 +322,32 @@ def test_pinned_transport_rejects_unverifiable_peer_before_request_bytes() -> No
 
     assert backend.connected_hosts == ["93.184.216.34"]
     assert backend.streams[0].writes == []
+
+@pytest.mark.parametrize(("advertised", "expected"), [
+    (["ts", "m3u8", "rtmp"], frozenset({"ts", "m3u8"})),
+    (["ts"], frozenset({"ts"})),
+    ([], frozenset()),
+    (None, None),
+    ("ts,m3u8", None),
+    (["m3u8", {}], None),
+    (["m3u8"] * 33, None),
+    (["fixture-private-provider-string"], frozenset()),
+])
+def test_output_formats_are_bounded_and_do_not_change_login(advertised, expected):
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200, json={"user_info": {"auth": 1, "status": "Active",
+                                    "allowed_output_formats": advertised}},
+        )
+    )
+    client = XtreamClient(transport=transport, resolver=public_resolver)
+    try:
+        result = client.authenticate(
+            dns_link="https://stream.example.com", username="fixture-user",
+            password="fixture-password",
+        )
+        assert result.code == "SUCCESS"
+        assert result.allowed_output_formats == expected
+        assert "fixture-private-provider-string" not in repr(result)
+    finally:
+        client.close()

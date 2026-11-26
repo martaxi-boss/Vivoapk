@@ -216,3 +216,31 @@ def test_periodic_sweep_releases_expired_grant_without_request(private_client, m
     assert post("renew", payload={"session_id": sa}).status_code == 404
     assert post("playlist", suffix="b", payload={"session_id": sb}).status_code == 200
     assert post("close", suffix="b", payload={"session_id": sb}).status_code == 204
+
+@pytest.mark.parametrize(("advertised", "status"), [
+    (None, 503),
+    (frozenset(), 404),
+    (frozenset({"ts"}), 404),
+])
+def test_live_requires_advertised_hls_before_open(private_client, advertised, status):
+    client, post, upstream, xtream, _ = private_client
+    xtream.allowed_output_formats = advertised
+    rejected = post("open", payload=request_for("a"))
+    assert rejected.status_code == status
+    assert upstream.calls == []
+    assert not client.app.state.private_hls_registry._entries
+    assert "fixture" not in rejected.text
+
+
+def test_live_format_change_revokes_existing_grant(private_client):
+    client, post, upstream, xtream, _ = private_client
+    opened = post("open", payload=request_for("a"))
+    assert opened.status_code == 200
+    sid = opened.json()["session_id"]
+    assert post("playlist", payload={"session_id": sid}).status_code == 200
+    before = len(upstream.calls)
+    xtream.allowed_output_formats = frozenset({"ts"})
+    assert post("renew", payload={"session_id": sid}).status_code == 404
+    assert post("playlist", payload={"session_id": sid}).status_code == 404
+    assert len(upstream.calls) == before
+    assert not client.app.state.private_hls_registry._entries

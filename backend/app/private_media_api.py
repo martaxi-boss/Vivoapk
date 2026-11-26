@@ -247,6 +247,9 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
             try:
                 origin, username, password = service._authorize_mapping(
                     mapping_id=entry.owner, platform=entry.platform,
+                    required_live_format=(
+                        source.extension if source.asset.kind is CatalogKind.LIVE else None
+                    ),
                 )
             except CatalogDenied:
                 return EntitlementState.DISABLED

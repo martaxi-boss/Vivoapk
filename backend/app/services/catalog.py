@@ -7,6 +7,7 @@ Only sanitized display metadata is returned: never stream URLs or provider secre
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
 
 _SUB = re.compile(r"^mapping:([1-9][0-9]{0,18})$")
+_LOG = logging.getLogger(__name__)
 
 
 class CatalogDenied(RuntimeError):
@@ -84,12 +86,17 @@ class CatalogService:
         self._xtream_client_factory = xtream_client_factory
         self._catalog_client_factory = catalog_client_factory
 
-    def _authorize(self, *, token: str, platform: ClientPlatform) -> tuple[str, str, str]:
+    def _authorize(
+        self, *, token: str, platform: ClientPlatform, required_live_format: str | None = None,
+    ) -> tuple[str, str, str]:
         return self._authorize_mapping(
             mapping_id=mapping_id_for_token(token, self._settings), platform=platform,
+            required_live_format=required_live_format,
         )
 
-    def _authorize_mapping(self, *, mapping_id: int, platform: ClientPlatform) -> tuple[str, str, str]:
+    def _authorize_mapping(
+        self, *, mapping_id: int, platform: ClientPlatform, required_live_format: str | None = None,
+    ) -> tuple[str, str, str]:
         # Only trusted in-process callers that have already authenticated a
         # signed catalogue token or an exact private media grant may call this.
         # No route accepts a mapping ID supplied by a client.
@@ -148,13 +155,27 @@ class CatalogService:
         if status.code != "SUCCESS" or _expired(status.account_expires_at):
             raise CatalogDenied("Subscription unavailable")
 
+        if required_live_format is not None:
+            # This is a format precondition, not proof that a media request is
+            # authorized. Unknown metadata never authorizes a new format.
+            formats = status.allowed_output_formats
+            if formats is None:
+                _LOG.warning("private_live_format_metadata_unavailable")
+                raise CatalogUnavailable("Authorized live format unconfirmed")
+            if required_live_format not in formats:
+                _LOG.warning("private_live_format_not_advertised")
+                raise CatalogDenied("Required live format not advertised")
+
         return origin, mapping.username, password
 
     def authorize_media_origin(
         self, *, token: str, asset: MediaAsset, platform: ClientPlatform,
     ) -> AuthorizedMediaOrigin:
         """Internal-only: authorize a specific asset, never accept a caller URL."""
-        origin, username, password = self._authorize(token=token, platform=platform)
+        required_live_format = "m3u8" if asset.kind is CatalogKind.LIVE else None
+        origin, username, password = self._authorize(
+            token=token, platform=platform, required_live_format=required_live_format,
+        )
         entries = self._authorized_category_items(
             origin=origin, username=username, password=password,
             kind=asset.kind, category_id=asset.category_id,
@@ -175,7 +196,7 @@ class CatalogService:
             matches = [e["container_extension"] for e in entries if e["id"] == asset.asset_id]
         if len(matches) != 1:
             raise CatalogDenied("Media not authorized")
-        extension = "m3u8" if asset.kind is CatalogKind.LIVE else matches[0]
+        extension = required_live_format if asset.kind is CatalogKind.LIVE else matches[0]
         try:
             return AuthorizedMediaOrigin(
                 asset=asset, origin=origin, username=username, password=SecretStr(password),

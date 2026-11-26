@@ -37,6 +37,18 @@ class XtreamUpstreamError(XtreamError):
 class XtreamAuthResult:
     code: str
     account_expires_at: datetime | None = None
+    allowed_output_formats: frozenset[str] | None = None
+
+
+def _parse_output_formats(value: Any) -> frozenset[str] | None:
+    # Optional provider metadata, not independent authorization to open media.
+    # Keep unknown and explicitly unsupported formats distinct, without keeping
+    # arbitrary provider strings or changing the account authentication result.
+    if not isinstance(value, list) or len(value) > 32:
+        return None
+    if any(not isinstance(item, str) or len(item) > 32 for item in value):
+        return None
+    return frozenset(item for item in value if item in {"ts", "m3u8"})
 
 
 def _looks_like_dns_error(exc: BaseException) -> bool:
@@ -195,4 +207,5 @@ class XtreamClient:
         return XtreamAuthResult(
             code="SUCCESS",
             account_expires_at=account_expires_at,
+            allowed_output_formats=_parse_output_formats(user_info.get("allowed_output_formats")),
         )

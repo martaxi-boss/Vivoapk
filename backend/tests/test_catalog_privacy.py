@@ -33,10 +33,14 @@ class FakeXtream:
         self.calls = []
         self.closed = False
         self.status = "SUCCESS"
+        self.allowed_output_formats = frozenset({"ts", "m3u8"})
 
     def authenticate(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(code=self.status, account_expires_at=None)
+        return SimpleNamespace(
+            code=self.status, account_expires_at=None,
+            allowed_output_formats=self.allowed_output_formats,
+        )
 
     def close(self):
         self.closed = True
