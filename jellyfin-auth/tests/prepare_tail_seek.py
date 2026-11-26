@@ -65,8 +65,14 @@ replace_once(test, "    private static EncodingHelper CreateHelper()",
     [InlineData(false, true, false, false, 9, 9, 3, 7)]
     [InlineData(true, false, false, false, 9, 9, 3, 7)]
     public void GetFastSeekCommandLineParameter_OnlyBoundedFiniteVideoHlsSegmentsUseExactTail(
-        bool hls, bool video, bool copy, bool infinite,
-        int requested, int segmentStart, int duration, int expected)
+        bool hls,
+        bool video,
+        bool copy,
+        bool infinite,
+        int requested,
+        int segmentStart,
+        int duration,
+        int expected)
     {
         var encoder = new Mock<IMediaEncoder>();
         encoder.Setup(x => x.GetTimeParameter(It.IsAny<long>())).Returns("seek");
