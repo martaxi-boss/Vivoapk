@@ -24,6 +24,22 @@ class NativeStageTests(unittest.TestCase):
                 stage.stage_bundle()
             create.assert_not_called()
 
+    def test_backend_probe_sets_synthetic_env_before_import(self):
+        probe = stage.BACKEND_PROBE
+        self.assertLess(probe.index('DATABASE_URL="sqlite+pysqlite:///:memory:"'),
+                        probe.index("from app.main import create_app"))
+        self.assertLess(probe.index('PRIVATE_HLS_ENABLED="false"'),
+                        probe.index("from app.main import create_app"))
+
+    def test_unpinned_input_refused_before_new_phase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "wrong.zip"
+            archive.write_bytes(b"not the approved archive")
+            with patch.object(stage, "new_phase") as create:
+                with self.assertRaisesRegex(stage.Blocked, "candidate_input_archive_mismatch"):
+                    stage.stage_bundle_input(archive)
+                create.assert_not_called()
+
     def test_archive_path_traversal_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -26,3 +26,48 @@ jobs:
         run: python3 -m py_compile infra/deploy.py infra/upgrade_live_preview.py infra/tests/test_deploy.py
       - name: Verify deployment guardrails
         run: python3 -m unittest discover -v -s infra/tests
+
+  # One-shot packaging of an already public, code-only CI artifact for
+  # Ferrari's existing input envelope. No server connection, release
+  # publication, token export or changes to the SSH transport.
+  candidate-input:
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[stage-bundle-r90]')
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      matrix:
+        part: [0, 1, 2, 3]
+      fail-fast: true
+    steps:
+      - name: Encode exact reviewed archive part (nonsecret binary input)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PART: ${{ matrix.part }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/native-candidate.zip"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --max-time 45 --max-filesize 800000 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/martaxi-boss/Vivoapk/actions/artifacts/15102412505/zip" \
+            -o "$archive"
+          python3 - "$archive" "$PART" <<'PY'
+          import base64, hashlib, sys
+          from pathlib import Path
+          data = Path(sys.argv[1]).read_bytes()
+          assert len(data) == 758717
+          assert hashlib.sha256(data).hexdigest() == "54ba20844f871177869d8359a43bfd2003ca59a963e7a26b2c120cca2a52a3da"
+          encoded = base64.b64encode(data).decode("ascii")
+          part = int(sys.argv[2])
+          size = (len(encoded) + 3) // 4
+          start, end = part * size, min(len(encoded), (part + 1) * size)
+          for i in range(start, end, 4096):
+              print(f"VIVOAPK_INPUT_R90:{i}:{encoded[i:min(i+4096,end)]}")
+          print(f"VIVOAPK_INPUT_R90_PART_PASS={part}:{start}:{end}:{len(encoded)}")
+          PY

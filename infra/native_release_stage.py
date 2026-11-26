@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 
 import native_release_preflight as pf
 
@@ -33,6 +34,9 @@ ARCHIVE_SIZE = 60657368
 ARCHIVE_SHA = "1df84d04c4322902dba81c290508cdf3d89524d210b9fe03154bea6c4e3bfbb6"
 FFMPEG_SHA = "c03a86655431dd0bc2412f0c98c9712445b63c17daee3a9a6e4008c962a56ad1"
 FFPROBE_SHA = "72733c695f2445f61f79a7b6b68a02a05523c032f28f63649cdfdb2df8cb0622"
+BUNDLE_SHA = "54ba20844f871177869d8359a43bfd2003ca59a963e7a26b2c120cca2a52a3da"
+BUNDLE_BYTES = 758717
+MANIFEST_SHA = "f7cf404d154c3d376770cb7131a2dbf1077c09d887e561908f0ae7c570b155a5"
 CANDIDATE = {
     "Jellyfin.Api.dll": "1d6e8bd140b2e52a479299da859f4c6e3e1cf73320f1880f00c6291b21fdf620",
     "Jellyfin.LiveTv.dll": "29ec1b3ccbe5b87a390218a56520de80999571e2ce11c1c3546bcf0df499d3d7",
@@ -129,6 +133,12 @@ for pin in project["project"]["dependencies"]:
         assert md.version("psycopg-binary") == expected
 for file in (base / "app").rglob("*.py"):
     ast.parse(file.read_bytes(), filename=file.name)
+# app.main constructs its default app at import time. Supply a synthetic,
+# in-memory configuration before importing it, not the live environment.
+import os
+os.environ.update(APP_ENV="test", DATABASE_URL="sqlite+pysqlite:///:memory:",
+                  SESSION_SIGNING_KEY="synthetic-signing-key-" + "x" * 32,
+                  PRIVATE_HLS_ENABLED="false")
 from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
@@ -194,6 +204,19 @@ def stage_backend():
     run(["git", "-C", str(checkout), "checkout", "--quiet", "--detach", SOURCE_SHA], timeout=15)
     require(run(["git", "-C", str(checkout), "rev-parse", "HEAD"]).strip() == SOURCE_SHA,
             "staged_checkout_identity_mismatch")
+    return verify_staged_backend()
+
+
+def verify_staged_backend():
+    # Reuse the already fetched, root-controlled exact checkout after a
+    # failed synthetic probe; do not refetch or overwrite its contents.
+    checkout = STAGE / "backend/source"
+    for directory in (STAGE.parent, STAGE, STAGE / "backend", checkout):
+        trusted_directory(directory)
+    require(run(["git", "-C", str(checkout), "rev-parse", "HEAD"]).strip() == SOURCE_SHA,
+            "staged_checkout_identity_mismatch")
+    require(not run(["git", "-C", str(checkout), "status", "--porcelain=v1",
+                     "--untracked-files=all"]).strip(), "staged_checkout_not_clean")
     # Verify exact dependency declaration and migration/model tree against
     # the installed source, without touching the installed checkout.
     installed = ["git", "-c", "safe.directory=" + str(pf.SOURCE), "-C", str(pf.SOURCE)]
@@ -296,12 +319,64 @@ def stage_bundle():
     return {"bundle_staged": True, "exact_ci_artifact": True, "four_dll_hashes_verified": True}
 
 
+def verified_bundle_bytes(archive):
+    # The existing Ferrari input channel transports the exact artifact;
+    # never trust a bundle's own approval or fetch a mutable release.
+    require(archive.is_file() and not archive.is_symlink()
+            and archive.stat().st_size == BUNDLE_BYTES
+            and digest(archive) == BUNDLE_SHA, "candidate_input_archive_mismatch")
+    expected = set(CANDIDATE) | {"candidate-manifest.json"}
+    with zipfile.ZipFile(archive) as z:
+        entries = z.infolist()
+        require(len(entries) == len(expected) and {e.filename for e in entries} == expected,
+                "candidate_bundle_file_set")
+        require(sum(e.file_size for e in entries) <= 8 * 1024**2,
+                "candidate_bundle_size")
+        for e in entries:
+            mode = e.external_attr >> 16
+            require(not e.is_dir() and not stat.S_ISLNK(mode)
+                    and 0 < e.file_size <= 8 * 1024**2, "unsafe_candidate_file")
+        require(z.testzip() is None, "candidate_bundle_crc")
+        files = {name: z.read(name) for name in expected}
+    pins = {**CANDIDATE, "candidate-manifest.json": MANIFEST_SHA}
+    for name, expected_hash in pins.items():
+        require(hashlib.sha256(files[name]).hexdigest() == expected_hash,
+                "candidate_bundle_digest_mismatch")
+    manifest = json.loads(files["candidate-manifest.json"])
+    require(manifest["source"] == SOURCE_SHA and manifest["backend_candidate"] == SOURCE_SHA
+            and manifest["ci_run"] == "45787708538"
+            and manifest["activation_allowed"] is False
+            and all(manifest["components"][file]["sha256"] == CANDIDATE[file]
+                    and manifest["components"][file]["bytes"] == len(files[file])
+                    for file in CANDIDATE if file.endswith(".dll")), "candidate_manifest_mismatch")
+    return files
+
+
+def stage_bundle_input(archive):
+    files = verified_bundle_bytes(archive)
+    # Keep the failed, empty CLI attempt for review; no overwriting.
+    dest = new_phase("bundle-verified")
+    for name, data in files.items():
+        with (dest / name).open("xb") as stream:
+            stream.write(data)
+        (dest / name).chmod(0o644)
+    require(all(digest(dest / name) == hashlib.sha256(data).hexdigest()
+                for name, data in files.items()), "staged_bundle_digest_mismatch")
+    return {"bundle_staged": True, "exact_ci_artifact": True,
+            "archive_sha256": BUNDLE_SHA, "four_dll_hashes_verified": True,
+            "manifest_hash_verified": True, "no_new_credentials": True}
+
+
 def main():
-    phase = sys.argv[1] if len(sys.argv) == 2 else ""
-    actions = {"backend": stage_backend, "ffmpeg": stage_ffmpeg, "bundle": stage_bundle}
+    phase = sys.argv[1] if len(sys.argv) >= 2 else ""
+    actions = {"backend": stage_backend, "ffmpeg": stage_ffmpeg, "bundle": stage_bundle,
+               "backend-recheck": verify_staged_backend}
+    if phase == "bundle-input" and len(sys.argv) == 3:
+        actions[phase] = lambda: stage_bundle_input(Path(sys.argv[2]))
     report = {"phase": phase, "activation_allowed": False, "scope": "isolated_stage_only"}
     try:
-        require(phase in actions, "unsupported_stage_phase")
+        require(phase in actions and (len(sys.argv) == 2 or phase == "bundle-input"),
+                "unsupported_stage_phase")
         initial = pf.inspect()
         require(initial["baseline_pass"], "live_baseline_not_safe")
         pids = {unit: pf.prop(unit, "MainPID") for unit in pf.PROTECTED}
@@ -316,7 +391,7 @@ def main():
         require(report["production_unchanged"], "production_identity_changed")
         report["stage_pass"] = True
     except (Blocked, pf.Blocked, OSError, ValueError, KeyError,
-            subprocess.TimeoutExpired, tarfile.TarError) as exc:
+            subprocess.TimeoutExpired, tarfile.TarError, zipfile.BadZipFile) as exc:
         report["stage_pass"] = False
         report["reason"] = str(exc) if isinstance(exc, (Blocked, pf.Blocked)) else type(exc).__name__
     print(json.dumps(report, sort_keys=True), flush=True)
