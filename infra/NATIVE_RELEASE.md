@@ -90,3 +90,17 @@ preserves legitimate plugin slot updates and restores only the opt-in flag.
 An unrelated immutable file change or corrupt backup blocks recovery.
 The existing checkout, staged FFmpeg runtime and original unit definitions
 are not overwritten. No secret values are recorded in the journal or Git.
+
+## Fixed host rehearsal
+
+The host preparation uses the exact staged candidate and existing service
+identities. The backend drop-in selects the root-controlled staged checkout
+using an explicit uvicorn app-dir; the Jellyfin drop-in selects FFmpeg and
+private playback without modifying the original launch script or unit
+hardening. The key and env are newly provisioned host-only files. A real
+VPS rehearsal copies the actual candidate and original files into a private
+disposable directory, deliberately fails postflight, and checks all nine
+file changes restore with simulated service controls. It additionally checks
+access under the actual service user/group and confirms www-data cannot read
+a synthetic key with the planned permissions. Real service activation still
+requires a reviewed host service adapter and postflight/rollback approval.
