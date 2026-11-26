@@ -1,5 +1,16 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Fonte anunciada pelo fornecedor identificada — 26/11/2026
+
+Nova investigação r122–r128 pelo Ferrari/REA/Ruflo. A playlist oficial get.php, autenticada na origem já atribuída à linha, respondeu 200 e anunciou o RTP1 autorizado num caminho sem /live/ nem extensão. A comparação refinada r127 confirmou mesmas credenciais/asset, esquema, hostname e porta efetiva: a diferença na origem bruta era apenas a porta predefinida explícita. direct_source do catálogo estava vazio. Nenhuma transmissão foi aberta nesta investigação. Evidência SHA-256 `a87d857e2b61b58e1f531a8be7a5f17b4cc6fc9b2b153f423e41dbd467ce5b4d`, [run #45883974840](https://github.com/martaxi-boss/VPS/actions/runs/45883974840). Primeira consulta da playlist excedeu 12 s; repetição limitada recebeu metadados em 24–26 s.
+
+Isto demonstra uma incompatibilidade de seleção da fonte, mas ainda não prova a causa interna dos 401 nem reprodução. A anterior afirmação de que qualquer avanço dependia já exclusivamente do fornecedor foi prematura.
+
+Candidato acrescenta, por configuração exclusiva de servidor e desligada por defeito, seleção do locator TS fornecido pela playlist oficial ANTES da admissão de media. Só admite a mesma origem efetiva, credenciais e asset já autorizados; guarda a URL exclusivamente em memória secreta do backend, sem seguir entradas durante a descoberta. Não inventa nem tenta caminhos legacy como fallback, não troca DNS/UA/túnel, não segue redirects. Os 401/403 continuam terminais. Login/catálogo/DNS/leases e FFmpeg nativo são preservados. Prazo UDS alargado apenas na admissão, para comportar a latência medida da metadata.
+
+Validação sintática e contrato offline mínimo PASS; testes completos e ensaio real desta fonte anunciada ainda PENDENTES. Produção r100 permanece inalterada; não declarar reprodução/plataformas certificadas nem remover PINK/backups.
+
+
 ## Estado confirmado — entrada TS nativa e recusa real — 26/11/2026 18:06 UTC
 
 Produção preservada em `0994990c024b159eebd44528041746f557596d27` (r100). Código candidato executável: `8df4bf687a6dfcd3f66612da304691f312427a88`, ramo `vivoapk/authorized-http-media-20261126`. Não instalado em produção.

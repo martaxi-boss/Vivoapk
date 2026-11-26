@@ -32,6 +32,7 @@ from app.schemas import (
 )
 from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
+from app.services.provider_live import lookup_provider_ts_source
 
 _SUB = re.compile(r"^mapping:([1-9][0-9]{0,18})$")
 _LOG = logging.getLogger(__name__)
@@ -201,10 +202,16 @@ class CatalogService:
             raise CatalogDenied("Media not authorized")
         extension = required_live_format if asset.kind is CatalogKind.LIVE else matches[0]
         try:
-            return AuthorizedMediaOrigin(
+            source = AuthorizedMediaOrigin(
                 asset=asset, origin=origin, username=username, password=SecretStr(password),
                 extension=extension,
             )
+            if (asset.kind is CatalogKind.LIVE
+                    and self._settings.private_live_use_provider_playlist):
+                return lookup_provider_ts_source(
+                    source, allow_authorized_http=self._settings.private_media_allow_authorized_http,
+                )
+            return source
         except ValueError:
             raise CatalogUnavailable("Authorized media format unavailable") from None
 

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     private_media_allow_authorized_http: bool = False
     # Explicit server policy; never selected after an upstream denial.
     private_live_input_format: Literal["m3u8", "ts"] = "m3u8"
+    # Discover the provider-issued locator BEFORE media admission; never fallback.
+    private_live_use_provider_playlist: bool = False
     private_media_key: SecretStr | None = None
     auth_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
     auth_rate_per_username: int = Field(default=10, ge=1, le=100)
@@ -53,6 +55,9 @@ class Settings(BaseSettings):
                 raise ValueError("SESSION_SIGNING_KEY must be at least 32 bytes")
         if self.private_live_input_format == "ts" and not self.private_hls_enabled:
             raise ValueError("Continuous TS requires private media routes")
+        if self.private_live_use_provider_playlist and (
+                not self.private_hls_enabled or self.private_live_input_format != "ts"):
+            raise ValueError("Advertised TS sources require explicit private TS input")
         if self.private_media_allow_authorized_http and not self.private_hls_enabled:
             raise ValueError("Authorized HTTP media requires private media routes")
         if self.private_hls_enabled:

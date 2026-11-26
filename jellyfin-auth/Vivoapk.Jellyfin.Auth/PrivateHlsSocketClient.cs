@@ -65,7 +65,7 @@ internal sealed class PrivateHlsSocketClient : IDisposable
             throw new InvalidOperationException("Invalid media identity");
         var body = await SendAsync("open", token,
             new { category_id = category, asset_id = asset, platform },
-            "application/json", 4096, ct).ConfigureAwait(false);
+            "application/json", 4096, ct, admission: true).ConfigureAwait(false);
         using var json = JsonDocument.Parse(body);
         if (!json.RootElement.TryGetProperty("session_id", out var id)
             || id.ValueKind != JsonValueKind.String || !IsId(id.GetString()))
@@ -167,13 +167,17 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         : throw new InvalidOperationException("Invalid private media identity");
 
     private async Task<byte[]> SendAsync(string action, string token, object payload,
-        string? mime, int cap, CancellationToken ct, bool finite = false, string? expectedRange = null)
+        string? mime, int cap, CancellationToken ct, bool finite = false, string? expectedRange = null,
+        bool admission = false)
     {
         if (string.IsNullOrEmpty(token) || token.Length > 4096
             || token.Any(c => char.IsControl(c) || char.IsWhiteSpace(c)))
             throw new InvalidOperationException("Invalid private account token");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        // The assigned provider's source playlist took 24–26 s before headers
+        // in a measured metadata-only audit, in addition to account checks.
+        // Extend admission only; bounded media reads retain their 30 s deadline.
+        deadline.CancelAfter(TimeSpan.FromSeconds(admission ? 90 : 30));
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post,

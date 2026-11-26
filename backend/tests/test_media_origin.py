@@ -105,6 +105,38 @@ def test_media_membership_and_expiration(accounts):
         )
 
 
+def test_advertised_locator_is_resolved_only_after_account_and_asset_authorization(accounts, monkeypatch):
+    svc, tokens, xtream = accounts
+    svc._settings.private_live_use_provider_playlist = True
+    calls = []
+
+    def lookup(source, **kwargs):
+        calls.append(source)
+        return source.with_provider_live_url(
+            "https://origin-1.example.com:443/sub-a/fixture-secret-a/101"
+        )
+
+    monkeypatch.setattr("app.services.catalog.lookup_provider_ts_source", lookup)
+    result = svc.authorize_media_origin(
+        token=tokens["a"], asset=MediaAsset(CatalogKind.LIVE, "10", "101"),
+        platform=ClientPlatform.ANDROID, live_format="ts",
+    )
+    assert result._request_url().endswith("/sub-a/fixture-secret-a/101")
+    assert len(calls) == 1
+    with pytest.raises(CatalogDenied):
+        svc.authorize_media_origin(
+            token=tokens["a"], asset=MediaAsset(CatalogKind.LIVE, "20", "101"),
+            platform=ClientPlatform.ANDROID, live_format="ts",
+        )
+    xtream.status = "DISABLED"
+    with pytest.raises(CatalogDenied):
+        svc.authorize_media_origin(
+            token=tokens["a"], asset=MediaAsset(CatalogKind.LIVE, "10", "101"),
+            platform=ClientPlatform.ANDROID, live_format="ts",
+        )
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("value", ["../1", "1/2", "x", "", "1%2f2"])
 def test_asset_rejects_path_input(value):
     with pytest.raises(ValueError, match="identity"):
