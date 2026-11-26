@@ -1803,7 +1803,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         elapsed = 0.0
         for index, (duration, _) in enumerate(timed):
             positions.append(elapsed)
-            if elapsed >= 3 and duration >= 2:
+            if elapsed >= 6 and duration >= 2:
                 late_index = index
             elapsed += duration
         if seek_start and (not PRIVATE_FILE or late_index is None):
@@ -1950,17 +1950,18 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         if private_backend.count() != 2 or sa["session"] == sb["session"]:
             raise RuntimeError("Seek fixture lacks two independent leases")
 
-        def gray_frames(path, start=None, duration=.8):
-            args = ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error"]
-            if start is not None:
-                args += ["-ss", str(start)]
-            args += ["-i", str(path), "-t", str(duration), "-map", "0:v:0",
-                     "-vf", "scale=32:18,format=gray", "-f", "rawvideo", "pipe:1"]
-            data = subprocess.run(args, capture_output=True, check=True, timeout=30).stdout
-            size = 32 * 18
-            if len(data) < size or len(data) % size:
-                raise RuntimeError("Seek sample did not decode valid reference frames")
-            return [data[i:i+size] for i in range(0, len(data), size)]
+        def marker_sample(path, seconds):
+            # Decode at a stable point inside the requested segment. Use only
+            # the coded central region, so scaling/letterbox/scene changes do
+            # not make unrelated positions appear equally close.
+            cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-v", "error",
+                   "-i", str(path), "-ss", str(seconds), "-map", "0:v:0",
+                   "-vf", "crop=iw/4:ih/4:(iw-ow)/2:(ih-oh)/2,scale=16:16,format=gray",
+                   "-frames:v", "1", "-f", "rawvideo", "pipe:1"]
+            pixels = subprocess.run(cmd, capture_output=True, check=True, timeout=30).stdout
+            if len(pixels) != 256:
+                raise RuntimeError("Seek marker frame did not decode")
+            return sum(pixels) / len(pixels)
 
         def verify_seek_media(label, phase, payload, expected, wrong):
             path = base / ("private-seek-" + label + "-" + phase + ".ts")
@@ -1975,30 +1976,45 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                 audio = sum(line.startswith("1,") for line in decoded.splitlines())
                 if video < 20 or audio < 20:
                     raise RuntimeError("Native seek segment lacked decoded video/audio")
-                sample = gray_frames(path)[0]
-                def distance(position):
-                    start = max(0, position - .24)
-                    candidates = gray_frames(original, start, 1.0)
-                    return min(sum(abs(x-y) for x, y in zip(sample, frame)) / len(sample)
-                               for frame in candidates)
-                expected_error, wrong_error = distance(expected), distance(wrong)
-                if expected_error > 12 or expected_error + .5 >= wrong_error:
-                    raise RuntimeError("Native seek picture does not match expected timeline: " +
-                        json.dumps({"fixture": label, "phase": phase,
-                                    "expected_error": round(expected_error, 3),
-                                    "wrong_error": round(wrong_error, 3)}))
-                print("JELLYFIN_PRIVATE_NATIVE_SEEK_DECODE=" + json.dumps({
-                    "fixture": label, "phase": phase, "position_seconds": expected,
+                sample_offset = .4
+                sample = marker_sample(path, sample_offset)
+                reference = marker_sample(original, expected + sample_offset)
+                wrong_reference = marker_sample(original, wrong + sample_offset)
+                other_original = base / ("private-native-" + ("b" if label == "a" else "a") + ".mp4")
+                foreign_reference = marker_sample(other_original, expected + sample_offset)
+                expected_error = abs(sample-reference)
+                wrong_error = abs(sample-wrong_reference)
+                foreign_error = abs(sample-foreign_reference)
+                evidence = {"fixture": label, "phase": phase, "position_seconds": expected,
                     "video_frames": video, "audio_frames": audio,
-                    "expected_picture_error": round(expected_error, 3),
-                    "other_position_error": round(wrong_error, 3),
-                }, sort_keys=True), flush=True)
+                    "observed_marker": round(sample, 3), "reference_marker": round(reference, 3),
+                    "wrong_position_marker": round(wrong_reference, 3),
+                    "foreign_account_marker": round(foreign_reference, 3),
+                    "expected_error": round(expected_error, 3),
+                    "wrong_error": round(wrong_error, 3),
+                    "foreign_error": round(foreign_error, 3)}
+                print("JELLYFIN_PRIVATE_NATIVE_SEEK_MARKER=" +
+                      json.dumps(evidence, sort_keys=True), flush=True)
+                # Validate the oracle itself; a seek must never PASS with a
+                # non-discriminating reference or another owner's picture.
+                if (abs(reference-wrong_reference) < 40 or abs(reference-foreign_reference) < 40
+                        or expected_error > 20 or expected_error + 20 >= min(wrong_error, foreign_error)):
+                    raise RuntimeError("Native seek temporal/account marker mismatch: " +
+                                       json.dumps(evidence, sort_keys=True))
+                print("JELLYFIN_PRIVATE_NATIVE_SEEK_DECODE=" +
+                      json.dumps(evidence, sort_keys=True), flush=True)
             finally:
                 path.unlink(missing_ok=True)
 
         for label, state, other in (("a", sa, sb), ("b", sb, sa)):
             late = state["late_index"]
             late_time = state["positions"][late]
+            runtime = [v for k, v in parse_qsl(urlsplit(state["segments"][late]).query)
+                       if k.lower() == "runtimeticks"]
+            if len(runtime) != 1 or not runtime[0].isdigit() or abs(int(runtime[0])/10000000-late_time) > .1:
+                raise RuntimeError("Native playlist seek time contract mismatch: " +
+                                   json.dumps({"expected_seconds": late_time,
+                                               "runtime_field_count": len(runtime)}))
             token = state["token"]
             verify_seek_media(label, "late_initial", state["data"], late_time, 0)
             require_native_denial(state["segments"][late], token, other["token"],

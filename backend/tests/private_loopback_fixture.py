@@ -94,11 +94,21 @@ class ConcurrentOrigin(Origin):
         return response(body, b"video/mp2t")
 
 
-def generate_file(ffmpeg, path, suffix, frequency):
+def generate_file(ffmpeg, path, suffix, frequency, *, timeline_marker=False):
     # Real MP4 with moov at the end, deliberately >4 MiB. Use deterministic
     # generated video and audio only. No download or provider content.
     video = ("testsrc2=size=640x360:rate=25" if suffix == "a" else
              "testsrc2=size=640x360:rate=25,negate")
+    if timeline_marker:
+        # Four distinct, stable luminance codes in the center of the moving
+        # image. The two owners have opposite timelines. A resize, H264
+        # re-encode or limited/full range conversion must not erase the code.
+        colors = ("black", "0x555555", "0xaaaaaa", "white")
+        if suffix == "b":
+            colors = tuple(reversed(colors))
+        for index, color in enumerate(colors):
+            video += (f",drawbox=x=160:y=90:w=320:h=180:color={color}:t=fill:"
+                      f"enable='gte(t,{index*3})*lt(t,{(index+1)*3})'")
     subprocess.run([
         ffmpeg, "-hide_banner", "-nostdin", "-v", "error",
         "-f", "lavfi", "-i", video,

@@ -94,7 +94,8 @@ class PrivateBackend:
                 username, password = f"sub-{suffix}", f"fixture-private-password-{suffix}"
                 if finite:
                     path = base / ("private-native-" + suffix + ".mp4")
-                    data = generate_file("ffmpeg", path, suffix, 330+i*220)
+                    data = generate_file("ffmpeg", path, suffix, 330+i*220,
+                                         timeline_marker=True)
                     # Native source metadata is a fixture contract. Check it
                     # with the same official FFprobe used by Jellyfin.
                     import json
