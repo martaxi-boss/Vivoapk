@@ -2062,9 +2062,9 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             raise RuntimeError("Native seek left transcoding cache")
         print("JELLYFIN_PRIVATE_NATIVE_MOVIE_EPISODE_INTERIOR_SEEK_ISOLATION=PASS", flush=True)
 
-        # Keep the original late-initial scenario as an independent tail
-        # diagnostic. Do not call clamped content a successful exact seek.
+        # The patched candidate must now reproduce the exact final segment.
         # A fresh negotiation avoids reading already-generated cache.
+        # Keep the old clamp reference as a negative control.
         for label, item, owner, token, other in (
             ("a", item_a, owner_a, token_a, token_b),
             ("b", item_b, owner_b, token_b, token_a),
@@ -2102,8 +2102,10 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
                     "exact_marker": round(exact, 3), "clamp_marker": round(clamped, 3),
                     "video_frames": video, "audio_frames": audio, "result": result,
                 }, sort_keys=True), flush=True)
-                if result == "UNEXPLAINED_MISMATCH":
-                    raise RuntimeError("Tail seek did not match either independently measured reference")
+                if result != "EXACT":
+                    raise RuntimeError("Exact finite tail seek still incorrect: " + result)
+                require_native_denial(tail["segments"][tail["late_index"]], token, other,
+                                      "private_tail_seek_foreign")
             finally:
                 target.unlink(missing_ok=True)
             if stop(tail, token) not in (200, 204) or private_backend.count() != 0:
@@ -2113,6 +2115,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             time.sleep(.4)
         if transcode_cache_files(base).keys() - baseline.keys():
             raise RuntimeError("Tail seek diagnostic left transcoding cache")
+        print("JELLYFIN_PRIVATE_NATIVE_MOVIE_EPISODE_EXACT_TAIL_SEEK=PASS", flush=True)
 
         # 1. Stop a negotiation that has never issued a native media GET.
         # 2. Abandon another negotiation without stop or playback reports.

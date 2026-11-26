@@ -117,6 +117,32 @@ jobs:
           install -m 0644 "$candidate" "$runtime_dir/Jellyfin.LiveTv.dll"
           sha256sum "$RUNNER_TEMP/Jellyfin.LiveTv.original.dll" "$runtime_dir/Jellyfin.LiveTv.dll"
           echo JELLYFIN_UPSTREAM_18231_LAB_BUILD=PASS
+      - name: Compile and verify exact finite HLS tail seek (disposable server only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/jellyfin-catalog-source"
+          runtime_dir="$(dirname "$(realpath "$JELLYFIN_TEST_BINARY")")"
+          case "$runtime_dir/" in "$RUNNER_TEMP"/jellyfin-test-bin/*) ;; *) exit 1 ;; esac
+          original="$runtime_dir/MediaBrowser.Controller.dll"
+          test -s "$original"
+          identity_tool="$RUNNER_TEMP/jellyfin-assembly-identity/bin/Release/net10.0/AssemblyIdentity.dll"
+          python3 "$GITHUB_WORKSPACE/jellyfin-auth/tests/prepare_tail_seek.py" "$source_dir"
+          git -C "$source_dir" diff --check
+          (
+            cd "$source_dir"
+            dotnet test tests/Jellyfin.Controller.Tests/Jellyfin.Controller.Tests.csproj -c Release --filter 'FullyQualifiedName~EncodingHelperTests'
+          )
+          candidate="$source_dir/MediaBrowser.Controller/bin/Release/net10.0/MediaBrowser.Controller.dll"
+          tested="$source_dir/tests/Jellyfin.Controller.Tests/bin/Release/net10.0/MediaBrowser.Controller.dll"
+          test -s "$candidate"
+          test -s "$tested"
+          cmp "$candidate" "$tested"
+          dotnet "$identity_tool" verify "$original" "$candidate" "$runtime_dir"
+          cp "$original" "$RUNNER_TEMP/MediaBrowser.Controller.original.dll"
+          install -m 0644 "$candidate" "$original"
+          sha256sum "$RUNNER_TEMP/MediaBrowser.Controller.original.dll" "$original"
+          echo JELLYFIN_EXACT_FINITE_HLS_TAIL_LAB_BUILD=PASS
       - name: Compile and verify native live HLS sliding window (disposable server only)
         shell: bash
         run: |
@@ -206,6 +232,7 @@ jobs:
             echo "REGULAR_PLUGIN_SHA256=$(sha256sum "$plugin" | cut -d ' ' -f1)"
             echo "PATCHED_LIVETV_SHA256=$(sha256sum "$runtime_dir/Jellyfin.LiveTv.dll" | cut -d ' ' -f1)"
             echo "PATCHED_API_SHA256=$(sha256sum "$runtime_dir/Jellyfin.Api.dll" | cut -d ' ' -f1)"
+            echo "PATCHED_CONTROLLER_SHA256=$(sha256sum "$runtime_dir/MediaBrowser.Controller.dll" | cut -d ' ' -f1)"
             echo "FFMPEG_SHA256=$(sha256sum "$VIVOAPK_EXPECTED_FFMPEG" | cut -d ' ' -f1)"
           } | tee "$evidence"
           run_gate standard python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
