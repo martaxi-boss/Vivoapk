@@ -3,10 +3,12 @@ on:
   push:
     paths:
       - "jellyfin-auth/**"
+      - "infra/native_release_manifest.py"
       - ".github/workflows/vivoapk-jellyfin-real-smoke-ci.yml"
   pull_request:
     paths:
       - "jellyfin-auth/**"
+      - "infra/native_release_manifest.py"
       - ".github/workflows/vivoapk-jellyfin-real-smoke-ci.yml"
   workflow_dispatch:
 permissions:
@@ -235,6 +237,16 @@ jobs:
             echo "PATCHED_CONTROLLER_SHA256=$(sha256sum "$runtime_dir/MediaBrowser.Controller.dll" | cut -d ' ' -f1)"
             echo "FFMPEG_SHA256=$(sha256sum "$VIVOAPK_EXPECTED_FFMPEG" | cut -d ' ' -f1)"
           } | tee "$evidence"
+          # Preserve the exact regular assembly and the three tested upstream
+          # assemblies BEFORE any fixture-symbol rebuild. A later rebuild is
+          # not the artifact tested here. Publish only after all nine gates pass.
+          bundle="$RUNNER_TEMP/vivoapk-native-candidate"
+          install -d -m 0700 "$bundle"
+          install -m 0644 "$plugin" "$bundle/Jellyfin.Plugin.VivoapkMegaAuth.dll"
+          for dll in Jellyfin.Api.dll Jellyfin.LiveTv.dll MediaBrowser.Controller.dll; do
+            install -m 0644 "$runtime_dir/$dll" "$bundle/$dll"
+          done
+          install -m 0644 jellyfin-auth/Vivoapk.Jellyfin.Auth/meta.json "$bundle/meta.json"
           run_gate standard python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           run_gate category env VIVOAPK_CI_CATEGORY_MODE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           mkdir -p "$RUNNER_TEMP/catalog-race"
@@ -256,7 +268,19 @@ jobs:
           run_gate native-long-cache env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_LONG_CACHE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           run_gate native-infinite-live env VIVOAPK_CI_CATEGORY_MODE=1 VIVOAPK_CI_SERVER_PLAYBACK=1 VIVOAPK_CI_INFINITE_LIVE=1 python3 -u jellyfin-auth/tests/jellyfin_12_4_smoke.py
           echo "COMBINED_LAB_GATE_EXIT=$failed" | tee -a "$evidence"
-          exit "$failed"
+          if (( failed != 0 )); then exit "$failed"; fi
+          # The candidate manifest is evidence, NOT approval to install.
+          python3 infra/native_release_manifest.py "$bundle" "$evidence" \
+            "$VIVOAPK_EXPECTED_FFMPEG" "$(dirname "$VIVOAPK_EXPECTED_FFMPEG")/ffprobe" \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID"
+      - name: Preserve exact ordinary-plugin candidate after all integrated gates
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vivoapk-native-regular-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/vivoapk-native-candidate/
+          if-no-files-found: error
+          retention-days: 14
       - name: Save synthetic-only player compatibility observations
         if: always()
         uses: actions/upload-artifact@v4

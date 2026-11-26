@@ -1,45 +1,64 @@
 # Native Jellyfin release preparation
 
-Status: **blocked for production activation**. The integrated synthetic suite
-at 170e23b9d78453040498e23db2070f34dfcc166c passed eight gates
-(run 45695767667), but the native private playback wiring is still lab-only.
-Do not install the lab plugin or enable the fixture environment switches.
+Status: **ordinary plugin passed disposable integration; production activation
+remains blocked pending coordinated release and real authorized playback**.
+Candidate source 7fafd4cb4bb7cef4017b38f2ee055baa6616ea3f passed all nine
+integration gates (run 45784145834), including all three private gates on
+the same regular DLL (no lab symbol). Build 45784145991 has the same
+regular plugin SHA-256. Never install a fixture build.
+
+## Exact candidate artifacts
+
+The integration workflow preserves the regular DLL **before** the separate
+fixture rebuild and the three patched upstream assemblies from the exact
+tested runtime. Publication requires all gates to pass. The generated
+manifest pins source/backend revision, official upstream 12.4 commit,
+original/observed component digests, official FFmpeg archive and exact
+ffmpeg/ffprobe digests, and CI run. It is a candidate manifest only: it
+cannot approve its own deployment. Verify the actual artifact against the
+independent CI evidence and a reviewed release pin.
+
+The read-only preflight now includes MediaBrowser.Controller.dll, needed
+for exact finite HLS tail seeks. Its expected original hash comes from the
+official disposable runtime, not a claim that it has already been verified
+on the VPS. Ferrari must confirm all four installed files and mappings.
+The previous three-component baseline remains historical.
 
 ## Transaction boundary
 
-The existing upgrade_jellyfin_multimedia.py remains unchanged. The new
-native_release_transaction.py is a reusable, non-executable file transaction
-for the three known Jellyfin DLL locations. It has no production service
-adapter, no CLI and no production approval. A future reviewed source change
-must pin regular release hashes and the compatible backend revision.
+The existing upgrade_jellyfin_multimedia.py remains unchanged. The
+native_release_transaction.py module covers only four known Jellyfin DLL
+locations. It has no production service adapter, no CLI and no production
+approval. A future reviewed source change must pin the exact regular
+release hashes and the compatible backend revision.
 
 Before activation a trusted Ferrari adapter must:
 
-- verify the exact live Jellyfin version/assembly identities, current hashes,
-  source remote and revision, clean checkout, service isolation, free space
-  and protected service health, existing admin fingerprint and no active
-  playback jobs; stage in a separate private directory;
-- obtain reviewed regular (non-fixture) artifacts, prove actual native private
-  playback on the regular build, and verify official FFmpeg provenance,
-  dependencies and compatibility; the FFmpeg distribution is NOT in this
-  three-DLL transaction;
+- verify exact live Jellyfin version/assembly identities, current hashes,
+  source remote and revision, clean checkout, service isolation, free space,
+  protected service health, existing admin fingerprint and no active playback
+  jobs; stage in a separate private directory;
+- verify the same-run regular artifact, approved source and backend, official
+  FFmpeg archive and per-binary digests, dependencies and private executable
+  path; do not replace any system-wide FFmpeg;
 - separately stage backend runtime, configuration and private key provisioning
   with a verified compatible rollback, preserving the existing backend socket
-  and secrets. Do not restart protected services or modify service isolation;
-- coordinate the backend and Jellyfin steps as a single guarded release, with
-  explicit postflight for authenticated playback, fail-closed access, admin
-  and protected services. If any step fails, restore compatible versions.
+  and secrets. No database migration is implied by the candidate manifest;
+  review compatibility of schema and dependency lock separately;
+- coordinate backend and Jellyfin in one guarded release with durable
+  rollback of both components, configuration and FFmpeg selection. Check
+  authenticated playback, fail-closed access, admin and protected services.
+  Actual authorized media and client compatibility remain separate acceptance
+  criteria; do not describe the synthetic run as their certification.
 
-The DLL transaction verifies all old/new hashes, writes private backups and
-a durable journal before stopping the service, atomically replaces each file
-with preserved permissions/ownership, then checks health and hashes. Ordinary
-failures trigger rollback. An abrupt termination leaves a journal for an
-explicit guarded recovery invocation; no resident coordinator is introduced.
-The callback adapter must ensure exclusive control of the trusted filesystem
-directories and services, sufficient disk space, no other deployment, and
-that stop has actually completed before touching files. The unit tests use
-temporary directories and simulated service controls, not the VPS.
+The DLL transaction verifies old/new hashes, writes private backups and a
+durable journal before stopping the service, atomically replaces all four
+files preserving ownership and permissions, then checks health and hashes.
+Ordinary failures trigger rollback. Abrupt termination leaves a journal for
+explicit recovery. No resident coordinator is introduced. The adapter must
+hold exclusive control of the trusted directories and services, sufficient
+disk space, no other deployment, and verified stop completion before writes.
+The unit tests use temporary directories and simulated service controls.
 
-No configuration, database, real media, PINK service or actual production
-component is touched by this preparation. Do not treat this transaction core
-as a deployable full release.
+No production approval is added here. No service, configuration, database,
+private media or actual production binary is changed by this preparation.

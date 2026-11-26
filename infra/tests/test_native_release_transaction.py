@@ -88,6 +88,14 @@ class NativeReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(nr.Blocked, "no_approved_regular_production_release"):
             nr.approved_release(self.release.source)
 
+    def test_four_exact_component_locations_required(self):
+        self.assertEqual(tuple(nr.COMPONENTS), ("Jellyfin.Api.dll", "Jellyfin.LiveTv.dll",
+            "MediaBrowser.Controller.dll", "Jellyfin.Plugin.VivoapkMegaAuth.dll"))
+        incomplete = nr.Release(self.release.source, self.release.backend,
+                                tuple(p for p in self.release.pins if p.name != "MediaBrowser.Controller.dll"))
+        with self.assertRaisesRegex(nr.Blocked, "component_set_mismatch"):
+            nr.validate_release(incomplete)
+
     def test_preflight_is_read_only(self):
         self.transaction().preflight()
         self.assertEqual(list(self.state.iterdir()), [])
@@ -192,6 +200,26 @@ class NativeReleaseTests(unittest.TestCase):
         self.assertEqual(self.transaction().recover_interrupted(), "rolled_back")
         self.assertEqual(self.phase(), "rolled_back")
         self.assertTrue(self.active)
+        self.assert_files(self.old)
+
+    def test_interruption_before_fourth_replacement_restores_every_component(self):
+        tx = self.transaction()
+        real = nr.atomic_write
+        target = tx.target(self.release.pins[3])
+
+        def write(path, data, *args, **kwargs):
+            if path == target:
+                raise HardInterruption()
+            return real(path, data, *args, **kwargs)
+
+        with patch.object(nr, "atomic_write", side_effect=write):
+            with self.assertRaises(HardInterruption):
+                tx.activate()
+        self.assertEqual(self.phase(), "installing")
+        for pin in self.release.pins[:3]:
+            self.assertEqual(tx.target(pin).read_bytes(), self.new[pin.name])
+        self.assertEqual(target.read_bytes(), self.old[self.release.pins[3].name])
+        self.assertEqual(self.transaction().recover_interrupted(), "rolled_back")
         self.assert_files(self.old)
 
     def test_corrupt_backup_blocks_recovery_before_mutation(self):

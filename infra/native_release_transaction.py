@@ -25,6 +25,7 @@ from typing import Callable
 COMPONENTS = {
     "Jellyfin.Api.dll": "releases/12.4/jellyfin/Jellyfin.Api.dll",
     "Jellyfin.LiveTv.dll": "releases/12.4/jellyfin/Jellyfin.LiveTv.dll",
+    "MediaBrowser.Controller.dll": "releases/12.4/jellyfin/MediaBrowser.Controller.dll",
     "Jellyfin.Plugin.VivoapkMegaAuth.dll":
         "data/plugins/VivoAPK Mega OTT Auth_0.1.0.0/Jellyfin.Plugin.VivoapkMegaAuth.dll",
 }

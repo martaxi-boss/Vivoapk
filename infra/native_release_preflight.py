@@ -33,6 +33,9 @@ BASELINE = {
     "Jellyfin.LiveTv.dll": (
         "releases/12.4/jellyfin/Jellyfin.LiveTv.dll",
         "23a22e68fbcb00b71ad3cc7434ba8efee2f8a8239595f0ccd0a575b3049a311d"),
+    "MediaBrowser.Controller.dll": (
+        "releases/12.4/jellyfin/MediaBrowser.Controller.dll",
+        "ee148a49831f97c5dea8d3e96a6920c2cc7bc11ca9508fb9f437cd02ad978985"),
     "Jellyfin.Plugin.VivoapkMegaAuth.dll": (
         "data/plugins/VivoAPK Mega OTT Auth_0.1.0.0/Jellyfin.Plugin.VivoapkMegaAuth.dll",
         "60630b0ab43d4414739f86b047ed4d62358de8c587b878f1aeb6320e0fa813c2"),
@@ -217,9 +220,10 @@ def inspect():
     report["baseline_pass"] = not report["baseline_blockers"]
     report["activation_allowed"] = False
     report["activation_blockers"] = [
-        "no_approved_regular_native_playback_release",
+        "same_run_regular_release_bundle_and_vps_staging_not_certified",
         "coordinated_backend_configuration_and_ffmpeg_rollback_not_certified",
         "authorized_real_client_playback_not_certified",
+        "no_production_activation_pin_or_coordinated_adapter",
     ]
     report["scope"] = "read_only_no_install_no_restart_no_secret_read"
     return report
