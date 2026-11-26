@@ -32,6 +32,7 @@ from app.services.catalog import CatalogDenied, CatalogService, mapping_id_for_t
 from app.services.media_body import MediaReadError, open_media_body
 from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.private_hls import PrivateHlsSession
+from app.services.private_ts import PrivateTsSession
 from app.services.private_file import MAX_FILE_BYTES, MAX_WINDOW_BYTES, PrivateFileSession
 
 _NO_STORE = {"Cache-Control": "no-store"}
@@ -73,7 +74,7 @@ class _Entry:
     seen: float
     busy: bool = True
     source: AuthorizedMediaOrigin | None = None
-    player: PrivateHlsSession | PrivateFileSession | None = None
+    player: PrivateHlsSession | PrivateTsSession | PrivateFileSession | None = None
     media_kind: Literal["hls", "file"] = "hls"
     grant_digest: bytes = b""
     grant_expires: float = 0.0
@@ -215,6 +216,10 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
         source, entitlement=lambda: EntitlementState.UNAVAILABLE,
         allow_authorized_http=settings.private_media_allow_authorized_http,
     )
+    app.state.private_ts_factory = lambda source: PrivateTsSession(
+        source, entitlement=lambda: EntitlementState.UNAVAILABLE,
+        allow_authorized_http=settings.private_media_allow_authorized_http,
+    )
     app.state.private_file_factory = lambda source: PrivateFileSession(
         source, body_reader=partial(
             open_media_body, allow_authorized_http=settings.private_media_allow_authorized_http,
@@ -277,15 +282,18 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
                 entry.source = catalogue(request, db).authorize_media_origin(
                     token=token, asset=MediaAsset(
                         CatalogKind.LIVE, payload.category_id, payload.asset_id,
-                    ), platform=payload.platform,
+                    ), platform=payload.platform, live_format=settings.private_live_input_format,
                 )
-                entry.player = request.app.state.private_hls_factory(entry.source)
+                factory = (request.app.state.private_ts_factory if entry.source.extension == "ts"
+                           else request.app.state.private_hls_factory)
+                entry.player = factory(entry.source)
                 grant = registry.rotate(entry)
             except CatalogDenied:
                 raise _http(404) from None
             except (CatalogUnavailable, MediaReadError, ValueError):
                 raise _http(503) from None
-        return JSONResponse({"session_id": key, **grant}, headers=_NO_STORE)
+        return JSONResponse({"session_id": key, **grant,
+                             "input_format": entry.source.extension}, headers=_NO_STORE)
 
     @app.post("/_internal/media/hls/renew", include_in_schema=False)
     def renew(payload: SessionRequest, request: Request, grant: str = Depends(credential),
@@ -304,7 +312,8 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
         db: Session = Depends(get_db),
     ):
         with registry.borrow(payload.session_id, grant) as entry:
-            assert isinstance(entry.player, PrivateHlsSession)
+            if not isinstance(entry.player, PrivateHlsSession):
+                raise _http(404)
             try:
                 body = entry.player.refresh(
                     entitlement=entitlement(catalogue(request, db), entry),
@@ -319,7 +328,8 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
         db: Session = Depends(get_db),
     ):
         with registry.borrow(payload.session_id, grant) as entry:
-            assert isinstance(entry.player, PrivateHlsSession)
+            if not isinstance(entry.player, PrivateHlsSession):
+                raise _http(404)
             try:
                 body = entry.player.read_segment(
                     payload.segment_id,
@@ -328,6 +338,37 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
             except MediaReadError:
                 raise _http(404) from None
         return Response(body, media_type="video/mp2t", headers=_NO_STORE)
+
+    def ts_operation(action: str, payload: SessionRequest, request: Request,
+                     grant: str, db: Session):
+        with registry.borrow(payload.session_id, grant) as entry:
+            if not isinstance(entry.player, PrivateTsSession):
+                raise _http(404)
+            verify = entitlement(catalogue(request, db), entry)
+            try:
+                if action == "reset":
+                    entry.player.reset(entitlement=verify)
+                    return Response(status_code=204, headers=_NO_STORE)
+                body = (entry.player.probe(entitlement=verify) if action == "probe"
+                        else entry.player.read(entitlement=verify))
+            except MediaReadError:
+                raise _http(404) from None
+        return Response(body, media_type="video/mp2t", headers=_NO_STORE)
+
+    @app.post("/_internal/media/hls/ts-probe", include_in_schema=False)
+    def ts_probe(payload: SessionRequest, request: Request, grant: str = Depends(credential),
+                 db: Session = Depends(get_db)):
+        return ts_operation("probe", payload, request, grant, db)
+
+    @app.post("/_internal/media/hls/ts-read", include_in_schema=False)
+    def ts_read(payload: SessionRequest, request: Request, grant: str = Depends(credential),
+                db: Session = Depends(get_db)):
+        return ts_operation("read", payload, request, grant, db)
+
+    @app.post("/_internal/media/hls/ts-reset", include_in_schema=False)
+    def ts_reset(payload: SessionRequest, request: Request, grant: str = Depends(credential),
+                 db: Session = Depends(get_db)):
+        return ts_operation("reset", payload, request, grant, db)
 
     @app.post("/_internal/media/hls/close", include_in_schema=False)
     def close(payload: SessionRequest, grant: str = Depends(credential)):
@@ -393,3 +434,4 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
     def close_file(payload: SessionRequest, grant: str = Depends(credential)):
         registry.close(payload.session_id, grant, "file")
         return Response(status_code=204, headers=_NO_STORE)
+

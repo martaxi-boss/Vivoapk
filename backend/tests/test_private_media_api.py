@@ -24,10 +24,11 @@ PATH = "/_internal/media/hls/"
 
 
 @pytest.fixture
-def private_client(settings, session_factory):
+def private_client(settings, session_factory, request):
     configured = Settings(**{
         **settings.model_dump(), "private_hls_enabled": True,
         "private_media_key": KEY,
+        "private_live_input_format": getattr(request, "param", "m3u8"),
     })
     future = datetime.now(UTC) + timedelta(days=10)
     rows, tokens = {}, {}
@@ -244,3 +245,48 @@ def test_live_format_change_revokes_existing_grant(private_client):
     assert post("playlist", payload={"session_id": sid}).status_code == 404
     assert len(upstream.calls) == before
     assert not client.app.state.private_hls_registry._entries
+
+
+
+@pytest.mark.parametrize("private_client", ["ts"], indirect=True)
+def test_explicit_ts_api_uses_same_grants_and_isolates_owners(private_client):
+    from app.services.private_ts import PrivateTsSession
+    from test_media_origin import FakeResponse
+    client, post, upstream, xtream, _ = private_client
+    for suffix in ("a", "b"):
+        url = ORIGIN + f"/live/sub-{suffix}/fixture-password-{suffix}/101.ts"
+        upstream.routes[url] = lambda: FakeResponse(
+            200, [(b"Content-Type", b"video/mp2t")], [TS * 1000] * 32)
+    client.app.state.private_ts_factory = lambda source: PrivateTsSession(
+        source, entitlement=lambda: EntitlementState.UNAVAILABLE,
+        resolver=public_dns, pool_factory=upstream.factory)
+    a = post("open", payload=request_for("a")).json()
+    b = post("open", suffix="b", payload=request_for("b")).json()
+    assert a["input_format"] == b["input_format"] == "ts"
+    sa, sb = a["session_id"], b["session_id"]
+    assert upstream.calls == []
+    assert post("ts-probe", suffix="b", payload={"session_id": sa}).status_code == 404
+    assert upstream.calls == []
+    assert post("ts-probe", payload={"session_id": sa}).status_code == 200
+    assert post("ts-probe", suffix="b", payload={"session_id": sb}).status_code == 200
+    assert post("ts-read", payload={"session_id": sa}).content.startswith(TS)
+    assert post("ts-reset", payload={"session_id": sa}).status_code == 204
+    assert post("ts-read", payload={"session_id": sa}).status_code == 200
+    xtream.allowed_output_formats = frozenset({"m3u8"})
+    before = len(upstream.calls)
+    assert post("ts-read", payload={"session_id": sa}).status_code == 404
+    assert len(upstream.calls) == before
+    assert sa not in client.app.state.private_hls_registry._entries
+    xtream.allowed_output_formats = frozenset({"m3u8", "ts"})
+    assert post("ts-read", suffix="b", payload={"session_id": sb}).status_code == 200
+    assert post("close", suffix="b", payload={"session_id": sb}).status_code == 204
+    assert not client.app.state.private_hls_registry._entries
+    assert all(pool.closed and pool.response.closed for pool in upstream.pools)
+
+
+@pytest.mark.parametrize("private_client", ["ts"], indirect=True)
+def test_explicit_ts_not_advertised_cannot_open(private_client):
+    client, post, upstream, xtream, _ = private_client
+    xtream.allowed_output_formats = frozenset({"m3u8"})
+    assert post("open", payload=request_for("a")).status_code == 404
+    assert upstream.calls == [] and not client.app.state.private_hls_registry._entries

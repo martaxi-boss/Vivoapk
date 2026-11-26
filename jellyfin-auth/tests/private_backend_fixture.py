@@ -26,6 +26,8 @@ from app.models import SubscriptionMapping
 from app.schemas import CatalogKind, EntitlementState
 from app.security import issue_session_token
 from app.services.private_hls import PrivateHlsSession
+from app.services.private_ts import PrivateTsSession
+from synthetic_ts_origin import ContinuousOrigin
 from app.services.private_file import PrivateFileSession
 from app.services.media_body import open_media_body
 from test_catalog_privacy import FakeCatalog, FakeMega, FakeXtream
@@ -69,6 +71,9 @@ class PrivateBackend:
         self.routes = {}
         self.file_routes = {}
         self.finite = finite
+        self.continuous_ts = os.environ.get("VIVOAPK_CI_PRIVATE_TS") == "1"
+        assert not self.continuous_ts or live
+        ts_sources = {}
         assert not (live and finite)
         self.accounts = {}
         self.statuses = statuses
@@ -83,6 +88,7 @@ class PrivateBackend:
             session_signing_key=secrets.token_urlsafe(32),
             private_hls_enabled=True, private_media_key=secrets.token_urlsafe(32),
             session_ttl_seconds=300,
+            private_live_input_format="ts" if self.continuous_ts else "m3u8",
         )
         self.app = create_app(settings)
         dbfactory = self.app.state.session_factory
@@ -136,6 +142,9 @@ class PrivateBackend:
                         self.routes[ORIGIN + f"/muxed/{suffix}/{name}"] = (
                             lambda b=body: response(b, b"video/mp2t"))
                     root = ORIGIN + f"/live/{username}/{password}/42.m3u8"
+                    if self.continuous_ts:
+                        ts_sources[ORIGIN + f"/live/{username}/{password}/42.ts"] = tuple(
+                            segments[name] for name in sorted(segments))
                     if live:
                         # Release pre-generated, uniquely timestamped TS segments
                         # at broadcast pace. No ENDLIST or finite VOD playlist.
@@ -158,7 +167,7 @@ class PrivateBackend:
                     expiring_at=future, dns_link=ORIGIN, dns_link_for_samsung_lg=ORIGIN,
                 )
             db.commit()
-        self.upstream = Origin(self.routes)
+        self.upstream = ContinuousOrigin(ts_sources) if self.continuous_ts else Origin(self.routes)
         self.file_upstream = RangePool(self.file_routes)
         class Xtream(FakeXtream):
             def authenticate(inner, **kwargs):
@@ -175,6 +184,11 @@ class PrivateBackend:
             source, entitlement=lambda: EntitlementState.UNAVAILABLE,
             resolver=public_dns, pool_factory=self.upstream.factory,
         )
+        if self.continuous_ts:
+            self.app.state.private_ts_factory = lambda source: PrivateTsSession(
+                source, entitlement=lambda: EntitlementState.UNAVAILABLE,
+                resolver=public_dns, pool_factory=self.upstream.factory,
+            )
         if finite:
             self.app.state.private_file_factory = lambda source: PrivateFileSession(
                 source, body_reader=lambda src, **kwargs: open_media_body(
@@ -231,8 +245,10 @@ class PrivateBackend:
                 "active_backend_sessions": self.count(),
             }), flush=True)
         else:
-            assert self.upstream.calls and all(url in self.routes for url in self.upstream.calls)
+            assert self.upstream.calls and all(url in self.upstream.routes for url in self.upstream.calls)
             assert all(p.closed and p.response.closed for p in self.upstream.pools)
+            if self.continuous_ts:
+                print("JELLYFIN_PRIVATE_NATIVE_CONTINUOUS_TS_INPUT_AND_CLEANUP=PASS", flush=True)
 
     def close(self):
         if self.server is not None:
@@ -244,3 +260,4 @@ class PrivateBackend:
         if getattr(self, "engine", None) is not None:
             Base.metadata.drop_all(self.engine)
             self.engine.dispose()
+

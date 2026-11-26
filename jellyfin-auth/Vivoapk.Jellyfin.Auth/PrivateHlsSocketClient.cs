@@ -57,7 +57,7 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         internal int Seconds { get; } = seconds;
     }
 
-    internal async Task<(string SessionId, Grant Grant)> OpenAsync(string token, string category, string asset,
+    internal async Task<(string SessionId, Grant Grant, bool ContinuousTs)> OpenAsync(string token, string category, string asset,
         string platform, CancellationToken ct)
     {
         if (!Number.IsMatch(category) || !Number.IsMatch(asset)
@@ -70,7 +70,11 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         if (!json.RootElement.TryGetProperty("session_id", out var id)
             || id.ValueKind != JsonValueKind.String || !IsId(id.GetString()))
             throw new InvalidOperationException("Private media unavailable");
-        return (id.GetString()!, ParseGrant(json.RootElement));
+        string input = json.RootElement.TryGetProperty("input_format", out var format)
+            && format.ValueKind == JsonValueKind.String ? format.GetString()! : "m3u8";
+        if (input is not ("m3u8" or "ts"))
+            throw new InvalidOperationException("Unknown private input contract");
+        return (id.GetString()!, ParseGrant(json.RootElement), input == "ts");
     }
 
     internal const int FileWindowBytes = 4 * 1024 * 1024;
@@ -133,6 +137,17 @@ internal sealed class PrivateHlsSocketClient : IDisposable
         using var json = JsonDocument.Parse(body);
         return ParseGrant(json.RootElement);
     }
+
+    internal const int TsWindowBytes = 188 * 8192;
+
+    internal Task<byte[]> ReadTsAsync(string token, string sessionId, bool probe, CancellationToken ct)
+        => SendAsync(probe ? "ts-probe" : "ts-read", token,
+            new { session_id = RequireId(sessionId) }, "video/mp2t",
+            probe ? 188 * 2048 : TsWindowBytes, ct);
+
+    internal async Task ResetTsAsync(string token, string sessionId, CancellationToken ct)
+        => _ = await SendAsync("ts-reset", token,
+            new { session_id = RequireId(sessionId) }, null, 0, ct).ConfigureAwait(false);
 
     internal Task<byte[]> PlaylistAsync(string token, string sessionId, CancellationToken ct)
         => SendAsync("playlist", token, new { session_id = RequireId(sessionId) },
@@ -211,3 +226,4 @@ internal sealed class PrivateHlsSocketClient : IDisposable
 
     public void Dispose() => _client.Dispose();
 }
+

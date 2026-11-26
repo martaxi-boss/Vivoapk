@@ -1,5 +1,9 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Entrada TS privada em implementação — 26/11/2026
+
+Novo candidato no mesmo ramo, ainda NÃO instalado nem certificado: o backend passa a aceitar contrato LIVE MPEG-TS explícito por configuração de servidor (HLS mantém-se por omissão), exige formato anunciado na autenticação e pertença ao catálogo, usa os DNS por plataforma existentes e grants privados. O adaptador existente serve /stream.ts ao FFmpeg nativo e uma amostra separada limitada ao FFprobe, sem novo decoder/serviço, URLs externas nos clientes, ficheiros de media ou fallback após 401/403. Probe e reprodução abrem ligações sequenciais; uma ligação aceite persiste entre janelas limitadas, é encerrada no abandono/restart/expiração. Negação de autorização retira a sessão e não permite reabertura pelo reset. Novos ensaios sintéticos cobrem framing, entradas inválidas/encriptadas, grants/isolamento/revogação e percurso TS privado no servidor Jellyfin real, incluindo recuperação paralela. Resultados ainda pendentes. Nenhum acesso adicional a media Mega nem alteração da produção r100; a implementação não resolve por si a recusa r108. Não promover sem revisão e provas reais autorizadas.
+
 ## Investigação atual de reprodução — 26/11/2026, 17:27 UTC
 
 [Ferrari/REA/Ruflo r112](https://github.com/martaxi-boss/VPS/actions/runs/45867836029), pedido `0da06c74d37eec3f2930f3dddd06a171abd44d97`, artefacto 15141750499: CRC exterior/interior OK, report.status=completed, evidência SHA-256 `7051af7f1a023725e018ee8fb099e52e671a0080a822c11c6428fe89e12b0214`. Leitura da linha de teste existente pela API oficial e autenticação Xtream: ambas famílias ativas, HTTP 200, allowed_output_formats presente com TS e HLS, 0/2 ligações ocupadas; identidade/validade e mapping iguais ao fornecedor. Nenhum pedido de media, alteração de subscrição ou segredo emitido; quatro serviços/PIDs inalterados. A ocupação atual não prova a ocupação no r108, e formatos anunciados não garantem acesso à media.
@@ -195,3 +199,4 @@ Candidato integrado no plugin existente, branch `vivoapk/redirect-preflight-2026
 Um cliente novo, sem instalação nem configuração adicional além do Jellyfin oficial, abre a app, introduz `https://serveriptv.duckdns.org`, username e password Mega OTT, vê **automaticamente só a sua subscrição**, reproduz conteúdos autorizados com imagem e som usando a reprodução nativa do Jellyfin e o processamento FFmpeg na VPS quando necessário, e perde/recupera acesso conforme o painel Mega OTT. Repetir com pelo menos duas contas diferentes e clientes de cada plataforma de destino (Android, Android TV, iOS, Windows, Samsung Tizen e LG webOS). Verificar recursos, cache temporária e ausência de armazenamento permanente de media. Não confundir autorização da nova arquitetura com implementação ou instalação concluídas.
 
 **NÃO DESVIAR DESTE OBJETIVO PARA CORREÇÕES APENAS ANDROID, PAINÉIS NOVOS OU REINSTALAÇÃO DO PINK IPTV.**
+

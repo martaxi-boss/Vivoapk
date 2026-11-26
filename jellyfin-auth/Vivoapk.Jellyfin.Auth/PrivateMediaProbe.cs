@@ -13,7 +13,7 @@ namespace Jellyfin.Plugin.VivoapkMegaAuth;
 internal static class PrivateMediaProbe
 {
     private static readonly Regex Route = new(
-        @"\A/vivoapk/[0-9a-f]{48}/(?:file|index\.m3u8|stream\.ts)\z", RegexOptions.CultureInvariant);
+        @"\A/vivoapk/[0-9a-f]{48}/(?:file|index\.m3u8|stream\.ts|probe\.ts)\z", RegexOptions.CultureInvariant);
     private static readonly HashSet<string> VideoCodecs = new(StringComparer.Ordinal)
         { "h264", "hevc", "mpeg2video", "mpeg4", "av1", "vp8", "vp9" };
     private static readonly HashSet<string> AudioCodecs = new(StringComparer.Ordinal)
@@ -44,9 +44,11 @@ internal static class PrivateMediaProbe
             || source.Host != "127.0.0.1" || source.Port < 1024
             || source.UserInfo.Length != 0 || source.Query.Length != 0 || source.Fragment.Length != 0
             || !Route.IsMatch(source.AbsolutePath)
-            || !source.AbsolutePath.EndsWith(
-                finite ? "/file" : continuousTs ? "/stream.ts" : "/index.m3u8",
-                StringComparison.Ordinal))
+            || !(continuousTs
+                ? source.AbsolutePath.EndsWith("/stream.ts", StringComparison.Ordinal)
+                    || source.AbsolutePath.EndsWith("/probe.ts", StringComparison.Ordinal)
+                : source.AbsolutePath.EndsWith(finite ? "/file" : "/index.m3u8",
+                    StringComparison.Ordinal)))
             throw Unavailable();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(20));
@@ -222,3 +224,4 @@ internal static class PrivateMediaProbe
             IntValue(format, "bit_rate", 0, 500000000), parsed.OrderBy(s => s.Index).ToArray());
     }
 }
+

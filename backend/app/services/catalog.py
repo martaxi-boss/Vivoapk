@@ -170,9 +170,12 @@ class CatalogService:
 
     def authorize_media_origin(
         self, *, token: str, asset: MediaAsset, platform: ClientPlatform,
+        live_format: str = "m3u8",
     ) -> AuthorizedMediaOrigin:
         """Internal-only: authorize a specific asset, never accept a caller URL."""
-        required_live_format = "m3u8" if asset.kind is CatalogKind.LIVE else None
+        if live_format not in {"m3u8", "ts"}:
+            raise CatalogDenied("Unsupported live input contract")
+        required_live_format = live_format if asset.kind is CatalogKind.LIVE else None
         origin, username, password = self._authorize(
             token=token, platform=platform, required_live_format=required_live_format,
         )
@@ -292,4 +295,5 @@ class CatalogService:
             stream_id=stream_id, limit=limit
         )
         return EpgResponse.model_validate(payload)
+
 

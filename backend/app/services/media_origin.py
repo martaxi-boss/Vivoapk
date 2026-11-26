@@ -63,7 +63,7 @@ class AuthorizedMediaOrigin:
         _component(self.username)
         _component(self.password.get_secret_value())
         if self.asset.kind is CatalogKind.LIVE:
-            if self.extension != "m3u8":
+            if self.extension not in {"m3u8", "ts"}:
                 raise ValueError("Unverified live media format")
         elif self.extension not in _FILE_EXTENSIONS:
             raise ValueError("Unverified media format")
@@ -80,3 +80,4 @@ class AuthorizedMediaOrigin:
             + "/" + _component(self.password.get_secret_value())
             + "/" + self.asset.asset_id + "." + str(self.extension)
         )
+

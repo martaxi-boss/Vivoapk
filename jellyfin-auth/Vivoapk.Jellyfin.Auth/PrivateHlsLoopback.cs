@@ -33,9 +33,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
     private int _disposed;
 
     private sealed class Entry(Guid owner, PrivateHlsSocketClient.Grant grant, string sessionId, long issued,
-        PrivateHlsSocketClient.FileInfo? file = null)
+        PrivateHlsSocketClient.FileInfo? file = null, bool continuousTs = false)
     {
         internal readonly Guid Owner = owner;
+        internal readonly bool ContinuousTs = continuousTs;
+        internal readonly SemaphoreSlim TsReader = new(1, 1);
         internal readonly PrivateHlsSocketClient.FileInfo? File = file;
         internal string Token = grant.Token;
         internal long GrantExpires = issued + grant.Seconds * 1000L;
@@ -133,12 +135,13 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             var opened = await _backend.OpenAsync(token, category, asset, platform, ct).ConfigureAwait(false);
             var session = opened.SessionId;
             var id = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-            if (!_entries.TryAdd(id, new Entry(owner, opened.Grant, session, issued)))
+            if (!_entries.TryAdd(id, new Entry(owner, opened.Grant, session, issued, continuousTs: opened.ContinuousTs)))
             {
                 await _backend.CloseAsync(opened.Grant.Token, session, ct).ConfigureAwait(false);
                 throw new InvalidOperationException("Private media admission failed");
             }
-            return new Lease(id, new Uri(_base, "/vivoapk/" + id + "/index.m3u8"));
+            return new Lease(id, new Uri(_base, "/vivoapk/" + id
+                + (opened.ContinuousTs ? "/stream.ts" : "/index.m3u8")));
         }
         finally
         {
@@ -179,13 +182,13 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         bool finite = entry.File is not null;
         if (finite && entry.File!.Mime != "video/mp4")
             throw new InvalidOperationException("Private media format not yet certified");
-        var exact = new Uri(_base, "/vivoapk/" + lease.Id + (finite ? "/file" : "/index.m3u8"));
+        var exact = new Uri(_base, "/vivoapk/" + lease.Id + (finite ? "/file" : entry.ContinuousTs ? "/stream.ts" : "/index.m3u8"));
         if (lease.Playlist != exact)
             throw new InvalidOperationException("Private media identity mismatch");
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
             ct, entry.Retired.Token, _stopping.Token);
         bool ended = false;
-        if (!finite)
+        if (!finite && !entry.ContinuousTs)
         {
             // Duration reported by a demuxer may be the available sliding
             // window, not a channel's total runtime. Determine ENDLIST from
@@ -213,8 +216,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         }
         // Do not hold the backend grant lock: the probe must consume its
         // ordinary authenticated HTTP windows through the existing bridge.
-        var metadata = await PrivateMediaProbe.ReadAsync(executable, exact, finite, lifetime.Token)
-            .ConfigureAwait(false);
+        var metadata = entry.ContinuousTs
+            ? await PrivateMediaProbe.ReadContinuousTsAsync(executable,
+                new Uri(_base, "/vivoapk/" + lease.Id + "/probe.ts"), lifetime.Token).ConfigureAwait(false)
+            : await PrivateMediaProbe.ReadAsync(executable, exact, finite, lifetime.Token)
+                .ConfigureAwait(false);
         if (!finite)
         {
             if (!ended)
@@ -480,6 +486,82 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         }
     }
 
+    private async Task<byte[]> ReadTsWindowAsync(string id, Entry entry, bool probe,
+        CancellationToken ct)
+    {
+        if (!await entry.Gate.WaitAsync(TimeSpan.FromSeconds(35), ct).ConfigureAwait(false))
+            throw new InvalidOperationException("Private TS operation busy");
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!_entries.TryGetValue(id, out var current) || !ReferenceEquals(current, entry)
+                || Environment.TickCount64 - entry.LastUse >= 90000)
+                throw new InvalidOperationException("Private TS unavailable");
+            await RenewIfNeededAsync(entry, CancellationToken.None).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            var bytes = await _backend.ReadTsAsync(entry.Token, entry.SessionId,
+                probe, CancellationToken.None).ConfigureAwait(false);
+            if (bytes.Length < 188 * 3 || bytes.Length % 188 != 0)
+                throw new InvalidOperationException("Invalid private TS framing");
+            for (int n = 0; n < bytes.Length; n += 188)
+                if (bytes[n] != 0x47 || (bytes[n + 3] & 0xC0) != 0)
+                    throw new InvalidOperationException("Invalid private TS framing");
+            entry.LastUse = Environment.TickCount64;
+            ct.ThrowIfCancellationRequested();
+            return bytes;
+        }
+        finally { entry.Gate.Release(); }
+    }
+
+    private async Task ServeTsAsync(HttpContext http, string id, Entry entry, bool probe)
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            http.RequestAborted, entry.Retired.Token, _stopping.Token);
+        var ct = lifetime.Token;
+        // A sequential probe and one native encoder are admitted per lease.
+        // A second reader cannot consume or steal bytes from the first.
+        if (!entry.TsReader.Wait(0))
+            throw new InvalidOperationException("Private TS reader busy");
+        try
+        {
+            do
+            {
+                var bytes = await ReadTsWindowAsync(id, entry, probe, ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                http.Response.ContentType = "video/mp2t";
+                if (probe)
+                    http.Response.ContentLength = bytes.Length;
+                using var writeDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                writeDeadline.CancelAfter(TimeSpan.FromSeconds(20));
+                await http.Response.Body.WriteAsync(bytes, writeDeadline.Token).ConfigureAwait(false);
+                await http.Response.Body.FlushAsync(writeDeadline.Token).ConfigureAwait(false);
+            } while (!probe);
+        }
+        finally
+        {
+            if (!probe)
+            {
+                // Close this accepted upstream connection on native reader
+                // disconnect. Keep the authorized lease for a native restart.
+                // A denied/expired player was already permanently revoked.
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                bool locked = false;
+                try
+                {
+                    locked = await entry.Gate.WaitAsync(TimeSpan.FromSeconds(7), cleanup.Token)
+                        .ConfigureAwait(false);
+                    if (locked && _entries.TryGetValue(id, out var current)
+                        && ReferenceEquals(current, entry))
+                        await _backend.ResetTsAsync(entry.Token, entry.SessionId, cleanup.Token)
+                            .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or OperationCanceledException) { }
+                finally { if (locked) entry.Gate.Release(); }
+            }
+            entry.TsReader.Release();
+        }
+    }
+
     private static void SetFileHeaders(HttpContext http, PrivateHlsSocketClient.FileInfo file,
         long start, long end, bool partial)
     {
@@ -520,11 +602,23 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         bool playlist = parts.Length == 4 && parts[3] == "index.m3u8";
         var segment = parts.Length == 5 ? Segment.Match(parts[3] + "/" + parts[4]) : Match.Empty;
         bool fileRoute = parts.Length == 4 && parts[3] == "file";
+        bool tsProbe = parts.Length == 4 && parts[3] == "probe.ts";
+        bool tsRoute = parts.Length == 4 && parts[3] == "stream.ts";
         long start = 0, end = 0;
         bool partial = false;
         if (entry.File is { } file)
         {
             if (!fileRoute || !TryRange(request, file.Length, out start, out end, out partial))
+            {
+                http.Response.StatusCode = 404;
+                return;
+            }
+        }
+        else if (entry.ContinuousTs)
+        {
+            if ((!tsProbe && !tsRoute) || !HttpMethods.IsGet(request.Method)
+                || (request.Headers.TryGetValue("Range", out var tsRange)
+                    && (tsRange.Count != 1 || tsRange[0] != "bytes=0-")))
             {
                 http.Response.StatusCode = 404;
                 return;
@@ -544,6 +638,11 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             {
                 await ServeFileAsync(http, parts[2], entry, finiteFile, start, end, partial)
                     .ConfigureAwait(false);
+                return;
+            }
+            if (entry.ContinuousTs)
+            {
+                await ServeTsAsync(http, parts[2], entry, tsProbe).ConfigureAwait(false);
                 return;
             }
             locked = await entry.Gate.WaitAsync(TimeSpan.FromSeconds(10), http.RequestAborted)
@@ -611,3 +710,4 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         _stopping.Dispose();
     }
 }
+

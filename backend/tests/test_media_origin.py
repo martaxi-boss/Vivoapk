@@ -241,3 +241,16 @@ def test_refuse_private_dns_plaintext_and_manifest_before_connect(source):
         with pytest.raises(MediaReadError):
             with open_media_body(candidate, resolver=public_dns, pool_factory=forbidden):
                 pass
+
+
+
+def test_ts_contract_is_explicit_and_requires_current_provider_metadata(accounts):
+    svc, tokens, xtream = accounts
+    asset = MediaAsset(CatalogKind.LIVE, "10", "101")
+    source = svc.authorize_media_origin(token=tokens["a"], asset=asset,
+        platform=ClientPlatform.ANDROID, live_format="ts")
+    assert source.extension == "ts" and source._request_url().endswith("/101.ts")
+    xtream.allowed_output_formats = frozenset({"m3u8"})
+    with pytest.raises(CatalogDenied):
+        svc.authorize_media_origin(token=tokens["a"], asset=asset,
+            platform=ClientPlatform.ANDROID, live_format="ts")
