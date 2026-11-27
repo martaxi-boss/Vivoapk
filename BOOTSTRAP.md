@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Continuidade real: 15 segmentos entregues, encerramento por UNAVAILABLE — 27/11/2026
+
+[r174 #45981545439](https://github.com/martaxi-boss/VPS/actions/runs/45981545439), artefacto 15189652510 íntegro, evidência SHA-256 `e6e595bae8212fe43809a72ea9ecd4e25f68dce4b38b658e5d1abf673fbe840a`: fonte/plugin1e, Jellyfin12.4.0; auth/catálogo/PlaybackInfo/master aprovados; fonte mpegts infinita sem duração, H264768x432 e AAC estéreo48k; **15 segmentos HLS nativos reais entregues**. A continuidade falhou por volta de34s da playlist: callback de autorização devolveu **UNAVAILABLE** (checks anteriores ACTIVE) e o leitor fechou antes de outra leitura. GrantTTL300s, sem media401/403 e sem erro de descodificador demonstrado. Os segmentos desse ensaio não chegaram ao passo final de contagem de frames; não declarar reprodução completa nem imagem/som da SAÍDA certificados com base apenas nesta entrega.
+
+Os dois 302→200 upstream, os vários ts-read200 e os tempos de checks ficaram registados. R172 tinha aprovado master200 após corrigir mistura de credencial na query e nos cabeçalhos do ensaio, conforme helper já aprovado; sem enfraquecer a proteção. Investigar a origem exata de UNAVAILABLE em `_authorize_mapping`: limite local HTTP429/503 ou indisponibilidade da metadata do fornecedor, com números de budgets e classificação tipada/estática, sem novas chamadas adicionais nem ignorar recusas. Não alterar autenticação, DNS ou codec por hipótese. Produção de código continua r100; correção permanente do monitor r168 preservada. Novo ensaio r176 é diagnóstico do mesmo percurso e contará frames da saída assim que existirem segmentos, preservando falha de continuidade se reaparecer.
+
+
+
 ## Confirmação de subscrição ligada em produção — 27/11/2026
 
 [r164 #45978782285](https://github.com/martaxi-boss/VPS/actions/runs/45978782285) comprovou flags/ambiente/permissões/provider corretos, mas ausência da chave do monitor. [r166 #45979280996](https://github.com/martaxi-boss/VPS/actions/runs/45979280996) confirmou que também faltava no ambiente efetivo do backend e no cofre base. `NativePlaybackAuthorization` exige essa confirmação e recusava antes de chegar ao transporte de media. O erro de paths do piloto era outra lacuna, já corrigida; não explica sozinho todos os 404.
