@@ -1,5 +1,11 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Piloto Jellyfin real — falha localizada em PlaybackInfo — 27/11/2026
+
+[r158 #45977288532](https://github.com/martaxi-boss/VPS/actions/runs/45977288532), artefacto 15188071182 íntegro, evidência SHA-256 `04ffc750be191256758b09158ba32fbb5285cb62581068d27a6ad510d3a55e3b`: Jellyfin temporário 12.4.0 real pronto, autenticação Mega real aprovada e RTP1 autorizado presente no catálogo nativo; **PlaybackInfo respondeu 404**, antes de saída HLS entregue. Source/plugin exatos 1e. Não certificar reprodução integrada. Produção/PIDs preservados, processos temporários e chaves/media removidos. A fonte real descodificada em r143 continua válida; a causa deste 404 interno é agora investigada com estados das rotas privadas, respostas upstream e codecs tipados, sem imprimir URLs, credenciais ou corpos. Não atribuir o 404 ao fornecedor antes de localizar a etapa. Os ensaios anteriores r148/r151/r154/r156 eram falhas de preparação do piloto, não de reprodução: PATH, conflito de listeners e readiness prematura sobre HTTP200 sem JSON. O piloto usa namespace temporário só de loopback; backend mantém o percurso/IP normal para o fornecedor.
+
+
+
 ## RTP1 real aceite e descodificada — 27/11/2026
 
 **CI exata do candidato 1e aprovada:** [integração #45972964003](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964003), dez gates PASS e COMBINED_LAB_GATE_EXIT=0; [backend #45972964122](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964122) e [loopback #45972964061](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964061) PASS. Artefacto normal 15186703397, ZIP SHA-256 `775fa3f128568d983c8bcaac9369b9d97b0867b3572643206be0d17455eddd5b`; plugin normal `c6ddfa1cdb44ee2d4608db8367fdca8ef6e2a5963ea4d9efa75ff88c50f3c27f`; manifest fonte/backend=1e, activation_allowed=false. Validada integridade e hashes dos componentes. Os três DLLs upstream já coincidem com os instalados. O plugin exato é preparado para o piloto real seguinte; não ativado. R148/r151 falharam no arranque isolado antes de media (PATH e conflito de listener), limparam processos/chaves/media e preservaram produção; não são testes de transmissão aprovados. O próximo piloto usa namespace próprio só de loopback, mantendo o backend na mesma rede/IP da VPS.
