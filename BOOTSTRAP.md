@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Continuidade real de filme aprovada; correção do arranque em validação — 27/11/2026
+
+[r224 #46069342160](https://github.com/martaxi-boss/VPS/actions/runs/46069342160), evidência `e31ef53abaca22200e56900e7c2b10c450aeaf03e211afc46874e14fa969f04d`: **filme real autorizado no candidato d584, nove segmentos nativos ao longo de28s, segmento novo aos25,83s;648 frames de vídeo e1265 de áudio descodificados**, H.264/AAC. Pedido anónimo recusado, cacheTS0 apósStop, sem falhas de leitura e quotaMega mínima54. Produção/socket/namespace preservados. O stdoutREA foi truncado antes dos campos finais de limpeza; r227 verifica expressamente a ausência dos temporários/processos anteriores e produz JSON compacto completo. Não inventar os campos ausentes emr224.
+
+**Problema de arranque demonstrado:** primeiro segmento aos83,03s. Cada janela4MiB leva11,65–12,13s; ServeFileAsync valida-a por completo antes de enviar cabeçalhos e serializa operações com rotação de grant. Uma leitura já enviada termina mesmo que o leitorHTTP abandone para fazerseek, evitando perder um grant rodado. As leituras antecipadas e mudanças de posição acumulam esperas longas. Esta alteração reduz **só os blocos de entregaHTTP finita para512KiB**, mantendo o teto validado4MiB do backend, limites de tempo, política de autorização/renovação e TV intactos. O fixture existente compara ficheiros completos, seek, dois proprietários, descodificação e limpeza; passa a exigir também todos os pedidos de janela do adapter<=512KiB. A redução de latência ainda exige medição real, não é presumida.
+
+[r225 #46069471138](https://github.com/martaxi-boss/VPS/actions/runs/46069471138) colocou os três ficheiros do bundle nativo d584 verificados na área de estágio, sem ativação. **Produção continua12b**. Não instalar automaticamente esta alteração de latência nem trocar por main; exigir CI e provas reais do candidato exato.
+
 ## Filme real já descodificado; continuidade em validação — 27/11/2026
 
 O candidato **`d584f6b5d1b87d966f389b722af161489fc504ad`** passou a CI do plugin [#46065913786](https://github.com/martaxi-boss/Vivoapk/actions/runs/46065913786), do transporte/probe [#46065914064](https://github.com/martaxi-boss/Vivoapk/actions/runs/46065914064) e do servidor nativo completo [#46065913775](https://github.com/martaxi-boss/Vivoapk/actions/runs/46065913775). A regressão de cabeçalhos HTTP atrasados 9s passou. Plugin ordinário SHA256 `65570589875f9936e33c2278c2e1237222fe703d7d508a773f4d4c11f73e4bab`; manifesto `502b7aee5cdb86567bddca39342fe42d946b3f48e9695a8df18ad1bf4a5fc3c7`.

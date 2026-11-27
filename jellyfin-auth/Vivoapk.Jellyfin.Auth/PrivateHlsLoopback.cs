@@ -448,7 +448,13 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             }
             for (long offset = start; offset <= end;)
             {
-                int length = (int)Math.Min(PrivateHlsSocketClient.FileWindowBytes, end - offset + 1);
+                // Validation completes before this window's first byte, and an
+                // in-flight backend read must finish before grant rotation can
+                // proceed. Keep finite delivery smaller than the 4 MiB backend
+                // ceiling so a header/tail seek does not wait for another
+                // whole 4 MiB after the HTTP reader has already disconnected.
+                // Live HLS/TS and the backend's validated maximum stay unchanged.
+                int length = (int)Math.Min(512 * 1024, end - offset + 1);
                 var body = await ReadFileWindowAsync(id, entry, file, offset, length, ct)
                     .ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();

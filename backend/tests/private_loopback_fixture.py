@@ -438,9 +438,12 @@ def main():
             assert not app.state.private_hls_registry._entries
             assert all(pool.closed and pool.response.closed for pool in finite.pools)
             assert all(url in finite.files and 0 <= start <= end
-                       and end - start + 1 <= 4 * 1024 * 1024
+                       # The HTTP adapter must not read a full 4 MiB before
+                       # exposing finite headers or abandoning a seek.
+                       and end - start + 1 <= 512 * 1024
                        for url, start, end, _ in finite.calls)
             assert any(start == 4 * 1024 * 1024 for _, start, _, _ in finite.calls)
+            print("VIVOAPK_PRIVATE_LOOPBACK_FINITE_DELIVERY_WINDOWS_512K=PASS", flush=True)
             print("VIVOAPK_PRIVATE_LOOPBACK_FILE_BACKEND_UDS_AND_CLEANUP=PASS", flush=True)
             print("VIVOAPK_PRIVATE_LOOPBACK_BACKEND_UDS_AND_CLEANUP=PASS", flush=True)
         finally:
