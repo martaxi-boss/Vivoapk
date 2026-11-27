@@ -1,6 +1,22 @@
 # VivoAPK — auditoria do percurso de reprodução em 26/11/2026
 
-## Estado atual — fonte oficial corrigida, reprodução real recusada — 26/11/2026
+## Estado atual — RTP1 real aceite e descodificada — 27/11/2026
+
+A hipótese de bloqueio externo descrita no histórico de 26/11 foi superada pela investigação HTTP. Não pedir intervenção do fornecedor com base nesses ensaios antigos. Produção continua r100, sem ativação.
+
+Diferenças demonstradas face ao PINK/Media3: o leitor privado omitia User-Agent e rejeitava todos os redirecionamentos. O candidato `12c7860c467b6d4758283fd7ab72493151e3bd72` passou a enviar a identificação verdadeira `Vivoapk/1.0`, já usada pela autenticação e catálogo, sem imitar PINK ou navegador. [r141](https://github.com/martaxi-boss/VPS/actions/runs/45972113080) observou **302**, anteriormente 401; terminou antes de seguir porque o transporte ainda o recusava. Não prova a política interna do fornecedor.
+
+O candidato executável `1e7424cdb257dbf0fe6d9d0f0dd8c26e4f77dbe5` acrescenta opção explícita de continuação da URL emitida pelo fornecedor, desligada por defeito. Máximo dois saltos, validação e resolução/IP público fixado em cada salto, prazo total, fecho da ligação anterior, sem cookies/headers da resposta, sem downgrade HTTPS. 401/403 continuam terminais, sem alternativa. Não altera autenticação, catálogo ou escolha de DNS.
+
+**[r143 — fonte real RTP1](https://github.com/martaxi-boss/VPS/actions/runs/45973269421):** artefacto 15186525542 íntegro; evidência SHA-256 `7acf2b58f03c29de61afb60c4b65fdb53002142d3ddc21636b73f30af70546d0`. Conta ativa, mesma identidade e URL oficial selecionada antes da media; respostas **302→200** sequenciais no probe e na reprodução; amostra probe 385024 bytes e reprodução 3762444 bytes em memória. Jellyfin FFmpeg 8.1.3-2 descodificou **635 fotogramas de vídeo e 1188 de áudio**. source_decode_pass=true, production_activation=false, production_unchanged=true, physical_clients_certified=0, media_saved=false, secrets_emitted=false. [Revisão r144](https://github.com/martaxi-boss/VPS/actions/runs/45974344266) aprova apenas este âmbito.
+
+Isto certifica a entrada real no FFmpeg nativo, ainda não a saída do servidor Jellyfin. Está em execução um piloto temporário com Jellyfin12.4 real, dados e chave efémeros, backend1e e plugin normal b2fd cujos fontes C# são idênticos. A composição é apenas de teste, não release de produção. Gates por concluir: PlaybackInfo/probe/saída HLS real, continuidade e cache reais, VOD/séries, concorrência e revogação reais, seis plataformas físicas. Não remover PINK/backups nesta fase.
+
+Backend [45972964122](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964122) e loopback [45972964061](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964061) aprovados; integração completa [45972964003](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964003) ainda em execução na última consulta.
+
+## Histórico de 26/11/2026 — preservado, não representa o estado atual
+
+### Estado observado em 26/11/2026
 
 Candidato executável `b2fdd911bdf549d7cca89fb7fbbebe3f64b2ff27`, no ramo existente. Produção preservada em `0994990c024b159eebd44528041746f557596d27`; não promover main nem instalar este candidato enquanto o acesso real continuar recusado.
 
@@ -58,7 +74,7 @@ O [diagnóstico histórico 037/038/039/040](https://github.com/martaxi-boss/pink
 
 Estas provas não certificam a fonte real, capacidade da VPS ou dispositivos físicos. A migração permanece incompleta. O histórico integral anterior permanece no Git; não voltar a tratar as lacunas já corrigidas como trabalho por implementar.
 
-## Esclarecimento necessário para desbloquear
+## Pergunta histórica preparada em 26/11 — não necessária com a prova atual
 
 Pergunta pronta para o canal oficial do proprietário (não enviada): «A minha linha autentica e lista o catálogo; tem 0/2 ligações e anuncia TS. A própria playlist get.php devolve os endereços de RTP1 e RTP2, mas os GET desses endereços exatos, a partir da VPS, responderam HTTP 401 antes do corpo em ensaios separados de 26/11/2026, cerca das 22:55 e 23:06 UTC. Quais são as condições autorizadas de reprodução desta linha a partir de Jellyfin/FFmpeg na VPS e o motivo dessa recusa nos vossos registos?»
 
