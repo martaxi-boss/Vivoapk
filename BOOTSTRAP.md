@@ -1,5 +1,14 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Identificação HTTP do leitor alinhada — 27/11/2026
+
+A comparação exata confirmou outra diferença ainda não corrigida: o teste Media3 do PINK fornecia User-Agent, enquanto os três leitores privados de media do VivoAPK (ficheiro, HLS e TS) só enviavam Accept/Accept-Encoding. A autenticação, catálogo e descoberta de playlist já se identificavam como Vivoapk/1.0. As provas 401 de 26/11 localizam a resposta da origem mas não excluem esta lacuna do pedido HTTP; não demonstram, por si, a causa interna ou impossibilidade do Jellyfin.
+
+Correção candidata limitada ao cabeçalho omitido: os leitores passam a enviar a identificação verdadeira e fixa `Vivoapk/1.0`, igual à usada no catálogo. Não copiam o User-Agent Chrome do ensaio histórico, não aceitam cabeçalhos do cliente e não inventam Referer/Cookie/Authorization. Sem mudar conta, credenciais, DNS, origem, formato, rota, IP ou túnel. O tratamento terminal de 401/403 e a ausência de fallback permanecem. Referência técnica: [RFC 9110 §10.1.5](https://www.rfc-editor.org/rfc/rfc9110.html#name-user-agent), que recomenda identificar o agente e desencoraja usar tokens de outros produtos.
+
+Acrescentados testes que inspecionam os pedidos reais enviados aos fixtures nos três leitores, incluindo probe/playback TS e manifesto/segmento HLS. A alteração ainda tem de passar CI e validação real; NÃO atribuir o 401 a esta diferença antes de haver prova. A versão b2fdd911 mantém as dez aprovações sintéticas históricas; elas não passam automaticamente a esta nova revisão. Produção r100 preservada, nenhuma instalação/ativação realizada. Não reconstruir login, catálogo ou DNS.
+
+
 ## Estado atual — fonte oficial corrigida, reprodução real recusada — 26/11/2026
 
 Candidato executável `b2fdd911bdf549d7cca89fb7fbbebe3f64b2ff27`, no ramo existente. Produção preservada em `0994990c024b159eebd44528041746f557596d27`; não promover main nem instalar este candidato enquanto o acesso real continuar recusado.

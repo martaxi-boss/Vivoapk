@@ -15,7 +15,7 @@ from threading import Lock
 
 
 from app.schemas import CatalogKind, EntitlementState
-from app.services.media_body import MediaReadError, _default_pool, _header, _require_media_transport
+from app.services.media_body import MediaReadError, _default_pool, _header, _media_headers, _require_media_transport
 from app.services.media_origin import AuthorizedMediaOrigin
 from app.url_safety import resolve_dns_link_target, system_resolver
 
@@ -75,7 +75,7 @@ class PrivateTsSession:
         stack.callback(pool.close)
         response = stack.enter_context(pool.stream(
             "GET", self._source._request_url(),
-            headers=[(b"Accept", b"video/mp2t"), (b"Accept-Encoding", b"identity")],
+            headers=_media_headers(b"video/mp2t"),
             extensions={"timeout": {"connect": 5.0, "read": 8.0,
                                      "write": 5.0, "pool": 5.0}},
         ))

@@ -38,6 +38,13 @@ _ALLOWED_TYPES = frozenset({
 })
 
 
+def _media_headers(accept: bytes) -> list[tuple[bytes, bytes]]:
+    # Truthful product identification already used by account/catalogue requests.
+    # Fixed server-owned value: no caller input or impersonation of another app.
+    return [(b"Accept", accept), (b"Accept-Encoding", b"identity"),
+            (b"User-Agent", b"Vivoapk/1.0")]
+
+
 class MediaReadError(RuntimeError):
     """Sanitized failure; never include a request URL or upstream text."""
 
@@ -121,7 +128,7 @@ def open_media_body(
         raise MediaReadError("Manifest delivery not implemented")
     _require_media_transport(source, allow_authorized_http=allow_authorized_http)
     requested_range = _range(range_header)
-    headers = [(b"Accept", b"video/*"), (b"Accept-Encoding", b"identity")]
+    headers = _media_headers(b"video/*")
     if range_header is not None:
         headers.append((b"Range", range_header.encode("ascii")))
     # Only the server-owned, previously observed strong validator is passed

@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlsplit
 import httpcore
 
 from app.schemas import CatalogKind, EntitlementState
-from app.services.media_body import MediaReadError, _default_pool, _header, _require_media_transport
+from app.services.media_body import MediaReadError, _default_pool, _header, _media_headers, _require_media_transport
 from app.services.media_origin import AuthorizedMediaOrigin
 from app.url_safety import (
     DNSResolutionFailure,
@@ -315,7 +315,7 @@ class PrivateHlsSession:
             with closing(self._pool_factory(target)) as pool:
                 with pool.stream(
                     "GET", uri,
-                    headers=[(b"Accept", accept), (b"Accept-Encoding", b"identity")],
+                    headers=_media_headers(accept),
                     extensions={"timeout": {"connect": 5.0, "read": 5.0,
                                              "write": 5.0, "pool": 5.0}},
                 ) as response:
