@@ -108,7 +108,7 @@ def finite(settings, session_factory):
                 password=SecretStr(f"fixture-password-{suffix}"), expiring_at=future,
                 dns_link=ORIGIN, dns_link_for_samsung_lg=ORIGIN)
         db.commit()
-    xtream = FakeXtream()
+    xtream = FakeXtream(rows)
     app = create_app(configured)
     app.state.session_factory = session_factory
     app.state.mega_client_factory = lambda: FakeMega(rows)
@@ -290,3 +290,4 @@ def test_optional_validator_and_post_read_revocation():
     player.close()
     with pytest.raises(MediaReadError):
         player.read(0, 1, entitlement=active)
+

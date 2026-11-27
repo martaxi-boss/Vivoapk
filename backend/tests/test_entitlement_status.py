@@ -7,6 +7,7 @@ from pydantic import SecretStr
 
 from app.main import create_app
 from app.models import SubscriptionMapping
+from app.services.private_subscription_cache import PrivateSubscriptionCache
 
 
 class FakeMega:
@@ -59,6 +60,8 @@ def test_monitor_key_and_provider_expiry_renewal(settings, session_factory):
     )
     mega, xtream = FakeMega(upstream), FakeXtream()
     app = create_app(settings)
+    clock = [0.0]
+    app.state.private_subscription_cache = PrivateSubscriptionCache(clock=lambda: clock[0])
     app.state.session_factory = session_factory
     app.state.mega_client_factory = lambda: mega
     app.state.xtream_client_factory = lambda: xtream
@@ -80,11 +83,20 @@ def test_monitor_key_and_provider_expiry_renewal(settings, session_factory):
     assert r.status_code == 200 and r.json() == {"state": "ACTIVE"}
     assert "synthetic-provider-secret" not in r.text and "client-a" not in r.text
     assert r.headers["cache-control"] == "no-store"
+    # Retain only management details; current provider access is never cached.
+    for _ in range(3):
+        assert client.post(route, json=body, headers=headers).json() == {"state": "ACTIVE"}
+    assert mega.calls == 1 and xtream.calls == 4
+    xtream.code = "DISABLED"
+    assert client.post(route, json=body, headers=headers).json() == {"state": "DISABLED"}
+    assert mega.calls == 1 and xtream.calls == 5
+    xtream.code = "SUCCESS"
     with session_factory() as db:
         mapping = db.query(SubscriptionMapping).filter_by(username="client-a").one()
         assert mapping.expiring_at.replace(tzinfo=UTC) == future
 
     upstream.expiring_at = past
+    clock[0] += 5  # Private Mega details are refreshed within five seconds.
     r = client.post(route, json=body, headers=headers)
     assert r.json() == {"state": "EXPIRED"}
 
@@ -101,6 +113,7 @@ def test_monitor_key_and_provider_expiry_renewal(settings, session_factory):
 
     xtream.account_expires_at = None
     upstream.password = None
+    clock[0] += 5
     assert client.post(route, json=body, headers=headers).json() == {"state": "UNAVAILABLE"}
 
     upstream.password = SecretStr("synthetic-provider-secret")
@@ -123,3 +136,4 @@ def test_entitlement_endpoint_is_disabled_without_private_key(settings, session_
         headers={"X-Vivoapk-Monitor-Key": "synthetic-private-monitor-key-1234567890"},
     )
     assert r.status_code == 403
+

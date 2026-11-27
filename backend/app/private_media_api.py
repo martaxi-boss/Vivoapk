@@ -34,6 +34,7 @@ from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.private_hls import PrivateHlsSession
 from app.services.private_ts import PrivateTsSession
 from app.services.private_file import MAX_FILE_BYTES, MAX_WINDOW_BYTES, PrivateFileSession
+from app.services.private_subscription_cache import private_mega_client
 
 _NO_STORE = {"Cache-Control": "no-store"}
 _MAX_SESSIONS = 2
@@ -240,7 +241,7 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
 
     def catalogue(request: Request, db: Session) -> CatalogService:
         return CatalogService(
-            db, settings, mega_client_factory=request.app.state.mega_client_factory,
+            db, settings, mega_client_factory=lambda: private_mega_client(request.app),
             xtream_client_factory=request.app.state.xtream_client_factory,
             catalog_client_factory=request.app.state.catalog_client_factory,
         )
@@ -435,4 +436,5 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
     def close_file(payload: SessionRequest, grant: str = Depends(credential)):
         registry.close(payload.session_id, grant, "file")
         return Response(status_code=204, headers=_NO_STORE)
+
 

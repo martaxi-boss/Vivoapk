@@ -16,6 +16,7 @@ from app.config import Settings, get_settings
 from app.db import build_session_factory, get_db
 from app.logging_config import configure_logging
 from app.private_media_api import install_private_hls_routes
+from app.services.private_subscription_cache import PrivateSubscriptionCache, private_mega_client
 from app.schemas import (
     CatalogCategoryItemsRequest,
     CatalogListRequest,
@@ -40,7 +41,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         registry = getattr(application.state, "private_hls_registry", None)
-        task = asyncio.create_task(registry.run_sweeper()) if registry is not None else None
+        async def sweep():
+            while True:
+                if registry is not None:
+                    registry.sweep()
+                application.state.private_subscription_cache.prune()
+                await asyncio.sleep(5)
+        task = asyncio.create_task(sweep())
         try:
             yield
         finally:
@@ -48,7 +55,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-                registry.shutdown()
+            try:
+                if registry is not None:
+                    registry.shutdown()
+            finally:
+                application.state.private_subscription_cache.clear()
 
     app = FastAPI(title="Vivoapk Mega OTT Resolver", version="0.1.0", lifespan=lifespan)
     app.state.settings = runtime_settings
@@ -59,6 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         base_url=runtime_settings.mega_ott_api_base,
         token=runtime_settings.require_mega_token(),
     )
+    app.state.private_subscription_cache = PrivateSubscriptionCache()
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_request: Request, _error: RequestValidationError) -> JSONResponse:
@@ -111,7 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         state = EntitlementService(
             session,
-            mega_client_factory=request.app.state.mega_client_factory,
+            mega_client_factory=lambda: private_mega_client(request.app),
             xtream_client_factory=request.app.state.xtream_client_factory,
         ).check(payload.username)
         return EntitlementCheckResponse(state=state)
@@ -309,3 +321,4 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 app = create_app()
+

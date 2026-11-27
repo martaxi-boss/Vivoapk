@@ -1,6 +1,8 @@
 import json
 import logging
-from datetime import datetime
+import math
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -16,7 +18,10 @@ class MegaClientError(RuntimeError):
 
 
 class MegaUpstreamError(MegaClientError):
-    pass
+    def __init__(self, message, *, status_code=None, retry_after_seconds=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
 
 
 class MegaProtocolError(MegaClientError):
@@ -135,7 +140,23 @@ class MegaOTTClient:
         try:
             with self._client.stream("GET", url, params=params) as response:
                 if response.status_code != 200:
-                    raise MegaUpstreamError(f"Mega subscription {operation} failed")
+                    retry = response.headers.get("Retry-After", "")
+                    delay = None
+                    if retry.isascii() and retry.isdigit() and len(retry) <= 12:
+                        delay = int(retry)
+                    elif len(retry) <= 128:
+                        try:
+                            when = parsedate_to_datetime(retry)
+                            if when.tzinfo is None:
+                                when = when.replace(tzinfo=UTC)
+                            delay = max(0, math.ceil((when-datetime.now(UTC)).total_seconds()))
+                        except (ValueError, TypeError, OverflowError):
+                            pass
+                    raise MegaUpstreamError(
+                        f"Mega subscription {operation} failed",
+                        status_code=response.status_code,
+                        retry_after_seconds=delay,
+                    )
                 data = bytearray()
                 for chunk in response.iter_bytes():
                     if len(data) + len(chunk) > _MAX_MEGA_JSON_BYTES:
@@ -239,3 +260,4 @@ class MegaOTTClient:
                 break
 
         return matched_id
+

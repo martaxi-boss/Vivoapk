@@ -48,7 +48,7 @@ def private_client(settings, session_factory, request):
                 expiring_at=future, dns_link=ORIGIN, dns_link_for_samsung_lg=ORIGIN,
             )
         db.commit()
-    xtream = FakeXtream()
+    xtream = FakeXtream(rows)
     app = create_app(configured)
     app.state.session_factory = session_factory
     app.state.mega_client_factory = lambda: FakeMega(rows)
@@ -290,3 +290,4 @@ def test_explicit_ts_not_advertised_cannot_open(private_client):
     xtream.allowed_output_formats = frozenset({"m3u8"})
     assert post("open", payload=request_for("a")).status_code == 404
     assert upstream.calls == [] and not client.app.state.private_hls_registry._entries
+

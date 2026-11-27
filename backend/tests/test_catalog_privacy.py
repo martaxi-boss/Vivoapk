@@ -29,16 +29,23 @@ class FakeMega:
 
 
 class FakeXtream:
-    def __init__(self):
+    def __init__(self, rows=None):
         self.calls = []
         self.closed = False
         self.status = "SUCCESS"
         self.allowed_output_formats = frozenset({"ts", "m3u8"})
+        self.rows = rows
 
     def authenticate(self, **kwargs):
         self.calls.append(kwargs)
+        status = self.status
+        if self.rows is not None and status == "SUCCESS":
+            row = next((r for r in self.rows.values() if r.username == kwargs["username"]), None)
+            if (row is None or row.password is None
+                    or row.password.get_secret_value() != kwargs["password"]):
+                status = "INVALID_CREDENTIALS"
         return SimpleNamespace(
-            code=self.status, account_expires_at=None,
+            code=status, account_expires_at=None,
             allowed_output_formats=self.allowed_output_formats,
         )
 
@@ -833,3 +840,4 @@ def test_pinned_per_category_catalog_filter_and_sanitization(public_resolver):
         pass
     else:
         raise AssertionError("Unsafe category identifier reached the provider")
+
