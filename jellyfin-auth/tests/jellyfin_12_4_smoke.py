@@ -2141,6 +2141,8 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         sa = negotiate(item_a, owner_a, token_a, token_b, seek_start=True)
         sb = negotiate(item_b, owner_b, token_b, token_a, seek_start=True)
         if private_backend.count() != 2 or sa["session"] == sb["session"]:
+            print("JELLYFIN_PRIVATE_NATIVE_SEEK_ADMISSION_DIAGNOSTICS=" +
+                  json.dumps(private_backend.diagnostics(), sort_keys=True), flush=True)
             raise RuntimeError("Seek fixture lacks two independent leases")
 
         def marker_sample(path, seconds):

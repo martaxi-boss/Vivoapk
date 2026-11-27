@@ -58,6 +58,7 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
         internal int FileReaderTimeouts;
         internal int FileReaderCancelled;
         internal int FileReaderFailures;
+        internal int FileDeliveryWindowBytes = 512 * 1024;
         internal readonly CancellationTokenSource Retired = new();
         internal long LastUse = Environment.TickCount64;
     }
@@ -414,6 +415,10 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             Volatile.Read(ref entry.FileReaderFailures));
     }
 
+    internal static int NextFileWindowBytes(int bytes, long elapsedMilliseconds)
+        => (int)Math.Clamp((long)bytes * 1000 / Math.Max(1, elapsedMilliseconds),
+            512 * 1024, PrivateHlsSocketClient.FileWindowBytes);
+
     private async Task ServeFileAsync(HttpContext http, string id, Entry entry,
         PrivateHlsSocketClient.FileInfo file, long start, long end, bool partial)
     {
@@ -448,15 +453,18 @@ internal sealed class PrivateHlsLoopback : IAsyncDisposable
             }
             for (long offset = start; offset <= end;)
             {
-                // Validation completes before this window's first byte, and an
-                // in-flight backend read must finish before grant rotation can
-                // proceed. Keep finite delivery smaller than the 4 MiB backend
-                // ceiling so a header/tail seek does not wait for another
-                // whole 4 MiB after the HTTP reader has already disconnected.
-                // Live HLS/TS and the backend's validated maximum stay unchanged.
-                int length = (int)Math.Min(512 * 1024, end - offset + 1);
+                // Start every HTTP range promptly. Subsequent validated
+                // windows target one second of measured backend work, within
+                // the existing ceiling. A fixed small window needlessly
+                // multiplies entitlement checks on a fast finite source.
+                int limit = offset == start ? 512 * 1024
+                    : Volatile.Read(ref entry.FileDeliveryWindowBytes);
+                int length = (int)Math.Min(limit, end - offset + 1);
+                long readStarted = Environment.TickCount64;
                 var body = await ReadFileWindowAsync(id, entry, file, offset, length, ct)
                     .ConfigureAwait(false);
+                Volatile.Write(ref entry.FileDeliveryWindowBytes,
+                    NextFileWindowBytes(body.Length, Environment.TickCount64 - readStarted));
                 ct.ThrowIfCancellationRequested();
                 if (offset == start)
                     SetFileHeaders(http, file, start, end, partial);

@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 """Disposable backend-over-UDS/actual C# loopback/FFmpeg integration gate.
 
 Generate two lawful synthetic HLS assets, optionally from raw MPEG-TS over a
@@ -407,9 +408,21 @@ def main():
                     generate_file(ffmpeg, episode, "b", 770),
             })
             app.state.catalog_client_factory = MediaCatalogue
-            app.state.private_file_factory = lambda source: PrivateFileSession(source,
-                body_reader=lambda src, **kwargs: open_media_body(
-                    src, resolver=public_dns, pool_factory=finite.factory, **kwargs))
+            delayed_prefixes = set()
+            @contextmanager
+            def finite_body(src, **kwargs):
+                # A slow first window must keep the next read small; later
+                # fast reads must recover the existing 4 MiB ceiling.
+                identity = src._request_url()
+                if (kwargs.get("range_header") == "bytes=0-524287"
+                        and identity not in delayed_prefixes):
+                    delayed_prefixes.add(identity)
+                    time.sleep(1.1)
+                with open_media_body(src, resolver=public_dns,
+                                     pool_factory=finite.factory, **kwargs) as body:
+                    yield body
+            app.state.private_file_factory = lambda source: PrivateFileSession(
+                source, body_reader=finite_body)
             for suffix, ident in tokens.items():
                 data[suffix], _ = issue_session_token(ident, settings)
             data["movie_reference"], data["episode_reference"] = str(movie), str(episode)
@@ -438,12 +451,18 @@ def main():
             assert not app.state.private_hls_registry._entries
             assert all(pool.closed and pool.response.closed for pool in finite.pools)
             assert all(url in finite.files and 0 <= start <= end
-                       # The HTTP adapter must not read a full 4 MiB before
-                       # exposing finite headers or abandoning a seek.
-                       and end - start + 1 <= 512 * 1024
+                       and end - start + 1 <= 4 * 1024 * 1024
                        for url, start, end, _ in finite.calls)
-            assert any(start == 4 * 1024 * 1024 for _, start, _, _ in finite.calls)
-            print("VIVOAPK_PRIVATE_LOOPBACK_FINITE_DELIVERY_WINDOWS_512K=PASS", flush=True)
+            assert any(start >= 4 * 1024 * 1024 for _, start, _, _ in finite.calls)
+            assert len(delayed_prefixes) == 2
+            for identity in finite.files:
+                reads = [(start, end-start+1) for url, start, end, _ in finite.calls
+                         if url == identity and end-start+1 > 1]
+                assert reads[0] == (0, 512 * 1024)
+                assert any(size == 4 * 1024 * 1024 for _, size in reads)
+                assert any(start == 512 * 1024 and size == 512 * 1024
+                           for start, size in reads)
+            print("VIVOAPK_PRIVATE_LOOPBACK_FINITE_SLOW_PREFIX_AND_FAST_BULK=PASS", flush=True)
             print("VIVOAPK_PRIVATE_LOOPBACK_FILE_BACKEND_UDS_AND_CLEANUP=PASS", flush=True)
             print("VIVOAPK_PRIVATE_LOOPBACK_BACKEND_UDS_AND_CLEANUP=PASS", flush=True)
         finally:

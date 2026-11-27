@@ -63,6 +63,11 @@ try
     var ownerB = Guid.NewGuid();
     if (args.Length == 2 && args[1] == "file")
     {
+        checkpoint = "bounded finite delivery pacing";
+        if (PrivateHlsLoopback.NextFileWindowBytes(512 * 1024, 1100) != 512 * 1024
+            || PrivateHlsLoopback.NextFileWindowBytes(512 * 1024, 10) != 4 * 1024 * 1024
+            || PrivateHlsLoopback.NextFileWindowBytes(4 * 1024 * 1024, 0) != 4 * 1024 * 1024)
+            throw new InvalidOperationException("Finite delivery pacing outside bounds");
         checkpoint = "finite movie and episode sessions";
         return await FiniteFixture.RunAsync(bridge, Get, ownerA, ownerB, ct);
     }

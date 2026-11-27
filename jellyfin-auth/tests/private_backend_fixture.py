@@ -22,7 +22,7 @@ from app.clients.xtream import XtreamAuthResult
 from app.config import Settings
 from app.db import Base
 from app.main import create_app
-from app.models import SubscriptionMapping
+from app.models import AuthRateWindow, SubscriptionMapping
 from app.schemas import CatalogKind, EntitlementState
 from app.security import issue_session_token
 from app.services.private_hls import PrivateHlsSession
@@ -91,6 +91,18 @@ class PrivateBackend:
             private_live_input_format="ts" if self.continuous_ts else "m3u8",
         )
         self.app = create_app(settings)
+        self.operation_statuses = {}
+        self.observation_lock = threading.Lock()
+        @self.app.middleware("http")
+        async def observe_media_status(request, call_next):
+            response = await call_next(request)
+            route = request.url.path
+            if route.startswith("/_internal/media/"):
+                operation = route.rsplit("/", 1)[-1]
+                key = operation + "_" + str(response.status_code)
+                with self.observation_lock:
+                    self.operation_statuses[key] = self.operation_statuses.get(key, 0) + 1
+            return response
         dbfactory = self.app.state.session_factory
         self.engine = dbfactory.kw["bind"]
         assert self.engine.dialect.name == "postgresql"
@@ -224,6 +236,15 @@ class PrivateBackend:
             lines.extend(["#EXTINF:3.000,", f"/muxed/{suffix}/{name}"])
         return response(("\n".join(lines) + "\n").encode())
 
+    def diagnostics(self):
+        # Counts only: never emit bucket keys, credentials or request bodies.
+        with self.app.state.session_factory() as db:
+            attempts = sorted(row.attempts for row in db.query(AuthRateWindow).all())
+        with self.observation_lock:
+            statuses = dict(self.operation_statuses)
+        return {"media_statuses": statuses, "admission_attempt_counts": attempts,
+                "catalog_budget_per_username": 180}
+
     def count(self):
         return len(self.app.state.private_hls_registry._entries)
 
@@ -242,7 +263,7 @@ class PrivateBackend:
                 "range_reads": len(calls),
                 "nonzero_ranges": sum(start > 0 for _, start, _, _ in calls),
                 "max_read_bytes": max(end-start+1 for _, start, end, _ in calls),
-                "active_backend_sessions": self.count(),
+                "active_backend_sessions": self.count(), **self.diagnostics(),
             }), flush=True)
         else:
             assert self.upstream.calls and all(url in self.upstream.routes for url in self.upstream.calls)
