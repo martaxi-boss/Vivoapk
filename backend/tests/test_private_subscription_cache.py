@@ -3,8 +3,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from threading import Event
+
 import httpx
 from pydantic import SecretStr
+
 from app.clients.mega import MegaOTTClient, MegaSubscription, MegaUpstreamError
 from app.services.private_subscription_cache import PrivateSubscriptionCache
 
