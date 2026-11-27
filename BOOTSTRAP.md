@@ -1,5 +1,14 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## RTP1 real aceite e descodificada — 27/11/2026
+
+**Fonte real + FFmpeg nativo aprovados:** [r143 #45973269421](https://github.com/martaxi-boss/VPS/actions/runs/45973269421), artefacto 15186525542, evidência SHA-256 `7acf2b58f03c29de61afb60c4b65fdb53002142d3ddc21636b73f30af70546d0`. Candidato `1e7424cdb257dbf0fe6d9d0f0dd8c26e4f77dbe5`; conta ativa, canal RTP1 autorizado e endereço emitido pela playlist; identificação verdadeira Vivoapk/1.0; fluxo 302→200 no probe e 302→200 na reprodução sequencial. Probe de 385024 bytes, amostra de reprodução de 3762444 bytes apenas em memória, **635 frames de vídeo e 1188 de áudio efetivamente descodificados pelo Jellyfin FFmpeg 8.1.3-2**. source_decode_pass=true; serviços inalterados; sem gravação de media nem emissão de segredos. A revisão r144 está limitada a esta prova.
+
+As duas lacunas de transporte identificadas eram a omissão do User-Agent e o bloqueio de redirects emitidos pela origem. Não foi necessário imitar o PINK/Chrome, trocar DNS/IP/credenciais/túnel ou ultrapassar 401/403. A resposta atual aceite elimina o anterior bloqueio desta fonte nas condições testadas; não demonstra a causa única de todas as recusas históricas.
+
+**Ainda falta** provar a saída real via PlaybackInfo/canal/FFprobe/FFmpeg do Jellyfin e o consumo do HLS nativo; continuidade e concorrência reais; filmes/séries e aplicações físicas. Não confundir a descodificação direta da entrada com reprodução no cliente Jellyfin. Produção r100 preservada enquanto se prepara a validação integrada e a atualização coordenada. Continuar pelo motor existente; não voltar à autenticação, catálogo ou seleção de DNS.
+
+
 Código candidato atual: `1e7424cdb257dbf0fe6d9d0f0dd8c26e4f77dbe5`, ramo existente; produção r100 preservada.
 
 ## Redirecionamento do fornecedor observado — 27/11/2026
