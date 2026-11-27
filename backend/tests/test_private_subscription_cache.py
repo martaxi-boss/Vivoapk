@@ -5,10 +5,10 @@ from email.utils import format_datetime
 from threading import Event
 
 import httpx
-from pydantic import SecretStr
-
 from app.clients.mega import MegaOTTClient, MegaSubscription, MegaUpstreamError
 from app.services.private_subscription_cache import PrivateSubscriptionCache
+from pydantic import SecretStr
+
 
 class PrivateMetadataCacheTests(unittest.TestCase):
 
