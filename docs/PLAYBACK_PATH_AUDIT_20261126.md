@@ -1,5 +1,13 @@
 # VivoAPK — auditoria do percurso de reprodução em 26/11/2026
 
+## Confirmação de subscrição ligada em produção — 27/11/2026
+
+[r164 #45978782285](https://github.com/martaxi-boss/VPS/actions/runs/45978782285) comprovou flags/ambiente/permissões/provider corretos, mas ausência da chave do monitor. [r166 #45979280996](https://github.com/martaxi-boss/VPS/actions/runs/45979280996) confirmou que também faltava no ambiente efetivo do backend e no cofre base. `NativePlaybackAuthorization` exige essa confirmação e recusava antes de chegar ao transporte de media. O erro de paths do piloto era outra lacuna, já corrigida; não explica sozinho todos os 404.
+
+**Correção aplicada e validada [r168 #45979921026](https://github.com/martaxi-boss/VPS/actions/runs/45979921026):** artefacto 15187889960 íntegro, evidência SHA-256 `bb04770dd508afd7a72795eafb955f5458ba501993e66215d3ad9676ae15d485`. Nova chave interna independente, gerada e guardada exclusivamente na VPS: `ENTITLEMENT_MONITOR_KEY` em `/root/project-secrets/VIVOAPK/native-media.env`, ficheiro `/srv/projects/Vivoapk/run/entitlement-monitor.key` owner jellyfinpink/0400. Não publicar os valores. Chave de media existente e credenciais do fornecedor/clientes preservadas. Cofre/runtime coincidem, Jellyfin lê a chave e www-data é recusado; pedido sem chave/errada403; **subscrição da linha real200 ACTIVE**. Cinco testes reais do helper de transação/rollback passaram antes da execução. Backup privado e journal committed em `/srv/projects/Vivoapk/backups/monitor-bootstrap-20261127-r168`. Preservar estes ficheiros permanentes, sobretudo durante higiene/ensaios. Reiniciado apenas vivoapk-backend.service; código continua r100, PIDs de Jellyfin/nginx/postgresql inalterados. Ainda não houve ativação do candidato1e nem saída real Jellyfin certificada. Próximo gate: repetir piloto nativo exato com esta confirmação ativa.
+
+
+
 ## Estado atual — RTP1 real aceite e descodificada — 27/11/2026
 
 A hipótese de bloqueio externo descrita no histórico de 26/11 foi superada pela investigação HTTP. Não pedir intervenção do fornecedor com base nesses ensaios antigos. Produção continua r100, sem ativação.
