@@ -1,5 +1,16 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Redirecionamento do fornecedor observado — 27/11/2026
+
+No [ensaio r141 #45972113080](https://github.com/martaxi-boss/VPS/actions/runs/45972113080), o pedido identificado com o produto verdadeiro Vivoapk/1.0 e o locator RTP1 emitido pela playlist recebeu **302**, em vez da recusa 401 histórica. Artefacto 15185837566 íntegro, evidência SHA-256 `cf35a786b08c8d7910446229c81543562bd0c3eec154ed6c3a394ed71f89a1e0`; active_identity_and_ts_advertised e truthful_media_client_identification_verified=true, sem media descodificada, sem ativação e serviços preservados. Isto não demonstra a causa única dos 401 anteriores; demonstra que existe agora um encaminhamento a processar.
+
+Outra diferença comprovada face ao Media3 do PINK: o adaptador privado rejeita todos os redirects, incluindo este 302 normal emitido pela fonte. O corpo ainda não chegou a FFprobe/FFmpeg; a reprodução real não está certificada. Não encerrar o diagnóstico como dependência exclusiva do fornecedor enquanto esta etapa nativa do transporte ainda falta.
+
+Correção candidata no leitor TS existente, por flag privada de servidor `private_media_follow_provider_redirects`, desligada por defeito e dependente da admissão TS por playlist oficial. Segue no máximo dois encaminhamentos emitidos pela própria origem autorizada; valida protocolo/URI, resolve e fixa IP público por salto, rejeita redes privadas/loopback/userinfo/ciclos/downgrade TLS, fecha a ligação anterior antes da próxima. Não reencaminha cookies, Referer ou cabeçalhos de autenticação. A identificação verdadeira mantém-se fixa. Qualquer 401/403 termina a sessão sem repetição nem fallback. Continua a fornecer apenas TS privado ao Jellyfin/FFmpeg nativo, sem outro motor ou serviço.
+
+Testes novos cobrem os limites de confiança e a política explícita; CI e ensaio real desta nova etapa ainda PENDENTES. A produção r100 não foi alterada. As dez aprovações sintéticas de b2fdd911 e o backend/loopback aprovados de 12c7860c não certificam automaticamente esta nova revisão.
+
+
 ## Identificação HTTP do leitor alinhada — 27/11/2026
 
 A comparação exata confirmou outra diferença ainda não corrigida: o teste Media3 do PINK fornecia User-Agent, enquanto os três leitores privados de media do VivoAPK (ficheiro, HLS e TS) só enviavam Accept/Accept-Encoding. A autenticação, catálogo e descoberta de playlist já se identificavam como Vivoapk/1.0. As provas 401 de 26/11 localizam a resposta da origem mas não excluem esta lacuna do pedido HTTP; não demonstram, por si, a causa interna ou impossibilidade do Jellyfin.

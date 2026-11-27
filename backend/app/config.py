@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     private_live_input_format: Literal["m3u8", "ts"] = "m3u8"
     # Discover the provider-issued locator BEFORE media admission; never fallback.
     private_live_use_provider_playlist: bool = False
+    private_media_follow_provider_redirects: bool = False
     private_media_key: SecretStr | None = None
     auth_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
     auth_rate_per_username: int = Field(default=10, ge=1, le=100)
@@ -58,6 +59,9 @@ class Settings(BaseSettings):
         if self.private_live_use_provider_playlist and (
                 not self.private_hls_enabled or self.private_live_input_format != "ts"):
             raise ValueError("Advertised TS sources require explicit private TS input")
+        if self.private_media_follow_provider_redirects and (
+                not self.private_live_use_provider_playlist or self.private_live_input_format != "ts"):
+            raise ValueError("Provider redirects require explicitly admitted playlist TS sources")
         if self.private_media_allow_authorized_http and not self.private_hls_enabled:
             raise ValueError("Authorized HTTP media requires private media routes")
         if self.private_hls_enabled:

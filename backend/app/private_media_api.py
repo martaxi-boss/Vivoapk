@@ -219,6 +219,7 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
     app.state.private_ts_factory = lambda source: PrivateTsSession(
         source, entitlement=lambda: EntitlementState.UNAVAILABLE,
         allow_authorized_http=settings.private_media_allow_authorized_http,
+        allow_provider_redirects=settings.private_media_follow_provider_redirects,
     )
     app.state.private_file_factory = lambda source: PrivateFileSession(
         source, body_reader=partial(

@@ -12,11 +12,13 @@ import time
 from collections.abc import Callable
 from contextlib import ExitStack
 from threading import Lock
+from urllib.parse import urlsplit, urlunsplit
 
 
 from app.schemas import CatalogKind, EntitlementState
 from app.services.media_body import MediaReadError, _default_pool, _header, _media_headers, _require_media_transport
 from app.services.media_origin import AuthorizedMediaOrigin
+from app.services.media_redirect import provider_redirect_url
 from app.url_safety import resolve_dns_link_target, system_resolver
 
 WINDOW_BYTES = 188 * 8192
@@ -27,12 +29,15 @@ _LOG = logging.getLogger(__name__)
 class PrivateTsSession:
     def __init__(self, source: AuthorizedMediaOrigin, *,
                  entitlement: Callable[[], EntitlementState],
-                 allow_authorized_http: bool = False, resolver=system_resolver,
+                 allow_authorized_http: bool = False, allow_provider_redirects: bool = False,
+                 resolver=system_resolver,
                  pool_factory=_default_pool) -> None:
         if source.asset.kind is not CatalogKind.LIVE or source.extension != "ts":
             raise MediaReadError("Continuous TS source unavailable")
         _require_media_transport(source, allow_authorized_http=allow_authorized_http)
         self._source = source
+        self._allow_http = allow_authorized_http
+        self._allow_redirects = allow_provider_redirects
         self._entitlement = entitlement
         self._resolver = resolver
         self._pool_factory = pool_factory
@@ -68,29 +73,55 @@ class PrivateTsSession:
             self._deny()
 
     def _connect(self) -> None:
-        target = resolve_dns_link_target(self._source.origin, resolver=self._resolver)
-        stack = ExitStack()
-        self._stack = stack
-        pool = self._pool_factory(target)
-        stack.callback(pool.close)
-        response = stack.enter_context(pool.stream(
-            "GET", self._source._request_url(),
-            headers=_media_headers(b"video/mp2t"),
-            extensions={"timeout": {"connect": 5.0, "read": 8.0,
-                                     "write": 5.0, "pool": 5.0}},
-        ))
-        if response.status in (401, 403):
-            _LOG.warning("private_ts_origin_denied status=%d", response.status)
-            # No body, Location, WWW-Authenticate or provider message is read.
-            self._deny()
-        if (response.status != 200
-                or (_header(response.headers, b"content-type") or "").lower()
-                    not in {"video/mp2t", "application/octet-stream"}
-                or _header(response.headers, b"content-range") is not None
-                or _header(response.headers, b"content-encoding") not in (None, "identity")
-                or _header(response.headers, b"content-length") is not None):
-            self._deny()
-        self._iterator = iter(response.iter_stream())
+        url = self._source._request_url()
+        seen = set()
+        begin = time.monotonic()
+        for hop in range(3):  # Initial request plus at most two issued hops.
+            if url in seen or time.monotonic() - begin >= 15:
+                self._deny()
+            seen.add(url)
+            parsed = urlsplit(url)
+            origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+            target = resolve_dns_link_target(origin, resolver=self._resolver)
+            stack = ExitStack()
+            self._stack = stack
+            pool = self._pool_factory(target)
+            stack.callback(pool.close)
+            remaining = max(0.1, 15 - (time.monotonic() - begin))
+            response = stack.enter_context(pool.stream(
+                "GET", url, headers=_media_headers(b"video/mp2t"),
+                extensions={"timeout": {"connect": min(5.0, remaining),
+                                         "read": min(8.0, remaining),
+                                         "write": min(5.0, remaining),
+                                         "pool": min(5.0, remaining)}},
+            ))
+            if response.status in (401, 403):
+                _LOG.warning("private_ts_origin_denied status=%d", response.status)
+                self._deny()
+            if response.status in (301, 302, 303, 307, 308):
+                if not self._allow_redirects or hop == 2:
+                    self._deny()
+                try:
+                    next_url = provider_redirect_url(
+                        url, response.headers, allow_authorized_http=self._allow_http,
+                    )
+                except MediaReadError:
+                    self._deny()
+                # Close the previous pool/response BEFORE the next provider hop.
+                # No response body, cookies, bearer or referer is forwarded.
+                self._disconnect()
+                url = next_url
+                continue
+            if (time.monotonic() - begin >= 15 or response.status != 200
+                    or (_header(response.headers, b"content-type") or "").lower()
+                        not in {"video/mp2t", "application/octet-stream"}
+                    or _header(response.headers, b"content-range") is not None
+                    or _header(response.headers, b"content-encoding") not in (None, "identity")
+                    or _header(response.headers, b"content-length") is not None):
+                self._deny()
+            self._iterator = iter(response.iter_stream())
+            return
+        self._deny()
 
     def _window(self, cap: int) -> bytes:
         if self._iterator is None:
