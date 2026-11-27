@@ -1,5 +1,11 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Diagnóstico do 404 do piloto — configuração de teste — 27/11/2026
+
+[r160 #45977970265](https://github.com/martaxi-boss/VPS/actions/runs/45977970265), artefacto 15187642733 íntegro, evidência SHA-256 `85476be57aa7e8fc2aedbef2191e149ae4942f26c9dc80ad3c8fbfd1539a32b8`: login e catálogo reais aprovados, PlaybackInfo404, nenhuma rota privada observada. A leitura de `NativePrivatePlaybackMode.TryHostPaths` demonstrou a causa na configuração do ensaio: socket e chave têm de ficar DIRETAMENTE em `/srv/projects/Vivoapk/run`, com sufixos `.sock` e `.key`; o piloto fornecia subpastas e chave sem sufixo, deixando Active=false antes de abrir a fonte. Não é evidência de recusa do fornecedor nem incompatibilidade de codecs. A revisão r161 exige cumprir a proteção existente, sem a enfraquecer. Novo ensaio r162 usa nomes efémeros únicos no diretório permitido, chave exclusiva owner0400 e socket0660, remoção final exata, namespace próprio só de loopback e backend na rede/IP habitual. Código executável1e e produção r100 mantidos; resultado integrado ainda pendente.
+
+
+
 ## Piloto Jellyfin real — falha localizada em PlaybackInfo — 27/11/2026
 
 [r158 #45977288532](https://github.com/martaxi-boss/VPS/actions/runs/45977288532), artefacto 15188071182 íntegro, evidência SHA-256 `04ffc750be191256758b09158ba32fbb5285cb62581068d27a6ad510d3a55e3b`: Jellyfin temporário 12.4.0 real pronto, autenticação Mega real aprovada e RTP1 autorizado presente no catálogo nativo; **PlaybackInfo respondeu 404**, antes de saída HLS entregue. Source/plugin exatos 1e. Não certificar reprodução integrada. Produção/PIDs preservados, processos temporários e chaves/media removidos. A fonte real descodificada em r143 continua válida; a causa deste 404 interno é agora investigada com estados das rotas privadas, respostas upstream e codecs tipados, sem imprimir URLs, credenciais ou corpos. Não atribuir o 404 ao fornecedor antes de localizar a etapa. Os ensaios anteriores r148/r151/r154/r156 eram falhas de preparação do piloto, não de reprodução: PATH, conflito de listeners e readiness prematura sobre HTTP200 sem JSON. O piloto usa namespace temporário só de loopback; backend mantém o percurso/IP normal para o fornecedor.
