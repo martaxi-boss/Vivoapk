@@ -4,6 +4,10 @@ on:
     paths:
       - "jellyfin-auth/**"
       - "backend/app/private_media_api.py"
+      - "backend/app/main.py"
+      - "backend/app/clients/mega.py"
+      - "backend/app/services/private_subscription_cache.py"
+      - "backend/tests/test_private_subscription_cache.py"
       - "backend/app/services/private_ts.py"
       - "backend/app/services/provider_live.py"
       - "backend/app/services/media_origin.py"
@@ -16,6 +20,10 @@ on:
     paths:
       - "jellyfin-auth/**"
       - "backend/app/private_media_api.py"
+      - "backend/app/main.py"
+      - "backend/app/clients/mega.py"
+      - "backend/app/services/private_subscription_cache.py"
+      - "backend/tests/test_private_subscription_cache.py"
       - "backend/app/services/private_ts.py"
       - "backend/app/services/provider_live.py"
       - "backend/app/services/media_origin.py"

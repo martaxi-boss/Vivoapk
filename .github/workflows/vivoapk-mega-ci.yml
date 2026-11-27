@@ -39,4 +39,5 @@ jobs:
         run: |
           python -m ruff check app/clients/catalog.py app/services/catalog.py \
             app/main.py app/schemas.py app/outbound_transport.py \
-            tests/test_catalog_privacy.py
+            app/clients/mega.py app/services/private_subscription_cache.py \
+            tests/test_private_subscription_cache.py tests/test_catalog_privacy.py
