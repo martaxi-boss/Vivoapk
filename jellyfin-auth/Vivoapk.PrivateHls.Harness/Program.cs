@@ -38,6 +38,24 @@ try
         Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_NATIVE_TS_PROBE=PASS");
         return 0;
     }
+    if (args.Length == 2 && args[1] == "finite-probe")
+    {
+        checkpoint = "delayed finite response metadata";
+        var metadata = await PrivateMediaProbe.ReadAsync(Get("ffprobe"),
+            new Uri(Get("file_probe_uri")), finite: true, ct: ct);
+        if (metadata.Container != "mp4"
+            || metadata.DurationTicks is not { } duration
+            || duration < TimeSpan.FromSeconds(1).Ticks
+            || duration > TimeSpan.FromSeconds(3).Ticks
+            || metadata.Streams.Count != 2
+            || !metadata.Streams.Any(s => s.Video && s.Codec == "h264"
+                && s.Width == 160 && s.Height == 90)
+            || !metadata.Streams.Any(s => !s.Video && s.Codec == "aac"
+                && s.SampleRate == 48000))
+            throw new InvalidOperationException("Unexpected delayed finite metadata");
+        Console.WriteLine("VIVOAPK_PRIVATE_DELAYED_FINITE_PROBE=PASS");
+        return 0;
+    }
     using var backend = new PrivateHlsSocketClient(Get("socket"), Get("key"));
     checkpoint = "loopback binding";
     await using var bridge = await PrivateHlsLoopback.StartAsync(backend, ct);

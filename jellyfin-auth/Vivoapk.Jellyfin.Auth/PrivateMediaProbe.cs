@@ -51,7 +51,11 @@ internal static class PrivateMediaProbe
                     StringComparison.Ordinal)))
             throw Unavailable();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        // A finite HTTP window is validated in full before its first byte is
+        // delivered. The backend bounds one such operation at 30 seconds;
+        // probing a non-fast-start file may also seek to its tail. Keep the
+        // live probe budget unchanged and bound the finite operation separately.
+        deadline.CancelAfter(TimeSpan.FromSeconds(finite ? 75 : 20));
         var token = deadline.Token;
         var start = new ProcessStartInfo(executable)
         {
@@ -69,7 +73,7 @@ internal static class PrivateMediaProbe
         foreach (var arg in new[] {
             "-hide_banner", "-v", "error", "-protocol_whitelist", "http,tcp",
             "-format_whitelist", finite ? "mov,mp4,m4a,3gp,3g2,mj2" : continuousTs ? "mpegts" : "hls,mpegts",
-            "-rw_timeout", "8000000", "-probesize", "2097152",
+            "-rw_timeout", finite ? "35000000" : "8000000", "-probesize", "2097152",
             "-analyzeduration", "5000000", "-max_alloc", "67108864",
             "-f", finite ? "mov" : continuousTs ? "mpegts" : "hls",
             "-show_entries", "format=format_name,duration,bit_rate:stream=index,codec_type,codec_name,width,height,avg_frame_rate,channels,sample_rate,bit_rate",

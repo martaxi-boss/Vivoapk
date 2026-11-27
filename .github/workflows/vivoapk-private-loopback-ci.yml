@@ -15,6 +15,7 @@ on:
       - 'jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateHls*.cs'
       - 'jellyfin-auth/Vivoapk.Jellyfin.Auth/PrivateMediaProbe.cs'
       - 'jellyfin-auth/Vivoapk.PrivateHls.Harness/**'
+      - 'jellyfin-auth/tests/finite_probe_delay.py'
       - '.github/workflows/vivoapk-private-loopback-ci.yml'
   workflow_dispatch:
 permissions:
@@ -77,3 +78,4 @@ jobs:
           test -f "$VIVOAPK_LOOPBACK_HARNESS"
           cd backend
           python -u tests/private_loopback_fixture.py
+          python -u ../jellyfin-auth/tests/finite_probe_delay.py

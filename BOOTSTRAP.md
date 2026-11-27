@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Causa finita demonstrada e ajuste mínimo de probe — 27/11/2026
+
+[r210 #46064925962](https://github.com/martaxi-boss/VPS/actions/runs/46064925962), evidência `d809347f4c49bb27900fd66c2a55c93ed17f3adbf09012abf4f0b7c779db155c`: filme autorizadoMP4/video-mp4/ISO-BMFF,1.082.177.364bytes; primeira janela4MiB **11,78s**. [r212 #46065513172](https://github.com/martaxi-boss/VPS/actions/runs/46065513172), evidência `5626a55206f92b6ea18b290dd41d475d4333a97b904a963bd59f8fe070bef48a`: episódio autorizadoMP4,747.748.821bytes; janela4MiB **8,4s**. AmbosHTTP206 sem recusa401/403; todas as credenciais/processos/ficheiros efémeros removidos e produção preservada. A amostra inicial512KiB não contém informação suficiente para determinar codecs deMP4 semfaststart; não inventar codecs ou alargar formatos por esse resultado.
+
+O bridge só envia cabeçalhos após validar a janela completa; o probe privado tinha timeout8s, incompatível com ambas as leituras reais, apesar de o backend já limitar cada operação a30s. Esta alteração ajusta **apenas ficheiros finitos** para35s por leitura e75s totais, permitindo também seek ao final doMP4. TV mantém8s/20s, protocolos/URLcap/2MiB deprobesize/64MiB dealocação/64KiB deJSON/formatos/codecs validados inalterados. Autenticação, catálogo, DNS e motores existentes preservados. Produção continua12b com TV real180s aprovada; este novo candidato ainda não instalado.
+
+Regressão significativa acrescentada: o FFprobe oficial analisaMP4 sintético servido por uma capacidade loopback com o primeiro cabeçalhoHTTP atrasado9s; a versão antiga falha aos8s. O teste usa apenasrunner descartável e não certifica conteúdo real. Próximos gates sãoCI do plugin/transporte/servidor e filme/episódio reais. Não repetir o ensaio longo deTV sem mudança relevante.
+
 ## TV real certificada no servidor de produção — 27/11/2026
 
 [r205 #46039688080](https://github.com/martaxi-boss/VPS/actions/runs/46039688080), artefacto15220000682, evidência `cc84e3d764265cedda0b70e60ef055f8cc9e7b7cf5bbda3550f079cb2e631c3a`: **RTP1 real na produção12b,180,1s contínuos,63segmentosHLS, segmento novo aos177,8s;2175frames distintos de vídeo e4080de áudio descodificados peloFFmpeg instalado**. ContaMega autenticada, fonteMPEG-TS infinita H.264/AAC, guarda nativa permitida, pedido anónimo recusado e APIs/serviços/namespace/socket preservados. A duração atravessa o limiar nativo150s de renovação. O primeiroStop foi aceite; o finally voltou a tentar parar a sessão já encerrada e recebeu404, sem invalidar a reprodução aprovada. Não repetir este ensaio longo sem mudança relevante.
