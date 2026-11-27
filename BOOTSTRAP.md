@@ -2,6 +2,10 @@
 
 ## RTP1 real aceite e descodificada — 27/11/2026
 
+**CI exata do candidato 1e aprovada:** [integração #45972964003](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964003), dez gates PASS e COMBINED_LAB_GATE_EXIT=0; [backend #45972964122](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964122) e [loopback #45972964061](https://github.com/martaxi-boss/Vivoapk/actions/runs/45972964061) PASS. Artefacto normal 15186703397, ZIP SHA-256 `775fa3f128568d983c8bcaac9369b9d97b0867b3572643206be0d17455eddd5b`; plugin normal `c6ddfa1cdb44ee2d4608db8367fdca8ef6e2a5963ea4d9efa75ff88c50f3c27f`; manifest fonte/backend=1e, activation_allowed=false. Validada integridade e hashes dos componentes. Os três DLLs upstream já coincidem com os instalados. O plugin exato é preparado para o piloto real seguinte; não ativado. R148/r151 falharam no arranque isolado antes de media (PATH e conflito de listener), limparam processos/chaves/media e preservaram produção; não são testes de transmissão aprovados. O próximo piloto usa namespace próprio só de loopback, mantendo o backend na mesma rede/IP da VPS.
+
+
+
 **Fonte real + FFmpeg nativo aprovados:** [r143 #45973269421](https://github.com/martaxi-boss/VPS/actions/runs/45973269421), artefacto 15186525542, evidência SHA-256 `7acf2b58f03c29de61afb60c4b65fdb53002142d3ddc21636b73f30af70546d0`. Candidato `1e7424cdb257dbf0fe6d9d0f0dd8c26e4f77dbe5`; conta ativa, canal RTP1 autorizado e endereço emitido pela playlist; identificação verdadeira Vivoapk/1.0; fluxo 302→200 no probe e 302→200 na reprodução sequencial. Probe de 385024 bytes, amostra de reprodução de 3762444 bytes apenas em memória, **635 frames de vídeo e 1188 de áudio efetivamente descodificados pelo Jellyfin FFmpeg 8.1.3-2**. source_decode_pass=true; serviços inalterados; sem gravação de media nem emissão de segredos. A revisão r144 está limitada a esta prova.
 
 As duas lacunas de transporte identificadas eram a omissão do User-Agent e o bloqueio de redirects emitidos pela origem. Não foi necessário imitar o PINK/Chrome, trocar DNS/IP/credenciais/túnel ou ultrapassar 401/403. A resposta atual aceite elimina o anterior bloqueio desta fonte nas condições testadas; não demonstra a causa única de todas as recusas históricas.
@@ -29,7 +33,7 @@ Correção candidata limitada ao cabeçalho omitido: os leitores passam a enviar
 Acrescentados testes que inspecionam os pedidos reais enviados aos fixtures nos três leitores, incluindo probe/playback TS e manifesto/segmento HLS. A alteração ainda tem de passar CI e validação real; NÃO atribuir o 401 a esta diferença antes de haver prova. A versão b2fdd911 mantém as dez aprovações sintéticas históricas; elas não passam automaticamente a esta nova revisão. Produção r100 preservada, nenhuma instalação/ativação realizada. Não reconstruir login, catálogo ou DNS.
 
 
-## Estado atual — fonte oficial corrigida, reprodução real recusada — 26/11/2026
+## Histórico de 26/11 — fonte corrigida, recusa então observada
 
 Candidato executável `b2fdd911bdf549d7cca89fb7fbbebe3f64b2ff27`, no ramo existente. Produção preservada em `0994990c024b159eebd44528041746f557596d27`; não promover main nem instalar este candidato enquanto o acesso real continuar recusado.
 
