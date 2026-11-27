@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Limpeza progressiva nativa instalada em produção — 27/11/2026
+
+[r187 #46035620223](https://github.com/martaxi-boss/VPS/actions/runs/46035620223) demonstrou uma diferença de configuração: `EnableSegmentDeletion=false`, `SegmentKeepSeconds=720` em produção, apesar de a configuração20s ter passado em laboratório. Zero FFmpeg/FFprobe ativos,32,11GiB livres e todas as chaves permanentes corretas.
+
+[r192 #46036590388](https://github.com/martaxi-boss/VPS/actions/runs/46036590388), artefacto15216971600, evidência `b40f2f0dd099b24f52ac992a6cee4ab6c13b50c7bdadd9a4fc6eace6bc8141ba`: **transação committed**. Alterou apenas os dois campos de `jellyfin-server/config/encoding.xml`: limpeza=true, retenção20s; throttling=false e caminhoFFmpeg preservados. Backup privado `/srv/projects/Vivoapk/backups/native-cache-cleaner-20261127-r192`, originais/metadados e journal guardados. Seis testes locais da transação passaram, incluindo falha pós-arranque com reposição exata e preservação de edição alheia. Reiniciou apenas `jellyfin-pink.service`; backend/Nginx/PostgreSQL inalterados e proteções do serviço preservadas. **Nenhum código candidato instalado**: aplicação continua em r100, agora com reparações de monitor r168 e configuração de cache r192.
+
+Filme: r186 confirmou categoria6226 itens devolvida pelo fornecedor em0,74s; importação inicial nativa de três itens visíveis levou59,77s. Os timeouts45s dos pilotos anteriores foram insuficientes para esse arranque frio. `PlaybackInfo` passou a guarda, mas `file/open` devolveu503, antes deFFprobe. O estadoHTTP original do ficheiro ainda está em investigação; não é prova de recusa401 nem de codec incompatível. R191 falhou só na instrumentação temporária, corrigida antes do próximo ensaio. Não reconstruir catálogo/autenticação/DNS por este resultado. RTP1 real contínuo r180 permanece aprovado.
+
 ## Reprodução real contínua aprovada em instância isolada — 27/11/2026
 
 [r180 #46033551731](https://github.com/martaxi-boss/VPS/actions/runs/46033551731), artefacto `15216430128`, evidência `a4d4349ee2b2c20f35ecb3b95c58a9925f6f191d9c56de97b0d33354d65f6348`: RTP1 autorizado através de autenticação/catálogo/PlaybackInfo e saída HLS do Jellyfin 12.4; **67,1 s contínuos, 27 segmentos, segmento novo aos 65,07 s; 1650 frames de vídeo e 3095 de áudio descodificados; cache TS=0 após Stop; pedido anónimo recusado**. Origem MPEG-TS infinita H.264/AAC, convertida pelo motor nativo existente. Sem nova APK/leitor/serviço.
