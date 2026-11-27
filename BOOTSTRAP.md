@@ -1,5 +1,15 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Continuação autorizada de ficheiros: correção candidata demonstrada — 27/11/2026
+
+[r194 #46036921412](https://github.com/martaxi-boss/VPS/actions/runs/46036921412), evidência `07091d4e4c18162d13c57fef900518245a66e374ed5a875f83ce85601984752f`: filme admitido no catálogo/guarda nativa; `file/open` recebeu **HTTP302** e o leitor antigo recusou `Unexpected media response status`, originando503 privado/404 nativo antes deFFprobe. Zero401/403; não confundir com recusa de autorização.
+
+Este candidato reutiliza o validador existente `provider_redirect_url` também no leitor finito: opção explícita `PRIVATE_MEDIA_FOLLOW_PROVIDER_REDIRECTS`, desligada por defeito, máximo2 saltos emitidos, orçamento15s para a cadeia, DNS/IP públicos fixados em cada salto, ligação anterior fechada antes da seguinte. Sem cookies/Authorization/Referer; apenas headers fixos do produto e Range/If-Match criados pelo servidor. Mantém validação exata206/Content-Range/tamanho/ETag/MIME e limites de bytes/prazo.401/403 e fontes não autorizadas continuam terminais; nenhum motor/leitor/serviço adicional. O comportamento sem opção mantém o pedido único original. A opção finita limita-se a VOD/séries e não altera a entradaTS.
+
+**15 testes locais do transporte e Ruff passaram**: filme/episódio, intervalo/ETag, cadeia/loop/limite/prazo, IP privado, URL inválida/ambígua, HTTP explícito e proibição de downgrade,401/403 sem continuação e Range ignorado sem ler ficheiro inteiro. CI de backend/integração nativa do novo candidato ainda por executar. Ainda não há filme ou episódio real descodificado; próximo piloto irá observar a resposta final autorizada.
+
+ReleaseTV `12b8c5ba6f4c64462adbb79d2f27501ade42de3d` tem integração completa #46033689580, backend #46033689558 e transporte #46033689602 aprovados, artefacto15217156487 SHA256 `2a5800a23b8a903eb8662f30fe561878f9a4524eb0949a5c86ba436fb3ccb71a`; manifesto `8e1e5ff2dd77d4b48bd5b4cb4bcd728d3de935c5947ebdeaf10be5f3c83614df`. Foi preparada na VPS e o ensaio de rollback com nove payloads exatos passou em r199; instalação/validação reais em produção ainda pendentes. Não substituir esta release por main nem tratar a correção finita ainda candidata como instalada.
+
 ## Limpeza progressiva nativa instalada em produção — 27/11/2026
 
 [r187 #46035620223](https://github.com/martaxi-boss/VPS/actions/runs/46035620223) demonstrou uma diferença de configuração: `EnableSegmentDeletion=false`, `SegmentKeepSeconds=720` em produção, apesar de a configuração20s ter passado em laboratório. Zero FFmpeg/FFprobe ativos,32,11GiB livres e todas as chaves permanentes corretas.

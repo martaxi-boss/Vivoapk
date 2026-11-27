@@ -13,12 +13,13 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpcore
 import httpx
 
 from app.outbound_transport import PinnedIPNetworkBackend
+from app.schemas import CatalogKind
 from app.services.media_origin import AuthorizedMediaOrigin
 from app.url_safety import (
     DNSResolutionFailure,
@@ -109,11 +110,70 @@ def _header(headers: list[tuple[bytes, bytes]], name: bytes) -> str | None:
 
 
 @contextmanager
+def _media_response(source, headers, *, allow_provider_redirects,
+                    allow_authorized_http, resolver, pool_factory, max_seconds):
+    if not allow_provider_redirects:
+        # Preserve the default single-request contract and timing unchanged.
+        target = resolve_dns_link_target(source.origin, resolver=resolver)
+        with closing(pool_factory(target)) as pool:
+            with pool.stream(
+                "GET", source._request_url(), headers=headers,
+                extensions={"timeout": {"connect": 5.0, "read": 10.0,
+                                         "write": 5.0, "pool": 5.0}},
+            ) as response:
+                yield response
+        return
+    # Only URLs issued by the authorized origin are continuations. Each hop
+    # gets a fresh public-IP-pinned pool, closed before any next request.
+    from app.services.media_redirect import provider_redirect_url
+
+    url = source._request_url()
+    seen = set()
+    begin = time.monotonic()
+    budget = min(15.0, max_seconds)
+    for hop in range(3):
+        if url in seen or time.monotonic() - begin >= budget:
+            raise MediaReadError("Provider redirect unavailable")
+        seen.add(url)
+        parsed = urlsplit(url)
+        origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+        target = resolve_dns_link_target(origin, resolver=resolver)
+        with closing(pool_factory(target)) as pool:
+            remaining = max(0.1, budget - (time.monotonic() - begin))
+            with pool.stream(
+                "GET", url, headers=headers,
+                extensions={"timeout": {"connect": min(5.0, remaining),
+                                         "read": min(10.0, remaining),
+                                         "write": min(5.0, remaining),
+                                         "pool": min(5.0, remaining)}},
+            ) as response:
+                if response.status in (301, 302, 303, 307, 308):
+                    if not allow_provider_redirects or hop == 2:
+                        raise MediaReadError("Unexpected media response status")
+                    url = provider_redirect_url(
+                        url, response.headers,
+                        allow_authorized_http=allow_authorized_http,
+                    )
+                    # No response body or response headers are forwarded.
+                    # headers contains only fixed product headers and bounded
+                    # server-owned Range/If-Match; never cookies or credentials.
+                    continue
+                if time.monotonic() - begin >= budget:
+                    raise MediaReadError("Provider redirect unavailable")
+                # 401/403 and every other non-success remain terminal in the
+                # unchanged exact-response validator below, before body reads.
+                yield response
+                return
+    raise MediaReadError("Provider redirect unavailable")
+
+
+@contextmanager
 def open_media_body(
     source: AuthorizedMediaOrigin,
     *,
     range_header: str | None = None,
     allow_authorized_http: bool = False,
+    allow_provider_redirects: bool = False,
     if_match: str | None = None,
     max_bytes: int = 64 * 1024 * 1024,
     max_seconds: float = 60.0,
@@ -127,6 +187,8 @@ def open_media_body(
     if source.extension == "m3u8":
         raise MediaReadError("Manifest delivery not implemented")
     _require_media_transport(source, allow_authorized_http=allow_authorized_http)
+    if allow_provider_redirects and source.asset.kind not in (CatalogKind.VOD, CatalogKind.SERIES):
+        raise MediaReadError("Finite media redirects required")
     requested_range = _range(range_header)
     headers = _media_headers(b"video/*")
     if range_header is not None:
@@ -139,64 +201,62 @@ def open_media_body(
         headers.append((b"If-Match", if_match.encode("ascii")))
     begin = time.monotonic()
     try:
-        target = resolve_dns_link_target(source.origin, resolver=resolver)
-        with closing(pool_factory(target)) as pool:
-            with pool.stream(
-                "GET", source._request_url(), headers=headers,
-                extensions={"timeout": {"connect": 5.0, "read": 10.0,
-                                         "write": 5.0, "pool": 5.0}},
-            ) as response:
-                if response.status != (206 if requested_range else 200):
-                    raise MediaReadError("Unexpected media response status")
-                mime = _header(response.headers, b"content-type")
-                if mime is None or mime.lower() not in _ALLOWED_TYPES:
-                    raise MediaReadError("Unexpected media content type")
-                encoding = _header(response.headers, b"content-encoding")
-                if encoding is not None and encoding.lower() != "identity":
-                    raise MediaReadError("Unexpected media content encoding")
-                length_text = _header(response.headers, b"content-length")
-                if length_text is not None and not _DECIMAL.fullmatch(length_text):
-                    raise MediaReadError("Invalid media content length")
-                length = int(length_text) if length_text is not None else None
-                content_range = _header(response.headers, b"content-range")
-                validator = _header(response.headers, b"etag")
-                if validator is not None and not re.fullmatch(
-                        r'(?:W/)?"[\x21\x23-\x7e]{1,240}"', validator):
-                    raise MediaReadError("Invalid private media validator")
-                if if_match is not None and validator != if_match:
-                    raise MediaReadError("Private media representation changed")
-                if requested_range:
-                    match = _CONTENT_RANGE.fullmatch(content_range or "")
-                    if match is None:
-                        raise MediaReadError("Missing media content range")
-                    start, end, total = map(int, match.groups())
-                    expected_start, expected_end = requested_range
-                    if (start != expected_start or end < start or end >= total
-                            or (expected_end is not None and end > expected_end)
-                            or length != end - start + 1):
-                        raise MediaReadError("Mismatched media content range")
-                elif content_range is not None:
-                    raise MediaReadError("Unrequested media content range")
-                if length is not None and not 1 <= length <= max_bytes:
-                    raise MediaReadError("Media response exceeds bounded read")
-                def chunks() -> Iterator[bytes]:
-                    received = 0
-                    for block in response.iter_stream():
-                        if not isinstance(block, bytes):
-                            raise MediaReadError("Invalid media body")
-                        if not block:
-                            continue
-                        received += len(block)
-                        if (time.monotonic() - begin > max_seconds or received > max_bytes
-                                or (length is not None and received > length)):
-                            raise MediaReadError("Media read bound exceeded")
-                        # Never accumulate a full asset or write it to disk.
-                        for offset in range(0, len(block), 65536):
-                            yield block[offset:offset + 65536]
-                    if not received or (length is not None and received != length):
-                        raise MediaReadError("Incomplete media body")
+        with _media_response(
+            source, headers, allow_provider_redirects=allow_provider_redirects,
+            allow_authorized_http=allow_authorized_http, resolver=resolver,
+            pool_factory=pool_factory, max_seconds=max_seconds,
+        ) as response:
+            if response.status != (206 if requested_range else 200):
+                raise MediaReadError("Unexpected media response status")
+            mime = _header(response.headers, b"content-type")
+            if mime is None or mime.lower() not in _ALLOWED_TYPES:
+                raise MediaReadError("Unexpected media content type")
+            encoding = _header(response.headers, b"content-encoding")
+            if encoding is not None and encoding.lower() != "identity":
+                raise MediaReadError("Unexpected media content encoding")
+            length_text = _header(response.headers, b"content-length")
+            if length_text is not None and not _DECIMAL.fullmatch(length_text):
+                raise MediaReadError("Invalid media content length")
+            length = int(length_text) if length_text is not None else None
+            content_range = _header(response.headers, b"content-range")
+            validator = _header(response.headers, b"etag")
+            if validator is not None and not re.fullmatch(
+                    r'(?:W/)?"[\x21\x23-\x7e]{1,240}"', validator):
+                raise MediaReadError("Invalid private media validator")
+            if if_match is not None and validator != if_match:
+                raise MediaReadError("Private media representation changed")
+            if requested_range:
+                match = _CONTENT_RANGE.fullmatch(content_range or "")
+                if match is None:
+                    raise MediaReadError("Missing media content range")
+                start, end, total = map(int, match.groups())
+                expected_start, expected_end = requested_range
+                if (start != expected_start or end < start or end >= total
+                        or (expected_end is not None and end > expected_end)
+                        or length != end - start + 1):
+                    raise MediaReadError("Mismatched media content range")
+            elif content_range is not None:
+                raise MediaReadError("Unrequested media content range")
+            if length is not None and not 1 <= length <= max_bytes:
+                raise MediaReadError("Media response exceeds bounded read")
+            def chunks() -> Iterator[bytes]:
+                received = 0
+                for block in response.iter_stream():
+                    if not isinstance(block, bytes):
+                        raise MediaReadError("Invalid media body")
+                    if not block:
+                        continue
+                    received += len(block)
+                    if (time.monotonic() - begin > max_seconds or received > max_bytes
+                            or (length is not None and received > length)):
+                        raise MediaReadError("Media read bound exceeded")
+                    # Never accumulate a full asset or write it to disk.
+                    for offset in range(0, len(block), 65536):
+                        yield block[offset:offset + 65536]
+                if not received or (length is not None and received != length):
+                    raise MediaReadError("Incomplete media body")
 
-                yield MediaBody(mime.lower(), length, content_range, chunks(), validator)
+            yield MediaBody(mime.lower(), length, content_range, chunks(), validator)
     except (UnsafeOutboundURL, DNSResolutionFailure, httpcore.NetworkError,
             httpcore.TimeoutException, httpcore.ProtocolError, ValueError, OSError):
         raise MediaReadError("Private media read unavailable") from None

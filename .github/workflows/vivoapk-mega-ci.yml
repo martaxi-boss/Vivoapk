@@ -40,4 +40,5 @@ jobs:
           python -m ruff check app/clients/catalog.py app/services/catalog.py \
             app/main.py app/schemas.py app/outbound_transport.py \
             app/clients/mega.py app/services/private_subscription_cache.py \
-            tests/test_private_subscription_cache.py tests/test_catalog_privacy.py
+            tests/test_private_subscription_cache.py tests/test_catalog_privacy.py \
+            app/services/media_body.py tests/test_finite_redirects.py

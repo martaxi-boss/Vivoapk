@@ -91,7 +91,8 @@ class PrivateFileSession:
         if self._info is not None or self._source is None:
             raise MediaReadError("Private media unavailable")
         # A one-byte GET establishes exact range support and file length.
-        # A provider that ignores Range or redirects is not supported.
+        # A provider that ignores Range is not supported. Issued continuations
+        # require the explicit bounded option in the supplied body transport.
         window, validator = self._window(0, 0, entitlement)
         self._info = FileInfo(window.total, window.content_type)
         self._validator = validator
