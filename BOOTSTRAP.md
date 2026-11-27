@@ -1,5 +1,15 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Produção atualizada: release nativa12b instalada — 27/11/2026
+
+[r201 #46038651606](https://github.com/martaxi-boss/VPS/actions/runs/46038651606), artefacto15219391946, evidência `b00021ed849dbaf4d8723be36fe92c0d4cfd83c75a17d9d8ccbc697cb229304b`: **transaction_result=committed, production_activation=true**. Produção passou de r100 para o candidato validado **`12b8c5ba6f4c64462adbb79d2f27501ade42de3d`**, não main. Plugin ordinário instalado SHA256 `78c0aa91021059e18c7495019d95f8a07fa140ff24af11f2124f2c8e24c3a065`; três DLL nativas e FFmpeg mantêm os hashes aprovados. SeleçãoTS+playlist oficial+continuações emitidas+HTTP autorizado explicitamente ativadas; reutilização privada de detalhesMega≤5s, autorizaçãoXtream atual preservada.
+
+Postflight real verificou código/cwd e DLL carregada, identidade/permissões estáveis do administrador, chaves privadas e metadados do plugin, proteções/systemd, UDS/APIs, ausência de exposição privada peloNginx, FFmpeg e política de cachetrue/20s. Backend/Jellyfin reiniciados; Nginx/PostgreSQL preservados. Backup/journal privados `/srv/projects/Vivoapk/backups/native-upgrade-20261127/12b8c5ba6f4c64462adbb79d2f27501ade42de3d`; recuperação exata previamente ensaiada em r199 (9 testes da transação naVPS), sem rollback necessário na instalação. Cofre, monitorr168, cacher192, PINK e backups preservados.
+
+**Ainda não certificar reprodução em produção pelo simples arranque**: está em execução r203, teste realRTP1 de180s para atravessar o limiar de renovação150s, descodificar saída e observar a cache própria. Prova real anterior r180 foi em instância isolada67,1s. Clientes físicos certificados=0.
+
+Correção finita de302 pertence ao candidato separado **`11a4ad7ba9d7d91f7fb7db5143f367bfc6a15cd5`**, ainda não instalado. Backend/Ruff #46038515252 aprovados; integração completa #46038515336 em curso. Filmes/séries reais continuam pendentes. Não confundir a releaseTV instalada com esse candidato finito nem substituir produção por main.
+
 ## Limpeza progressiva nativa instalada em produção — 27/11/2026
 
 [r187 #46035620223](https://github.com/martaxi-boss/VPS/actions/runs/46035620223) demonstrou uma diferença de configuração: `EnableSegmentDeletion=false`, `SegmentKeepSeconds=720` em produção, apesar de a configuração20s ter passado em laboratório. Zero FFmpeg/FFprobe ativos,32,11GiB livres e todas as chaves permanentes corretas.
