@@ -1,5 +1,15 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Reprodução real contínua aprovada em instância isolada — 27/11/2026
+
+[r180 #46033551731](https://github.com/martaxi-boss/VPS/actions/runs/46033551731), artefacto `15216430128`, evidência `a4d4349ee2b2c20f35ecb3b95c58a9925f6f191d9c56de97b0d33354d65f6348`: RTP1 autorizado através de autenticação/catálogo/PlaybackInfo e saída HLS do Jellyfin 12.4; **67,1 s contínuos, 27 segmentos, segmento novo aos 65,07 s; 1650 frames de vídeo e 3095 de áudio descodificados; cache TS=0 após Stop; pedido anónimo recusado**. Origem MPEG-TS infinita H.264/AAC, convertida pelo motor nativo existente. Sem nova APK/leitor/serviço.
+
+A falha de continuidade anterior ficou demonstrada em r178: API Mega HTTP429 com limite60/min e Retry-After28, causada pela repetição de consultas aos detalhes da subscrição. A correção limita a reutilização desses detalhes a **5 s em RAM, por subscrição/contexto**, mantendo verificações Xtream atuais, identidade/DNS/password/expiração e recusa sem dados obsoletos. Respeita Retry-After e não altera autenticação, catálogo ou seleção de DNS públicos.
+
+O piloto usou backend `39f5cbffa2b890916663b5f0411fe8e92e85ec56` e plugin ordinário1e previamente verificado, com código C# idêntico, em namespace temporário privado; todo o resolver apontou ao backend candidato dentro desse namespace. É composição de teste, **não release instalada**. O código de aplicação é igual ao candidato `12b8c5ba6f4c64462adbb79d2f27501ade42de3d`; diferenças posteriores são formatação de testes/documentação. stdout normalizado da evidência r180 foi truncado a8190bytes após os campos explícitos de sucesso: não tratar esse registo como prova completa de todos os campos finais de limpeza. Próximos ensaios usam resumos compactos completos.
+
+Produção continua em r100 `0994990c024b159eebd44528041746f557596d27`, com a reparação privada de monitor r168 preservada. CI backend do candidato12b passou (#46033689558); integração nativa completa ainda em curso. Pendentes: filme/episódio reais, artefacto exato aprovado, ensaio de rollback e instalação coordenada, validação real em produção e aplicações físicas. **Zero plataformas físicas certificadas**. PINK, backups, chaves permanentes e serviço `jellyfin-pink.service` preservados.
+
 ## Quota Mega demonstrada e correção privada candidata — 27/11/2026
 
 **Prova real da saída nativa:** [r176 #46028807136](https://github.com/martaxi-boss/VPS/actions/runs/46028807136), evidência SHA-256 `033543dd0eed21d2d5829eaaa0d34cb985aafc8eb77f86819a09b97a68d1d895`: 16 segmentos HLS do Jellyfin entregues e amostra efetivamente descodificada com **122 frames vídeo e 235 áudio**. Não confundir esse PASS de saída real com continuidade: a transmissão terminou ao fim de~32s por UNAVAILABLE.
