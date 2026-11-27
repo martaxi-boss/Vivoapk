@@ -1,5 +1,15 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Filme real já descodificado; continuidade em validação — 27/11/2026
+
+O candidato **`d584f6b5d1b87d966f389b722af161489fc504ad`** passou a CI do plugin [#46065913786](https://github.com/martaxi-boss/Vivoapk/actions/runs/46065913786), do transporte/probe [#46065914064](https://github.com/martaxi-boss/Vivoapk/actions/runs/46065914064) e do servidor nativo completo [#46065913775](https://github.com/martaxi-boss/Vivoapk/actions/runs/46065913775). A regressão de cabeçalhos HTTP atrasados 9s passou. Plugin ordinário SHA256 `65570589875f9936e33c2278c2e1237222fe703d7d508a773f4d4c11f73e4bab`; manifesto `502b7aee5cdb86567bddca39342fe42d946b3f48e9695a8df18ad1bf4a5fc3c7`.
+
+[r222 #46068520812](https://github.com/martaxi-boss/VPS/actions/runs/46068520812), evidência `a6179546bbe76afe1f4e07928dc1ec7031ac56757b79380341eb4ff953b01633`: **filme Mega autorizado MP4 analisado pelo probe nativo, PlaybackInfo e HLS HTTP200; 72 frames de vídeo e 139 de áudio realmente descodificados, H.264/AAC**. Pedido anónimo recusado, sem falhas de leitura/recusas do fornecedor, quota mínima observada 51; cache TS após Stop=0. Produção12b e serviços preservados; todos os processos, endpoints, ficheiros e credenciais temporários removidos.
+
+**Não é ainda aprovação de continuidade de filme:** foi entregue um único segmento, após 71,99s de espera. O controlador iniciou o intervalo de25s antes desse pedido bloqueante, terminando a ronda após a primeira entrega. A revisão r223 exige registar a latência de arranque separadamente e medir25s a partir do primeiro segmento, com pelo menos5 segmentos distintos e imagem/som descodificados. R224 executa essa verificação sem alterar código da aplicação. A falha anterior r215 foi localizada no fixture: meta.json copiado como0444 impedia a escrita pelo Jellyfin; r219 removeu o órfão identificado, r221 recuperou a tarefa e r222 já arrancou com metadados0644 e stderr privado limitado.
+
+Produção continua **12b**, com TV real180,1s aprovada. O candidato d584 ainda não foi instalado. Falta continuidade real de filme/episódio e ativação coordenada; clientes físicos certificados continuam0.
+
 ## Causa finita demonstrada e ajuste mínimo de probe — 27/11/2026
 
 [r210 #46064925962](https://github.com/martaxi-boss/VPS/actions/runs/46064925962), evidência `d809347f4c49bb27900fd66c2a55c93ed17f3adbf09012abf4f0b7c779db155c`: filme autorizadoMP4/video-mp4/ISO-BMFF,1.082.177.364bytes; primeira janela4MiB **11,78s**. [r212 #46065513172](https://github.com/martaxi-boss/VPS/actions/runs/46065513172), evidência `5626a55206f92b6ea18b290dd41d475d4333a97b904a963bd59f8fe070bef48a`: episódio autorizadoMP4,747.748.821bytes; janela4MiB **8,4s**. AmbosHTTP206 sem recusa401/403; todas as credenciais/processos/ficheiros efémeros removidos e produção preservada. A amostra inicial512KiB não contém informação suficiente para determinar codecs deMP4 semfaststart; não inventar codecs ou alargar formatos por esse resultado.
