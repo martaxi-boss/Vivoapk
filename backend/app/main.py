@@ -16,7 +16,6 @@ from app.config import Settings, get_settings
 from app.db import build_session_factory, get_db
 from app.logging_config import configure_logging
 from app.private_media_api import install_private_hls_routes
-from app.services.private_subscription_cache import PrivateSubscriptionCache, private_mega_client
 from app.schemas import (
     CatalogCategoryItemsRequest,
     CatalogListRequest,
@@ -32,6 +31,7 @@ from app.schemas import (
 )
 from app.services.catalog import CatalogDenied, CatalogService
 from app.services.entitlement import EntitlementService
+from app.services.private_subscription_cache import PrivateSubscriptionCache, private_mega_client
 from app.services.session import SessionResolver
 
 
