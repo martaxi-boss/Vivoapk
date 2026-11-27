@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## TV real certificada no servidor de produção — 27/11/2026
+
+[r205 #46039688080](https://github.com/martaxi-boss/VPS/actions/runs/46039688080), artefacto15220000682, evidência `cc84e3d764265cedda0b70e60ef055f8cc9e7b7cf5bbda3550f079cb2e631c3a`: **RTP1 real na produção12b,180,1s contínuos,63segmentosHLS, segmento novo aos177,8s;2175frames distintos de vídeo e4080de áudio descodificados peloFFmpeg instalado**. ContaMega autenticada, fonteMPEG-TS infinita H.264/AAC, guarda nativa permitida, pedido anónimo recusado e APIs/serviços/namespace/socket preservados. A duração atravessa o limiar nativo150s de renovação. O primeiroStop foi aceite; o finally voltou a tentar parar a sessão já encerrada e recebeu404, sem invalidar a reprodução aprovada. Não repetir este ensaio longo sem mudança relevante.
+
+**Limite da prova de cache:** o controlador não identificou inequivocamente o processo/ficheiros próprios, pelo que não mede limpeza progressiva em produção. A configuração nativa continuatrue/20s, instalada e verificada emr192/r201; a prova real isoladar180 mediu cache0 apósStop. Não misturar estas três afirmações. Clientes físicos certificados continuam0; nenhuma das seis plataformas deve ser declarada certificada por este ensaio do servidor.
+
+O candidato finito **11a4ad7ba9d7d91f7fb7db5143f367bfc6a15cd5** passou backend #46038515252, transporte #46038515174 e integração nativa completa #46038515336. Continua separado da produção12b: falta prova real de filme/episódio e instalação coordenada. Está a prosseguir a validação real com a linha existente; nenhuma credencial ouURL privada é publicada.
+
 ## Produção atualizada: release nativa12b instalada — 27/11/2026
 
 [r201 #46038651606](https://github.com/martaxi-boss/VPS/actions/runs/46038651606), artefacto15219391946, evidência `b00021ed849dbaf4d8723be36fe92c0d4cfd83c75a17d9d8ccbc697cb229304b`: **transaction_result=committed, production_activation=true**. Produção passou de r100 para o candidato validado **`12b8c5ba6f4c64462adbb79d2f27501ade42de3d`**, não main. Plugin ordinário instalado SHA256 `78c0aa91021059e18c7495019d95f8a07fa140ff24af11f2124f2c8e24c3a065`; três DLL nativas e FFmpeg mantêm os hashes aprovados. SeleçãoTS+playlist oficial+continuações emitidas+HTTP autorizado explicitamente ativadas; reutilização privada de detalhesMega≤5s, autorizaçãoXtream atual preservada.
