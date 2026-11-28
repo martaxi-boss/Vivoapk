@@ -4,6 +4,62 @@ using System.Text.Json;
 using System.Text;
 using Jellyfin.Plugin.VivoapkMegaAuth;
 
+// Real native FFmpeg live URI shape, with synthetic credentials only.
+{
+    const string stem = "0123456789abcdef0123456789abcdef";
+    const string path = "/synthetic-cache/" + stem + ".m3u8";
+    const string token = "synthetic-owned-jellyfin-token";
+    const string device = "synthetic device&scope";
+    const string session = "11111111-2222-3333-4444-555555555555";
+    var item = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    var prefix = "hls/" + stem + "/" + stem;
+    var playlist = "#EXTM3U\r\n#EXT-X-MEDIA-SEQUENCE:7\r\n#EXTINF:3.0,\r\n"
+        + prefix + "7.ts\r\n#EXTINF:3.0,\r\n" + prefix + "8.ts\r\n";
+    if (!PrivateLivePlaylist.TryAuthorize(Encoding.UTF8.GetBytes(playlist), path,
+            token, device, session, item, out var encoded))
+        throw new InvalidOperationException("Exact native live playlist was not admitted");
+    var text = Encoding.UTF8.GetString(encoded);
+    var media = text.Split('\n').Select(v => v.TrimEnd('\r'))
+        .Where(v => v.Length > 0 && v[0] != '#').ToArray();
+    if (media.Length != 2 || !text.StartsWith("#EXTM3U\r\n#EXT-X-MEDIA-SEQUENCE:7\r\n", StringComparison.Ordinal))
+        throw new InvalidOperationException("Native HLS tags, sequence or media count changed");
+    for (var i = 0; i < media.Length; i++)
+    {
+        var uri = new Uri("https://synthetic-jellyfin.invalid/Videos/" + item + "/" + media[i]);
+        var fields = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        if (!uri.AbsolutePath.EndsWith(prefix + (i + 7) + ".ts", StringComparison.Ordinal)
+            || fields.Count != 4 || fields["ApiKey"] != token || fields["DeviceId"] != device
+            || fields["PlaySessionId"] != session || fields["MediaSourceId"] != item.ToString("N")
+            || fields.ContainsKey("api_key"))
+            throw new InvalidOperationException("Native segment lost its exact owner/device/session binding");
+    }
+    foreach (var bad in new[]
+    {
+        "https://external.invalid/segment.ts", "//external.invalid/segment.ts",
+        "/Videos/foreign/segment.ts", "../" + prefix + "7.ts", prefix + "../7.ts",
+        prefix + "7.ts?ApiKey=foreign", prefix + "7.ts#fragment", prefix + "-1.ts",
+        prefix + "00000000000.ts", "hls/ffffffffffffffffffffffffffffffff/" + stem + "7.ts",
+        "hls/" + stem + "/ffffffffffffffffffffffffffffffff7.ts", prefix + "7.mp4",
+    })
+    {
+        if (PrivateLivePlaylist.TryAuthorize(Encoding.UTF8.GetBytes("#EXTM3U\n" + bad + "\n"),
+                path, token, device, session, item, out var rejected) || rejected.Length != 0)
+            throw new InvalidOperationException("Unbound native playlist reference received a credential");
+    }
+    foreach (var badToken in new[] { "", "a,b", "a\"b", "a b", "a\nb", new string('x', 513) })
+        if (PrivateLivePlaylist.TryAuthorize(Encoding.UTF8.GetBytes(playlist), path,
+                badToken, device, session, item, out _))
+            throw new InvalidOperationException("Invalid live playlist credential accepted");
+    if (PrivateLivePlaylist.TryAuthorize([0xff, 0xfe], path, token, device, session, item, out _)
+        || PrivateLivePlaylist.TryAuthorize(new byte[262145], path, token, device, session, item, out _)
+        || PrivateLivePlaylist.TryAuthorize(Encoding.UTF8.GetBytes(playlist), path, token, "", session, item, out _)
+        || PrivateLivePlaylist.TryAuthorize(Encoding.UTF8.GetBytes(playlist), path, token, device, "forged", item, out _)
+        || PrivateLivePlaylist.TryAuthorize(Encoding.UTF8.GetBytes(playlist), path, token, device, session, Guid.Empty, out _))
+        throw new InvalidOperationException("Unbounded or unidentified live playlist accepted");
+    Console.WriteLine("PRIVATE_NATIVE_LIVE_PLAYLIST_BOUND_QUERY_TESTS=PASS");
+}
+
+
 string checkpoint = "fixture configuration";
 try
 {

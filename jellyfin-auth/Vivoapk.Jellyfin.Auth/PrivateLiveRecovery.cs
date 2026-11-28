@@ -257,7 +257,11 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
             }
             try
             {
-                await downstream(http).ConfigureAwait(false);
+                if (livePlaylist)
+                    await ForwardLivePlaylistAsync(http, downstream, manager, lab, owner,
+                        item, device, session).ConfigureAwait(false);
+                else
+                    await downstream(http).ConfigureAwait(false);
                 if (http.Response.StatusCode != 200)
                     return;
                 if (legacy && values.Count == 0)
@@ -295,6 +299,43 @@ internal sealed class PrivateLiveRecovery(string? diagnosticHeader = null)
             if (finiteLocked)
                 state.FiniteRequests.Release();
         }
+    }
+
+    private async Task ForwardLivePlaylistAsync(HttpContext http, RequestDelegate downstream,
+        ITranscodeManager manager, PrivateNativeHls lab, Guid owner, Guid item,
+        string device, string session)
+    {
+        var original = http.Response.Body;
+        await using var buffer = new MemoryStream();
+        http.Response.Body = buffer;
+        try
+        {
+            await downstream(http).ConfigureAwait(false);
+            if (http.Response.StatusCode != 200)
+            {
+                buffer.Position = 0;
+                http.Response.Body = original;
+                await buffer.CopyToAsync(original, http.RequestAborted).ConfigureAwait(false);
+                return;
+            }
+            var job = manager.GetTranscodingJob(session);
+            if (buffer.Length > 262144 || job is null || job.Type != TranscodingJobType.Hls
+                || string.IsNullOrEmpty(job.Path)
+                || !await lab.MatchesJobAsync(owner, job, device, session, http.RequestAborted)
+                    .ConfigureAwait(false)
+                || !NativePlaybackAuthorization.TryGetExplicitToken(http.Request, out var token)
+                || !PrivateLivePlaylist.TryAuthorize(buffer.ToArray(), job.Path, token,
+                    device, session, item, out var content))
+            {
+                http.Response.Body = original;
+                Deny(http);
+                return;
+            }
+            http.Response.ContentLength = content.Length;
+            http.Response.Body = original;
+            await original.WriteAsync(content, http.RequestAborted).ConfigureAwait(false);
+        }
+        finally { http.Response.Body = original; }
     }
 
     // A ping carries no item ID; resolve only an existing binding. The

@@ -418,6 +418,20 @@ def require_denied_response(response, stage, identity):
             "guard": guard, "response_bytes": len(body)}))
 
 
+def require_native_returned_query_owner(uri, owner_token, stage):
+    # Consume the ORIGINAL server URI, just as an HLS player does. Do not
+    # repair a missing credential or inject a header in this regression.
+    fields = [(k, v) for k, v in parse_qsl(urlsplit(uri).query, keep_blank_values=True)
+              if is_auth_query_key(k)]
+    if len(fields) != 1 or fields[0] != ("ApiKey", owner_token):
+        raise RuntimeError("Native returned HLS URI lacks canonical owner credential: " + stage)
+    status, body, guard = native_bytes(uri)
+    if status != 200 or guard != "allowed":
+        raise RuntimeError("Native original query-only request failed: " + json.dumps({
+            "stage": stage, "status": status, "guard": guard, "response_bytes": len(body)}))
+    return body
+
+
 def require_native_query_owner(uri, owner_token, stage):
     status, body, guard = native_bytes(native_query_fixture(uri, owner_token, owner_token))
     if status != 200 or guard != "allowed":
@@ -1199,8 +1213,12 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
         if status not in (200, 204):
             raise RuntimeError("Parallel live playback report rejected: " + str(status))
 
+    def owner_bytes(uri, token, stage):
+        return (require_native_returned_query_owner(uri, token, stage)
+                if private_backend is not None else require_native_owner(uri, token, stage))
+
     def playlist(state):
-        data = require_native_owner(state["route"], state["token"], "parallel_live_playlist")
+        data = owner_bytes(state["route"], state["token"], "parallel_live_playlist")
         if b"#EXT-X-ENDLIST" in data:
             raise RuntimeError("Parallel live stream unexpectedly ended")
         entries = parse_timed_segments(data)
@@ -1221,7 +1239,7 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
             if number < state["next"]:
                 continue
             route = native_route(state["route"], relative, state["item"])
-            payload = require_native_owner(route, state["token"], "parallel_live_segment")
+            payload = owner_bytes(route, state["token"], "parallel_live_segment")
             if len(payload) < 188 or payload[0] != 0x47:
                 raise RuntimeError("Parallel live invalid transport stream")
             state["last_route"] = route
@@ -1263,7 +1281,7 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
             (v for k, v in parse_qsl(urlsplit(master).query) if k.lower() == "playsessionid"), None)
         if not session:
             raise RuntimeError("Parallel live session missing")
-        body = require_native_owner(master, token, "parallel_live_master")
+        body = owner_bytes(master, token, "parallel_live_master")
         route = master
         if b"#EXT-X-STREAM-INF" in body:
             relative = [x.strip() for x in body.decode().splitlines()
@@ -1323,8 +1341,8 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
             raise RuntimeError("Parallel live cache namespaces not independent")
         if private_backend is not None:
             for own, other in ((a, b), (b, a)):
-                own_uri = urlsplit(safe_fixture_route(own["last_route"], own["token"]))
-                other_uri = urlsplit(safe_fixture_route(other["last_route"], other["token"]))
+                own_uri = urlsplit(urlsplit(own["last_route"]).path)
+                other_uri = urlsplit(urlsplit(other["last_route"]).path)
                 own_parts = own_uri.path.split("/")
                 other_parts = other_uri.path.split("/")
                 assert len(own_parts) == len(other_parts) == 6 and own_parts[3].lower() == "hls"
@@ -1345,8 +1363,9 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                                      urlencode({"PlaySessionId": other["session"]}), ""))
                 require_denied_response(native_bytes(route, own["token"]),
                                         "private_live_foreign_session", "own_item_forged_session")
-                require_native_owner(own["last_route"], own["token"], "queryless_native_live_segment")
+                require_native_owner(own_uri.path, own["token"], "queryless_native_live_segment")
             print("JELLYFIN_PRIVATE_NATIVE_QUERYLESS_SEGMENT_AND_EXACT_CACHE=PASS", flush=True)
+            print("JELLYFIN_PRIVATE_NATIVE_ORIGINAL_QUERY_URLS=PASS", flush=True)
         for own, other in ((a, b), (b, a)):
             for key in ("master", "route", "last_route"):
                 require_native_denial(own[key], own["token"], other["token"], "parallel_live_" + key)
@@ -1448,7 +1467,7 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                 }, token=first_token)
                 if status != 404 or current["identity"] not in jobs() or b["identity"] not in jobs():
                     raise RuntimeError("Stale stop affected a current playback")
-                require_native_owner(current["last_route"], first_token, "private_reopen_current_segment")
+                owner_bytes(current["last_route"], first_token, "private_reopen_current_segment")
                 decode(current, "reopen")
 
             first_reopened = start(first_item, first_owner, first_token)
