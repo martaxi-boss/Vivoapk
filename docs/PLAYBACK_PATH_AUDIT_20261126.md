@@ -2,7 +2,9 @@
 
 ## Estado e prova atuais — 28/11/2026
 
-A produção está em **12b8c5ba6f4c64462adbb79d2f27501ade42de3d**, desde r201; as secções antigas abaixo conservam o estado histórico das suas datas. **Não instalar main.** O candidato em validação é **8f7acfd0e3265e845a4413b6cbc5842106d439d0**. A autenticação, a descoberta, as famílias DNS e o catálogo existentes foram preservados.
+A produção está em **8f7acfd0e3265e845a4413b6cbc5842106d439d0**, instalada pelo r254 [46091540692](https://github.com/martaxi-boss/VPS/actions/runs/46091540692), com transação committed e pós-verificação aprovada. Substitui12b do r201. As secções antigas abaixo conservam o estado histórico das suas datas. **Não instalar main.** A autenticação, a descoberta, as famílias DNS e o catálogo existentes foram preservados.
+
+A reversão dos nove ficheiros com os bytes reais foi ensaiada no r253; só mudaram plugin e referência do backend, sete ficheiros permaneceram iguais. Chaves, administrador, serviços protegidos, núcleo Jellyfin e FFmpeg preservados. CI nativo final46088866872 passou. RTP2 também passou com o perfil DNS de TV no r250:53 autorizações na origem esperada,9segmentos/26,4s e1350 fotogramas/1269 blocos áudio descodificados. Perfil do servidor não certifica aparelho físico. Pós-instalação, filme, episódio e métrica real da cache estão em curso.
 
 O percurso real é Mega OTT autorizado → leitor privado do backend existente → socket privado/bridge dentro do Jellyfin → FFprobe/FFmpeg nativo → HLS HTTPS protegido para as aplicações oficiais. O fornecedor entrega MPEG-TS contínuo; não precisa de oferecer HLS. É o Jellyfin que gera o HLS de saída. A origem e as credenciais do fornecedor ficam no servidor. O teletexto é identificado como faixa auxiliar; só vídeo/áudio é anunciado nesta integração.
 
