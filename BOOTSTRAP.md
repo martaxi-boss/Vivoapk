@@ -1,5 +1,12 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Direto real em produção e acesso público aprovados — 28/11/2026
+
+r259 [46092302558](https://github.com/martaxi-boss/VPS/actions/runs/46092302558): RTP1 autorizado com HEVC/AAC de entrada, HLS nativo,25segmentos/55,5s,2400 fotogramas e2250 blocos áudio descodificados (1904/2250 hashes distintos). Guard permitido, subscriçãoACTIVE200, anónimo recusado, encoder próprio identificado,0ficheiros após Stop/logout204; serviços/socket/namespace preservados. Evidência `7ee272b587105325711a05fffb08d98aeafbe666278c627601b8b46900884fd9`. Uma remoção de ficheiro próprio observada durante reprodução; como o observador incluía a playlist, confirmar com métrica exclusiva de segmentos.ts antes de certificar eliminação progressiva.
+
+r261 [46092312570](https://github.com/martaxi-boss/VPS/actions/runs/46092312570): DNS/TLS válidos, Jellyfin público200/version12.4.0, três rotas privadas404, backend8f e DLL exatos, journalcommitted, temporários conhecidos ausentes,31,93GiB livres, cachetrue/20s/throttlefalse e PIDs preservados. Evidência `79089387ca3f37294e89b8967e932082e771129c4885c0c5bf16bbbb588ed595`. Aparelhos físicos0; concorrência de dois clientes reais e conta real expirada não ensaiadas nesta execução.
+
+
 ## Episódio real aprovado após instalação — 28/11/2026
 
 r257 [46092027906](https://github.com/martaxi-boss/VPS/actions/runs/46092027906), produção8f: Episode nativo,9segmentos/27,5s,810 fotogramas e1164 blocos áudio descodificados H264/AAC. Guard permitido, subscriçãoACTIVE200, acesso anónimo recusado. Encoder próprio identificado,0ficheiros após Stop/logout204, PIDs/socket/namespace preservados. Primeiro segmento32,26s após PlaybackInfo. Evidência SHA-256 `75400c02a28265a967a05bebf7d3cede6abdb92521a504bf39940997e3935901`. Filme e episódio estão validados na versão instalada; cache progressiva e aparelhos físicos continuam gates separados.
