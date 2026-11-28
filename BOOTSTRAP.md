@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Fecho por orçamento local reproduzido; isolamento dos cenários de CI — 28/11/2026
+
+[r239 #46086662787](https://github.com/martaxi-boss/VPS/actions/runs/46086662787), evidência `9a69fb48c595266d907c9fa15254b6d014e3c913f86c60c4de68923497c51faf`: reprodução isolada com o backend04657f, SQLite descartável, dados/IO inteiramente sintéticos e **zero pedidos ao fornecedor**. Open200,88leituras206; a89.ª deu404, após429 na admissão interna, contadores[180,180] e registry0. Base temporária eliminada e os4serviços de produção preservados. Portanto um fecho deste tipo pode ser causado pelo limite local, sem recusa externa nem incompatibilidade de formato.
+
+A CI completa04657f [#46085122305](https://github.com/martaxi-boss/Vivoapk/actions/runs/46085122305) falhou na negociação não reproduzida após os cenários de seek. As janelas menores aumentam as validações, e a bateria executava vários cenários independentes na mesma janela60s. Esta alteração **só de testes/documentação** inicia uma contabilização nova entre o par de seeks, cada tail seek e o grupo de negociação abandonada, sempre com registry vazio e exclusivamente na base PostgreSQL localhost/vivoapk_native_private_ci/vivoapk_fixture já protegida pelo fixture. Nunca limpa contadores de uma lease ativa ou da produção; todas as recusas, isolamento, seeks/frames/cache, TTL e abandono continuam obrigatórios. O diagnóstico global passa também a imprimir estadosHTTP e contagens numéricas no ponto de qualquer falha, sem chaves ou credenciais.
+
+**Código de aplicação idêntico a04657f**: nenhuma alteração em backend/app ou no plugin. As provas reaisr235/r237 do filme/episódio continuam aplicáveis ao mesmo código; não repetir esses ensaios isolados sem alteração funcional. Não instalar enquanto o gate completo não passar e o bundle ordinário exato não for verificado. Produção mantém12b e TV real180,1s aprovada.
+
 ## Filme e episódio reais no mesmo candidato04657f — 28/11/2026
 
 **Filme:** [r235 #46085318036](https://github.com/martaxi-boss/VPS/actions/runs/46085318036), evidência `ef9ea0a080b9ac0925449bc439bfd1e93f71b7a39f44a5acfd56074f6fadb832`:27s,7segmentos,504frames vídeo/984áudio H.264/AAC; PlaybackInfo27,11s e primeiro segmento33,78s, contra83,03s no candidato d584. **Episódio:** [r237 #46085786628](https://github.com/martaxi-boss/VPS/actions/runs/46085786628), evidência `6140e5398d70746343d047161296bbd2e4992c69eb753f243cad0d5744b72ccb`:26,8s,8segmentos,720vídeo/1034áudio; PlaybackInfo20,99s, primeiro segmento33,58s. Fontes MP4 realmente autorizadas e saída Jellyfin/FFmpeg nativa, sem motor alternativo.

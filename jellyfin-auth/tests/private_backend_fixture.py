@@ -236,6 +236,22 @@ class PrivateBackend:
             lines.extend(["#EXTINF:3.000,", f"/muxed/{suffix}/{name}"])
         return response(("\n".join(lines) + "\n").encode())
 
+    def begin_independent_case(self, label):
+        # Only this guarded disposable PostgreSQL fixture is eligible.
+        # Never erase admission accounting while any media lease is active.
+        assert self.count() == 0
+        database = self.engine.url
+        assert (database.database == "vivoapk_native_private_ci"
+                and database.username == "vivoapk_fixture"
+                and database.host == "127.0.0.1" and database.port == 5432)
+        import json
+        print("JELLYFIN_PRIVATE_NATIVE_INDEPENDENT_CASE=" + json.dumps({
+            "case": label, **self.diagnostics(),
+        }, sort_keys=True), flush=True)
+        with self.app.state.session_factory() as db:
+            db.query(AuthRateWindow).delete()
+            db.commit()
+
     def diagnostics(self):
         # Counts only: never emit bucket keys, credentials or request bodies.
         with self.app.state.session_factory() as db:

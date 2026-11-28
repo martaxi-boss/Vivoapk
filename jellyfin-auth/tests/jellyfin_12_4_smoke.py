@@ -2138,6 +2138,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         # Native seek certification with fresh bindings. Start at a later
         # segment BEFORE requesting segment zero so a backward seek must
         # handle a missing earlier segment, not just replay the first GET.
+        private_backend.begin_independent_case("interior_seek_pair")
         sa = negotiate(item_a, owner_a, token_a, token_b, seek_start=True)
         sb = negotiate(item_b, owner_b, token_b, token_a, seek_start=True)
         if private_backend.count() != 2 or sa["session"] == sb["session"]:
@@ -2253,6 +2254,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
             ("a", item_a, owner_a, token_a, token_b),
             ("b", item_b, owner_b, token_b, token_a),
         ):
+            private_backend.begin_independent_case("tail_seek_" + label)
             tail = negotiate(item, owner, token, other, seek_start=True, boundary=True)
             position = tail["positions"][tail["late_index"]]
             clamp = tail["runtime_seconds"] - 5
@@ -2305,6 +2307,7 @@ def verify_private_native(item_a, owner_a, token_a, item_b, owner_b, token_b,
         # 2. Abandon another negotiation without stop or playback reports.
         # 3. Abandon a played item with no matching NowPlaying client.
         # Each case must release its exact slot before another PlaybackInfo.
+        private_backend.begin_independent_case("unused_stop_and_retirement")
         unused_stop = negotiate(item_a, owner_a, token_a, token_b, play=False)
         if private_backend.count() != 1 or stop(unused_stop, token_b) != 404:
             raise RuntimeError("Unused private lease or foreign stop invariant failed")
@@ -3705,6 +3708,7 @@ def main():
                     "active_sessions": private_backend.count(),
                     "origin_calls": len(private_backend.upstream.calls),
                     "cache_files": len(transcode_cache_files(base)),
+                    **private_backend.diagnostics(),
                 }, sort_keys=True), flush=True)
             print("Private native fixture failed; raw local logs omitted", flush=True)
         else:
