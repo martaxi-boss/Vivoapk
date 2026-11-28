@@ -1,5 +1,14 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Candidato de URLs originais aprovado com transmissão real — 28/11/2026
+
+Candidato `427a3db831b47e01eb1314992550e45c47798a97`, DLL `12823fb0f467b218692ebe32f825178384aadf07747f41a2d7c057334c17f3c1`. Compilação/autorização [46120371132](https://github.com/martaxi-boss/Vivoapk/actions/runs/46120371132) e transporte/harness [46120371222](https://github.com/martaxi-boss/Vivoapk/actions/runs/46120371222) passaram. CI integrado [46120371147](https://github.com/martaxi-boss/Vivoapk/actions/runs/46120371147) ainda em execução; **não ativado**.
+
+r276 [46120623260](https://github.com/martaxi-boss/VPS/actions/runs/46120623260): Jellyfin nativo temporário, plugin ordinário exato, linha real autorizadaRTP1, EnableLegacyAuthorization=false,21pedidos às URLs originais sem acrescentar cabeçalhos à media,10segmentos/25,4s,750fotogramas/1409blocos áudio descodificados H264/AAC.28validaçõesACTIVE,0falhas de leitura; acesso anónimo recusado, cacheTS0após Stop. Todos os processos/grupos/endpoints/chaves/amostra temporários removidos; produção8f/serviços/socket/namespace preservados. Primeiro segmento2,83s **depois** de PlaybackInfo25,05s; não chamar2,83s arranque total. Evidência `1bb80c370ba2e15a83a186a9d1a5f78cd4baad45b7b48cffcad01a76a8825b2a`.
+
+Alteração funcional limitada a dois ficheiros do plugin; backend byte a byte equivalente a8f. Próximos gates: bundle integrado exato, reversão ensaiada, troca apenas do plugin preservando backend e configuração, teste HTTPS público às URLs originais e teste do leitor Web oficial. Não certificar aparelhos físicos por estes ensaios. O primeiro ensaio de navegador privado r278 falhou em permissões sem tocar na produção; tentativa com o runtime privado existente em curso, sem alterar permissões ou instalar dependências.
+
+
 ## Causa pública confirmada e correção candidata delimitada — 28/11/2026
 
 r273 [46120162441](https://github.com/martaxi-boss/VPS/actions/runs/46120162441), evidência `c8a30c97091f645c58258753f7d75a4e6154d6f1f11795bfa408f0aab53fde4b`: EnableLegacyAuthorization=false; o master nativo usa **ApiKey** moderno. Segmento original sem autorização404/guarddenied. O MESMO segmento com cabeçalho completo do dono:200/281812bytes; com ApiKey moderno e seletores vinculados de dispositivo/sessão/item:200/mesmosbytes,75fotogramas/142blocos áudio descodificados. O ensaio antigo com api_key falhava por usar autorização legada desativada. Não ativar autorização legada nem enfraquecer a guarda. Stop/logout204 e tokenUsersMe401; serviços preservados.
