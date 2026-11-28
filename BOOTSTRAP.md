@@ -1,5 +1,20 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Produção atualizada: teletexto e reprodução finita nativa — 28/11/2026
+
+**Produção ativa: `8f7acfd0e3265e845a4413b6cbc5842106d439d0`**, instalada a partir do ramo autorizado, nunca da main. Instalação Ferrari r254 [46091540692](https://github.com/martaxi-boss/VPS/actions/runs/46091540692) confirmou transação `committed`, administrador, chaves e serviços alheios preservados. Evidência SHA-256 `dd5b4c684e72b89d23276f8f59eaa5837f1b6cf429b19f5ca3348a133f3b778c`. Reversão automática dos nove ficheiros ensaiada com falha injetada em r253 [46091066866](https://github.com/martaxi-boss/VPS/actions/runs/46091066866); sete ficheiros ficaram byte a byte iguais, só mudaram DLL do plugin e seleção do código backend. Backups em `/srv/projects/Vivoapk/backups/native-upgrade-20261128-teletext`. Jellyfin-pink mantido.
+
+Bundle nativo ordinário aprovado: CI [46088866872](https://github.com/martaxi-boss/Vivoapk/actions/runs/46088866872), manifesto SHA-256 `c539edd0671b042826c193076b1bcaec3b35382fd4f68fc91f4ed73501257204`, plugin `e9d9bf5a2260e466a691bc2f38b681c1a577b7595875310c8ed6afad40a9ae8e`. DLLs principais Jellyfin12.4 e FFmpeg099 permanecem iguais. A opção `activation_allowed=false` do manifesto identifica pacote candidato e não concede autorização por si; a instalação usou provas reais e adaptador de transação com pins independentes.
+
+Correções demonstradas: aceitar a pista suplementar dvb_teletext apenas em TS contínuo, mantendo vídeo/áudio separados e rejeitando pistas desconhecidas; usar redirecionamentos finitos autorizados existentes; prazo FFprobe finito 35s/75s e primeira janela 512KiB com adaptação posterior. Sem alterações à autenticação, catálogo, DNS, limites de admissão ou recusas401/403.
+
+Prova real no mesmo candidato: RTP1 HEVC1080/AAC+teletexto → HLS H264/AAC, 1200 fotogramas e1125 blocos áudio descodificados,8segmentos/27,6s (r248 [46089313058](https://github.com/martaxi-boss/VPS/actions/runs/46089313058)). RTP2 com perfil de servidor Tizen e DNS TV esperado:53 verificações de origem,1350 fotogramas/1269 blocos áudio,9segmentos/26,4s (r250 [46090673848](https://github.com/martaxi-boss/VPS/actions/runs/46090673848), evidência `13afcdcaaf14847f33d9488eda295bcd2119f23736bd785509f1ceda0cac2653`). User-Agent fornecedor permaneceu Vivoapk/1.0; nenhuma credencial/DNS privado exposto. Isto valida o perfil no servidor, não uma televisão física.
+
+**Em curso:** repetir filme/episódio na produção instalada e medir eliminação progressiva dos segmentos do próprio FFmpeg. O r241 anterior falhou antes de produzir segmentos e não certificou cache. Reprodução de filmes já foi demonstrada no candidato anterior com código finito idêntico (r235/r237), mas a instalação final requer validação própria. Aplicações físicas certificadas:0; dois clientes reais distintos não ensaiados por existir uma única linha designada. Arranque finito observado antes:~34s até primeiro segmento após PlaybackInfo (~21–27s adicionais); não confundir estes tempos. Retenção nativa existente:20s. Manter PINK e backups até confirmação da migração.
+
+As secções seguintes registam estados históricos; a produção12b mencionada nelas foi substituída pela8f acima.
+
+
 ## RTP1HEVC+teletexto descodificado pelo candidato8f — 28/11/2026
 
 [r248 #46089313058](https://github.com/martaxi-boss/VPS/actions/runs/46089313058), evidência `77ed38de8c63af6cdc3c73b5c1fc476359abed98c1060bc54a25c01413541b8e`: **fonte autorizadaHEVC1080/AAC48kHz/dvb_teletext, saída nativaH264/AAC confirmada porFFprobe,1200frames vídeo/1125áudio descodificados,8segmentos ao longo de27,6s e novo segmento aos25,56s**. É a mesmaRTP1 que falhava emr245. A guarda anónima recusou,54validações privadas devolveramACTIVE, origem302→200 e zero falhas. SourceMediaStreams sóAV, sem mapear teletexto como áudio. Primeiro segmento7,32s após o pedido de reprodução; PlaybackInfo21,79s medido separadamente, sem chamar arranque total7s.
