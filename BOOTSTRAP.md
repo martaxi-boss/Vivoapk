@@ -1,5 +1,28 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Estado atual: TV, filme e episódio aprovados no Web oficial — 28/11/2026
+
+**Produção: plugin `b2e343134824341cd0a663eb333b2e2a82baa4c5`, backend `8f7acfd0e3265e845a4413b6cbc5842106d439d0`.** DLL SHA256 `ad643acc19d7dcaa8afc87974fafe158b84f227f57f6f51fe9e20c339db36fa4`. Instalação r299 [46140521596](https://github.com/martaxi-boss/VPS/actions/runs/46140521596): committed, administrador/chaves/serviços protegidos preservados, backend inalterado. Backup privado `native-upgrade-20261128-finite-ts`. Reversão com os nove payloads reais r298 [46139009393](https://github.com/martaxi-boss/VPS/actions/runs/46139009393) passou; oito ficheiros iguais e só o plugin alterado.
+
+Causa corrigida: o Web selecionava segmentosMP4 para conteúdo finito, mas as rotas nativas privadas implementadas aceitamTS; o filme recebeu media404 apesar de login/PlaybackInfo/playlists200. A negociação agora anuncia `SegmentContainer=ts` para os HLS privados infinitos e finitos, preservando identidade, sessão, token, duração e posição. Não abre rotasMP4/externas nem altera login/catálogo/DNS/recusas do fornecedor. Compilação [46138830095](https://github.com/martaxi-boss/Vivoapk/actions/runs/46138830095), transporte [46138830112](https://github.com/martaxi-boss/Vivoapk/actions/runs/46138830112) e integração completa [46138830090](https://github.com/martaxi-boss/Vivoapk/actions/runs/46138830090) passaram (dez gates: standard/category/catalog-race/HLS/file/live-recovery/TS-recovery/native-FFmpeg/long-cache/infinite-live). Manifesto do bundle exato SHA256 `372f214e0224cfae4ff6a44768626779bcf7069c78f77d972c50b2646f30f034`; componentes e DLL conferidos contra compilação e candidato real.
+
+**Amostras reais no Web oficial instalado, operando login/detalhes/Play por HTTPS público, sem acrescentar cabeçalhos aos pedidos de media:**
+
+| Amostra | Execução | Imagem e áudio | Encerramento |
+|---|---|---|---|
+| Filme | [r300 / 46140623170](https://github.com/martaxi-boss/VPS/actions/runs/46140623170) | 1280×548; 1,045→15,176s,29→367frames,22560→252275bytes áudio. Avanço20s: alvo35,176s, retoma36,227→42,245s,536→681frames,274245→372483bytes áudio. | Stop204/logout204, token401; um job observado e ausente, cache0. |
+| Episódio | [r301 / 46140856395](https://github.com/martaxi-boss/VPS/actions/runs/46140856395) | 1920×1080; 1,047→15,212s,35→460frames,25383→255881bytes áudio; sinal106/140amostras. | Logout204/token401; Stop404 após fecho do navegador. Primeira amostra ainda tinha um job/quatro ficheiros; verificação posterior abaixo confirmou limpeza automática. |
+| RTP1 | [r302 / 46141290377](https://github.com/martaxi-boss/VPS/actions/runs/46141290377) | 1280×720; 1,061→15,219s,56→764frames,16419→185337bytes áudio; sinal138/138amostras. | Stop204/logout204, token401; um job observado e ausente, cache0. |
+
+r304 [46141158751](https://github.com/martaxi-boss/VPS/actions/runs/46141158751), observação independente estritamente de leitura após episódio: **zero FFmpeg nativos e zero ficheiros de media na cache**, quatro serviços ativos; nenhum processo terminado nem ficheiro apagado pelo ensaio. Não chamar ao encerramento do episódio uma limpeza imediata ou um Stop204: a remoção foi posterior e não se mediu o prazo exato. Os perfis temporários de navegador foram removidos nos três ensaios. Contadores do Web registaram erros de página/pedidos cancelados sem classificação; a prova é de reprodução e recuperação observadas, não da UI inteira nem de zero erros globais. O avanço20s do filme pode usar buffer já descarregado; não o apresentar como certificação de seek longo sem buffer. O CI separado tem testes de seek de cauda exato.
+
+Ensaio real isolado anterior à instalação r297 [46139074970](https://github.com/martaxi-boss/VPS/actions/runs/46139074970): MovieMP4 finito, pedidoMP4+AACcopy negociadoTS, oito segmentos/25s,576frames e1125blocos áudio H264/AAC realmente descodificados. Anónimo recusado, cache0apósStop e todos os processos/endpoints/chaves/amostras temporários removidos. Pasta fria77,04s; PlaybackInfo23,89s e primeiro segmento27,65s depois: o arranque continua lento, não prometer reprodução instantânea.
+
+**Pendências:** confirmação nas aplicações/aparelhos físicos Android/iOS/Windows/Samsung/LG; duas contas reais distintas e conta realmente expirada não ensaiadas. Duas contas/revogação do CI são sintéticas. r303 [46139765013](https://github.com/martaxi-boss/VPS/actions/runs/46139765013) consultou apenas a disponibilidade do servidorADB privado já existente: lista de dispositivos vazia, zero ações em aparelhos, sem iniciar servidorADB. Aparelhos físicos certificados=0. Manter PINK e backups até validar migração nos aparelhos. Cliente mantém `https://serveriptv.duckdns.org` e username/password MegaOTT.
+
+As secções abaixo são histórico e os seus estados antigos de produção, “em curso” ou falhas Web ficam substituídos por este estado.
+
+
 ## Estado atual: correção instalada e imagem/som no Web oficial aprovados — 28/11/2026
 
 **Produção: plugin `9a9e19756d95f2008caa766f2357d9b81695cdd3`, backend `8f7acfd0e3265e845a4413b6cbc5842106d439d0`.** DLL SHA256 `5cf81f4c8b41ac3b3111b416da5fc894bf9003f985191226f9298085adc075a8`. Instalação r293 [46134394675](https://github.com/martaxi-boss/VPS/actions/runs/46134394675): transação committed, administrador/chaves/serviços protegidos preservados, sem troca do backend. Backup privado `native-upgrade-20261128-live-ts`; reversão com os nove payloads reais passou em r291 [46133209805](https://github.com/martaxi-boss/VPS/actions/runs/46133209805), oito ficheiros iguais e só o plugin alterado.
