@@ -1291,7 +1291,7 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
         if private_backend is not None:
             verify_observed_hls_metadata(source, infinite=True)
         if (source.get("IsInfiniteStream") is not True or source.get("RunTimeTicks") not in (None, 0)
-                or source.get("AnalyzeDurationMs") != 5000):
+                or source.get("AnalyzeDurationMs") != (1000 if private_backend is not None else 5000)):
             raise RuntimeError("Parallel live source not open-ended")
         master = native_route("/", source["TranscodingUrl"], item)
         session = info.get("PlaySessionId") or next(
@@ -1801,8 +1801,11 @@ def verify_observed_hls_metadata(source, *, infinite):
             or source.get("IsInfiniteStream") is not infinite):
         raise RuntimeError("Observed HLS metadata differs from the synthetic input")
     duration = source.get("RunTimeTicks")
+    if infinite and os.environ.get("VIVOAPK_CI_PRIVATE_TS") == "1":
+        if not (video[0].get("BitRate") or 0) > 0 or not (source.get("Bitrate") or 0) > sum(s.get("BitRate") or 0 for s in audio):
+            raise RuntimeError("Live TS channel bitrate omitted its encoded video packets")
     if infinite:
-        if duration not in (None, 0) or source.get("AnalyzeDurationMs") != 5000:
+        if duration not in (None, 0) or source.get("AnalyzeDurationMs") != 1000:
             raise RuntimeError("Rolling HLS was assigned a finite runtime")
     elif not isinstance(duration, int) or not 14.8 <= duration / 10000000 <= 15.2:
         raise RuntimeError("Ended HLS did not retain its observed finite runtime")
