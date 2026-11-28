@@ -270,7 +270,7 @@ def verify_native_ts_probe(ffmpeg, assembly, base):
         for line in (result.stdout + "\n" + result.stderr).splitlines():
             if line.startswith("VIVOAPK_PRIVATE_LOOPBACK_"):
                 print(line, flush=True)
-        assert result.returncode == 0, "Native MPEG-TS metadata probe failed"
+        assert result.returncode == 0, ("Native MPEG-TS metadata probe failed: " + str(result.returncode) + "\\n" + result.stdout + "\\n" + result.stderr)
         assert observations["requests"] == 1, "Unadmitted path was requested"
     finally:
         stopped.set()
