@@ -1,5 +1,29 @@
 # VivoAPK — auditoria do percurso de reprodução em 26/11/2026
 
+## Estado e prova atuais — 28/11/2026
+
+A produção está em **12b8c5ba6f4c64462adbb79d2f27501ade42de3d**, desde r201; as secções antigas abaixo conservam o estado histórico das suas datas. **Não instalar main.** O candidato em validação é **8f7acfd0e3265e845a4413b6cbc5842106d439d0**. A autenticação, a descoberta, as famílias DNS e o catálogo existentes foram preservados.
+
+O percurso real é Mega OTT autorizado → leitor privado do backend existente → socket privado/bridge dentro do Jellyfin → FFprobe/FFmpeg nativo → HLS HTTPS protegido para as aplicações oficiais. O fornecedor entrega MPEG-TS contínuo; não precisa de oferecer HLS. É o Jellyfin que gera o HLS de saída. A origem e as credenciais do fornecedor ficam no servidor. O teletexto é identificado como faixa auxiliar; só vídeo/áudio é anunciado nesta integração.
+
+| Prova | Resultado observado | Camada e correção |
+|---|---|---|
+| r178 | Mega API429,60/min,Retry-After28 | Consultas repetidas aos detalhes da subscrição; cacheRAM≤5s, sem dados obsoletos após recusa |
+| r210/r212 | MP4 autorizado206; janela4MiB demora11,78s/8,4s; probe tinha8s | Orçamento finito35s/leitura e75s total; TV mantém orçamento existente |
+| r239 | Em base descartável,89.ª leitura404 após429 interno; contadores180/180 | Orçamento local acumulado entre casos sintéticos; isolamento só entre cenários sem leases, nunca na produção |
+| r245 | Origem302→200,open200/probe200; HEVC/AAC+dvb_teletext; PlaybackInfo404 | Rejeição local da faixa auxiliar pelo parser; não é401 do fornecedor nem falha de credenciais |
+| r248 | A mesma fonte reproduz; saídaH264/AAC,1200frames vídeo/1125áudio,27,6s/8segmentos | Reconhecimento tipado e limitado de teletexto na entradaTS contínua; FFmpeg/Jellyfin existentes fazem descodificação/transcodificação |
+
+**Prova real atual de TV:** [r248 #46089313058](https://github.com/martaxi-boss/VPS/actions/runs/46089313058), evidência `77ed38de8c63af6cdc3c73b5c1fc476359abed98c1060bc54a25c01413541b8e`, usa o plugin ordinário8f em instância isolada. A entrada contém HEVC1920×1080/AAC48kHz e teletexto; a saídaH264/AAC foi confirmada porFFprobe e descodificada. Primeiro segmento7,32s após iniciar a reprodução, com PlaybackInfo21,79s medido separadamente. Anónimos recusados,54validaçõesACTIVE, cacheTS0 apósStop e limpeza integral; produção preservada. Esta comparação antes/depois demonstra a incompatibilidade corrigida. Os testes antigos de TV180,1s em produção12b documentam outro estado da fonte e não substituem a revalidação da emissão atual.
+
+**Filme/episódio reais:** r235/r237 no código04657f tiveram27s/26,8s de saída nativa, vídeo+áudio descodificados e cache0. O arranque finito ainda ronda34s, além da análise inicial. A entrega finita começa com512KiB e ajusta até4MiB segundo a duração medida; limites/autorização mantêm-se. A CI completa96f passou e o código de aplicação96f é igual a04657f; a correção8f altera apenas o tratamento comprovado da faixa auxiliar, com regressões adicionais. Exigir CI completa8f e instalação coordenada antes de certificar produção atual.
+
+O PINK usava Media3 no dispositivo e selecionava vídeo/áudio de uma origem com faixas adicionais. O FFmpeg também consegue selecionar esses componentes; o bloqueio estava na validação excessiva da integração privada, não numa necessidade de outro leitor. Não criar APK, motor ou gestão paralela.
+
+**Limites de certificação:** aplicações físicas0; isolamento de duas contas validado em laboratório, sem prova de duas contas reais nesta linha única. Cache progressiva em produção ainda não medida: r241 foi bloqueado no PlaybackInfo e não chegou a produzir segmentos. A configuração existente é true/20s e as provas apósStop são separadas. Higiene pública r240 confirmou TLS válido até20/02/2027, versão12.4, rotas privadas404, temporários ausentes e31,98GiB livres.
+
+As secções seguintes são o registo histórico e mantêm os respetivos âmbitos.
+
 ## Reprodução real contínua aprovada em instância isolada — 27/11/2026
 
 [r180 #46033551731](https://github.com/martaxi-boss/VPS/actions/runs/46033551731), artefacto `15216430128`, evidência `a4d4349ee2b2c20f35ecb3b95c58a9925f6f191d9c56de97b0d33354d65f6348`: RTP1 autorizado através de autenticação/catálogo/PlaybackInfo e saída HLS do Jellyfin 12.4; **67,1 s contínuos, 27 segmentos, segmento novo aos 65,07 s; 1650 frames de vídeo e 3095 de áudio descodificados; cache TS=0 após Stop; pedido anónimo recusado**. Origem MPEG-TS infinita H.264/AAC, convertida pelo motor nativo existente. Sem nova APK/leitor/serviço.
