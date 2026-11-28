@@ -1,6 +1,35 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
-## Estado atual: TV, filme e episódio aprovados no Web oficial — 28/11/2026
+## Correção da autenticação da aplicação Android instalada — 28/11/2026
+
+O ecrã preto de PT | RTP 1 HD às 11:57 foi investigado nos pedidos reais. A aplicação oficial Jellyfin for Android 2.7.3 acrescenta Authorization às URLs do próprio servidor, que já contêm ApiKey. A guarda privada anterior recusava a combinação mesmo quando os tokens eram iguais. O candidato `1ca90e166659ffcf299b74ed5c6e607ad22fef62` aceita apenas tokens explícitos e idênticos entre os transportes; duplicados ambíguos, esquemas incompatíveis e tokens contraditórios continuam recusados. Autenticação nativa, dono, item, dispositivo, sessão e subscrição mantêm as verificações existentes.
+
+O [teste integrado completo 46143505858](https://github.com/martaxi-boss/Vivoapk/actions/runs/46143505858) passou as dez portas independentes, incluindo cabeçalho+query iguais, segmento real com ambos, recuperação e abandono, cache longa, filmes e séries. Artefacto exato 15263511786, manifesto SHA256 `5b0bff6ea80aa4a587379d3308771a4c18f139d7c6b8724a546cc7ddf52032e8`; todos os tamanhos e hashes conferidos. DLL do plugin `7de8ff8426e5c0650ec8d87927e8d7469ca6036a7c6a817e990201ad427fc1e7`.
+
+O ensaio real isolado [r309 / 46143933258](https://github.com/martaxi-boss/VPS/actions/runs/46143933258) selecionou RTP1 HD e usou URLs originais com Authorization igual a ApiKey: 10 segmentos, 27,5 s de conteúdo, 1500 fotogramas de vídeo e 1407 blocos de áudio descodificados, pedido contraditório e anónimo recusados, cache zero após parar e ambiente temporário removido. Isto comprova o protocolo e a descodificação no ensaio; não certifica um telemóvel físico.
+
+Após ensaio de reversão [r310 / 46143833649](https://github.com/martaxi-boss/VPS/actions/runs/46143833649), a ativação [r311 / 46145489605](https://github.com/martaxi-boss/VPS/actions/runs/46145489605) terminou committed. Só a DLL do plugin mudou nesta ativação; os outros oito componentes da transação, backend8f, identidade administrativa, chaves e serviços protegidos foram preservados. Backup privado: /srv/projects/Vivoapk/backups/native-upgrade-20261128-native-auth. Não reinstalar main nem remover PINK/backups enquanto a migração física não estiver confirmada.
+
+Ensaios sequenciais pela URL pública HTTPS, sem alterar as URLs de media, com Authorization e ApiKey iguais aos pedidos da aplicação Android2.7.3 (perfil de ensaio H264/AAC/TS até720p, não a execução física da app):
+
+| Canal | Execução | Seg. entregues | Vídeo / áudio descodificados | Reprodução observada | Cache após parar |
+| --- | --- | ---: | ---: | ---: | ---: |
+| RTP1 HD | [r312d / 46146622881](https://github.com/martaxi-boss/VPS/actions/runs/46146622881) | 7 | 1001 / 939 | 25,4 s | 0 |
+| RTP2 | [r313 / 46145947243](https://github.com/martaxi-boss/VPS/actions/runs/46145947243) | 9 | 1350 / 1269 | 26,8 s | 0 |
+| RTP3 | [r314 / 46146114525](https://github.com/martaxi-boss/VPS/actions/runs/46146114525) | 10 | 750 / 1409 | 27,0 s | 0 |
+| SIC | [r315 / 46146282951](https://github.com/martaxi-boss/VPS/actions/runs/46146282951) | 9 | 1350 / 1268 | 26,0 s | 0 |
+| TVI | [r316 / 46146454762](https://github.com/martaxi-boss/VPS/actions/runs/46146454762) | 9 | 1350 / 1268 | 27,2 s | 0 |
+
+Todos estes cinco ensaios finais passaram descodificação de ambas as faixas, pedidos anónimos/contraditórios recusados, Stop204, logout204 e token revogado401; sem reiniciar outros serviços e sem eliminação manual de processos/ficheiros. São amostras curtas destes canais, não certificação de todo o catálogo nem das aplicações iOS/Windows/TV.
+
+**Limitação de arranque RTP1 HD:** o primeiro ensaio público r312b/46145678844 aceitou master200, mas excedeu8s na primeira live.m3u8; foi encerrado sem prova de reprodução. r312c/46145832749 recebeu PlaybackInfo404 antes de começar, logo também não passou. A repetição final r312d usou dispositivo novo e até quatro tentativas limitadas a8s para pedidos de media; precisou de uma repetição. PlaybackInfo22,03s, do início de PlaybackInfo ao primeiro segmento32,13s, depois vídeo e áudio contínuos. Os9,63s até primeiro segmento contam apenas a fase posterior ao master; não representar como arranque total9,63s. RTP2/RTP3/SIC/TVI não precisaram de repetição. A latência RTP1 permanece material para a experiência real e não foi eliminada por esta correção de autenticação.
+
+**Confirmação física pendente:** ADB não tinha dispositivos ligados (r303). Após o reinício de Jellyfin desta instalação, terminar sessão e entrar novamente com o mesmo utilizador/password Mega na app oficial, para reconstruir a autorização e catálogo em RAM; abrir PT | RTP 1 HD de novo e permitir até cerca40s neste primeiro ensaio. Não reinstalar APK nem criar leitor novo. Não declarar o ecrã do telemóvel resolvido antes da confirmação do utilizador.
+
+
+Observação final só de leitura [r317 / 46146790758](https://github.com/martaxi-boss/VPS/actions/runs/46146790758): quatro serviços ativos, zero FFmpeg nativos e zero ficheiros de media na cache. Nenhum processo terminado nem ficheiro eliminado pela observação.
+
+## Histórico: provas Web com plugin b2 — 28/11/2026
 
 **Produção: plugin `b2e343134824341cd0a663eb333b2e2a82baa4c5`, backend `8f7acfd0e3265e845a4413b6cbc5842106d439d0`.** DLL SHA256 `ad643acc19d7dcaa8afc87974fafe158b84f227f57f6f51fe9e20c339db36fa4`. Instalação r299 [46140521596](https://github.com/martaxi-boss/VPS/actions/runs/46140521596): committed, administrador/chaves/serviços protegidos preservados, backend inalterado. Backup privado `native-upgrade-20261128-finite-ts`. Reversão com os nove payloads reais r298 [46139009393](https://github.com/martaxi-boss/VPS/actions/runs/46139009393) passou; oito ficheiros iguais e só o plugin alterado.
 
