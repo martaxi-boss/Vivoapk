@@ -4,6 +4,43 @@ using System.Text.Json;
 using System.Text;
 using Jellyfin.Plugin.VivoapkMegaAuth;
 
+
+// Real Web negotiation: fMP4 requested, guarded rolling output is MPEG-TS.
+{
+    var item = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    var path = "/Videos/" + item + "/master.m3u8";
+    System.Text.Json.Nodes.JsonObject Response(bool live, string route) => new()
+    {
+        ["MediaSources"] = new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject
+        {
+            ["IsInfiniteStream"] = live, ["TranscodingUrl"] = route
+        })
+    };
+    var original = path + "?SegmentContainer=mp4&ApiKey=synthetic%26token&DeviceId=device%20one&PlaySessionId=11111111222233334444555555555555";
+    var response = Response(true, original);
+    PrivatePlaybackResponse.ConstrainLiveSegments(response, item);
+    var route = response["MediaSources"]![0]!["TranscodingUrl"]!.GetValue<string>();
+    var fields = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri("https://synthetic.invalid" + route).Query);
+    if (fields.Count != 4 || fields["SegmentContainer"] != "ts"
+        || fields["ApiKey"] != "synthetic&token" || fields["DeviceId"] != "device one"
+        || fields["PlaySessionId"] != "11111111222233334444555555555555")
+        throw new InvalidOperationException("Live format negotiation changed identity");
+    var finite = Response(false, original);
+    PrivatePlaybackResponse.ConstrainLiveSegments(finite, item);
+    if (finite["MediaSources"]![0]!["TranscodingUrl"]!.GetValue<string>() != original)
+        throw new InvalidOperationException("Finite media negotiation changed");
+    foreach (var bad in new[] { "https://foreign.invalid" + original,
+        "//foreign.invalid" + original, original + "&segmentcontainer=ts",
+        "/Videos/11111111-2222-3333-4444-555555555555/master.m3u8?SegmentContainer=mp4" })
+    {
+        bool refused = false;
+        try { PrivatePlaybackResponse.ConstrainLiveSegments(Response(true, bad), item); }
+        catch (InvalidOperationException) { refused = true; }
+        if (!refused) throw new InvalidOperationException("Unbound live negotiation accepted");
+    }
+    Console.WriteLine("PRIVATE_NATIVE_LIVE_MPEGTS_NEGOTIATION=PASS");
+}
+
 // Real native FFmpeg live URI shape, with synthetic credentials only.
 {
     const string stem = "0123456789abcdef0123456789abcdef";

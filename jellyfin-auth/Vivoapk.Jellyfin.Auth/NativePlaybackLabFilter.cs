@@ -407,6 +407,7 @@ public sealed class NativePlaybackFilter : IStartupFilter
                 var node = await JsonNode.ParseAsync(buffer, cancellationToken: http.RequestAborted)
                     .ConfigureAwait(false) ?? throw new InvalidOperationException("Missing playback response");
                 PrivatePlaybackResponse.SanitizePlaybackInfo(node);
+                PrivatePlaybackResponse.ConstrainLiveSegments(node, item);
                 if (reserved)
                 {
                     if (node is not JsonObject response || response["MediaSources"] is not JsonArray sources

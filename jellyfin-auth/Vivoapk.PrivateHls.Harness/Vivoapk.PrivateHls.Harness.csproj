@@ -12,5 +12,6 @@
     <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateHlsLoopback.cs" Link="PrivateHlsLoopback.cs" />
     <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateMediaProbe.cs" Link="PrivateMediaProbe.cs" />
     <Compile Include="../Vivoapk.Jellyfin.Auth/PrivateLivePlaylist.cs" Link="PrivateLivePlaylist.cs" />
+    <Compile Include="../Vivoapk.Jellyfin.Auth/PrivatePlaybackResponse.cs" Link="PrivatePlaybackResponse.cs" />
   </ItemGroup>
 </Project>

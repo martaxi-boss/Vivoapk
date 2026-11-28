@@ -43,4 +43,40 @@ internal static class PrivatePlaybackResponse
             throw new InvalidOperationException("Unexpected internal media reference");
     }
 
+
+    // The private rolling transport serves native MPEG-TS HLS segments.
+    // Advertise that contract during negotiation, before a client selects
+    // fragmented MP4 and copies ADTS AAC into an incompatible MP4 muxer.
+    // Finite sources retain their existing native seek/container negotiation.
+    internal static void ConstrainLiveSegments(JsonNode node, Guid item)
+    {
+        if (node is not JsonObject root || root["MediaSources"] is not JsonArray sources
+            || sources.Count != 1 || sources[0] is not JsonObject media)
+            throw new InvalidOperationException("Invalid private media negotiation");
+        if (media["IsInfiniteStream"] is not JsonValue infinite
+            || !infinite.TryGetValue<bool>(out var live) || !live)
+            return;
+        if (media["TranscodingUrl"] is not JsonValue value
+            || !value.TryGetValue<string>(out var route) || string.IsNullOrEmpty(route)
+            || route.StartsWith("//", StringComparison.Ordinal) || route.Contains("://", StringComparison.Ordinal)
+            || route.Contains('\\') || route.Contains('#'))
+            throw new InvalidOperationException("Invalid private live route");
+        var parts = route.Split('?', 2);
+        var path = parts[0].TrimStart('/').Split('/');
+        if (item == Guid.Empty || path.Length != 3
+            || !path[0].Equals("Videos", StringComparison.OrdinalIgnoreCase)
+            || !Guid.TryParse(path[1], out var actual) || actual != item
+            || !(path[2].Equals("master.m3u8", StringComparison.OrdinalIgnoreCase)
+                || path[2].Equals("main.m3u8", StringComparison.OrdinalIgnoreCase)
+                || path[2].Equals("live.m3u8", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("Unbound private live route");
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(
+            parts.Length == 2 ? "?" + parts[1] : "");
+        if (query.Any(pair => pair.Value.Count != 1))
+            throw new InvalidOperationException("Ambiguous private live query");
+        query["SegmentContainer"] = "ts";
+        media["TranscodingUrl"] = Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(
+            parts[0], query.ToDictionary(pair => pair.Key, pair => (string?)pair.Value[0]));
+    }
+
 }
