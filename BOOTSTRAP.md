@@ -1,5 +1,16 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Resultado final desta intervenção — 28/11/2026
+
+**Reprodução real autorizada instalada e demonstrada no servidor Jellyfin, produção8f.** r262 [46092617061](https://github.com/martaxi-boss/VPS/actions/runs/46092617061): RTP1 HEVC/AAC de entrada,34segmentos HLS nativos em85,9s,2400 fotogramas e2250 blocos áudio descodificados;2383/2249 hashes distintos. Último segmento novo aos83,92s. **Dez segmentos.ts eliminados durante reprodução**, contador exclusivo de TS (exclui playlist), máximo25ficheiros próprios observados e0após Stop. Encoder atribuído ao PID filho do Jellyfin/UID/executável FFmpeg fixado, sem eliminar ficheiros de terceiros. SubscriçãoACTIVE200, guard permitido, acesso anónimo recusado, logout204; PIDs de quatro serviços/socket/namespace preservados. Evidência SHA-256 `8d54f1dd3661ac150f469422121c378add84514b73e9212ef56cb4a09576a957`.
+
+Filme e episódio também passaram na produção final (r255/r257 abaixo); RTP2/DNS TV passaram no mesmo candidato (r250). TLS/DNS/público200/rotas privadas404/journalcommitted/limpeza de temporários conhecidos passaram r261. Código ativo é exatamente8f, DLL `e9d9bf...`, FFmpeg099 preservado; commits posteriores no ramo são documentação. Sem nova APK, motor, serviço ou gestão de clientes.
+
+**Aceitação global ainda pendente:** ensaios nos seis aparelhos/aplicações oficiais, dois clientes reais distintos e revogação com conta de teste realmente expirada. Os ensaios sintéticos de isolamento/revogação existentes continuam válidos apenas no âmbito laboratorial. Não declarar compatibilidade física certificada. Arranque finito continua a exigir~30–32s após PlaybackInfo; pasta Movie fria levou71,47s. Não remover PINK/backups antes de confirmar migração nos aparelhos. Nenhuma recusa401/403 foi contornada.
+
+As notas anteriores abaixo são histórico e os seus “em curso” ficam substituídos pelos resultados acima.
+
+
 ## Direto real em produção e acesso público aprovados — 28/11/2026
 
 r259 [46092302558](https://github.com/martaxi-boss/VPS/actions/runs/46092302558): RTP1 autorizado com HEVC/AAC de entrada, HLS nativo,25segmentos/55,5s,2400 fotogramas e2250 blocos áudio descodificados (1904/2250 hashes distintos). Guard permitido, subscriçãoACTIVE200, anónimo recusado, encoder próprio identificado,0ficheiros após Stop/logout204; serviços/socket/namespace preservados. Evidência `7ee272b587105325711a05fffb08d98aeafbe666278c627601b8b46900884fd9`. Uma remoção de ficheiro próprio observada durante reprodução; como o observador incluía a playlist, confirmar com métrica exclusiva de segmentos.ts antes de certificar eliminação progressiva.
