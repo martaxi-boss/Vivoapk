@@ -1,5 +1,15 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Arranque automático — afinação em validação, 28/11/2026, 18h
+
+Produção continua backend/plugin2852 e DLLc6a641: não declarar a melhoria seguinte instalada. Candidato backend `38e8cd6df8e05da34cae05b9bbcc67f91a368b04`, plugin permanece2852 sem alteração C#. Quatro ficheiros runtime: config, private_media_api, provider_live e novo provider_descriptors. Testes backend46171726523 e transporte46171726535 passaram; integrado46171726514 ainda em curso. Ensaio real de reabertura sem novo login r347/46173317075 em curso. Reversão exata de dois payloads r346/46173191463 passou, sete componentes nativos e processo Jellyfin preservados, sem ativação.
+
+A melhoria grava apenas IDs e enum/bool da forma de URL realmente emitida pelo fornecedor, com HMAC, permissões0700/0600, máximo24h/2contas/4MiB/32768itens por conta. Não grava URL/domínio/utilizador/password nem autorização. Cada abertura/leitura continua a autorizar conta/subscrição/item/DNS;401/403 não têm fallback. Configuração prevista PRIVATE_LIVE_DESCRIPTOR_DIR=/srv/projects/Vivoapk/run/provider-descriptors. Credenciais/chave de sessão atuais reconstroem a rota só em RAM. Cachemiss/corrupção/expiração volta à consulta oficial; primeira importação pode continuar lenta. Não é autoplay do canal ao abrir biblioteca nem promessa de zapping instantâneo.
+
+[r338/46171217004](https://github.com/martaxi-boss/VPS/actions/runs/46171217004): login real1,827s, quatro pastas0,236/0,274/0,233/0,860s, logout204 e token revogado401. Primeiro get.php frio continua causa principal. Manter limite Stop nativo3–6s; não retirar limpeza.
+
+Para ensaio descartável com restart, usar diretório privado fora de run com socket Unix curto, bind do DIRETÓRIO b/run sobre /srv/projects/Vivoapk/run só no namespace descartável e env C# /srv/projects/Vivoapk/run/backend.sock + /srv/projects/Vivoapk/run/media.key. O plugin mantém allowlist exata destes pais. Descritores descartáveis ficam em pasta única sob project/run para respeitar Settings de produção. r340/r342/r343/r345 foram falhas do adaptador de teste (inode bind, caminho fora da política, Unix socket longo, allowlist), nunca alterações de produção. r341/46172109534 demonstrou que produção não monta o inode individual do socket: basta reiniciar backend, preservando Jellyfin/login.
+
 ## Produção: qualidade da fonte preservada e mudanças de canal medidas — 28/11/2026, 17h
 
 O utilizador confirmou áudio/vídeo na app Android após a correção anterior. A captura TVI seguinte mostrou degradação forte e motivou esta afinação; a qualidade desta nova versão no aparelho físico ainda requer confirmação.
