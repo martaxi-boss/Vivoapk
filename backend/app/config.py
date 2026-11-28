@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
     private_live_input_format: Literal["m3u8", "ts"] = "m3u8"
     # Discover the provider-issued locator BEFORE media admission; never fallback.
     private_live_use_provider_playlist: bool = False
+    # Optional private credential-free route descriptors for automatic restart.
+    private_live_descriptor_dir: str | None = None
     private_media_follow_provider_redirects: bool = False
     private_media_key: SecretStr | None = None
     auth_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
@@ -59,6 +62,13 @@ class Settings(BaseSettings):
         if self.private_live_use_provider_playlist and (
                 not self.private_hls_enabled or self.private_live_input_format != "ts"):
             raise ValueError("Advertised TS sources require explicit private TS input")
+        if self.private_live_descriptor_dir is not None:
+            directory = PurePosixPath(self.private_live_descriptor_dir)
+            if (not directory.is_absolute() or ".." in directory.parts
+                    or (self.app_env.casefold() != "test"
+                        and not str(directory).startswith("/srv/projects/Vivoapk/run/"))
+                    or not self.private_hls_enabled or not self.private_live_use_provider_playlist):
+                raise ValueError("Private descriptors require an isolated private TS directory")
         if self.private_media_follow_provider_redirects and (
                 not self.private_live_use_provider_playlist or self.private_live_input_format != "ts"):
             raise ValueError("Provider redirects require explicitly admitted playlist TS sources")

@@ -1,7 +1,7 @@
 """Resolve a single authorized TS locator from the assigned provider's playlist.
 
 Metadata lookup only: never open a playlist entry, follow redirects, guess a
-legacy URL or retry a denied source. Credentials/URLs stay in backend memory.
+legacy URL or retry a denied source. Credentials/URLs stay in backend memory; optional signed disk descriptors contain only route enums.
 """
 from __future__ import annotations
 
@@ -38,12 +38,14 @@ class ProviderLiveLocatorCache:
     credentials/DNS before each lookup. URLs remain RAM-only for at most five
     minutes. Every hit is revalidated against that exact authorized source.
     """
-    def __init__(self, *, ttl_seconds=300.0, max_accounts=2, clock=time.monotonic):
+    def __init__(self, *, ttl_seconds=300.0, max_accounts=2, clock=time.monotonic,
+                 descriptors=None):
         if not 0 < ttl_seconds <= 300 or not 1 <= max_accounts <= 2:
             raise ValueError("Invalid private locator cache bounds")
         self._ttl, self._max, self._clock = ttl_seconds, max_accounts, clock
         self._lock = Lock()
         self._slots = {}
+        self._descriptors = descriptors
 
     def resolve(self, source, loader, *, allow_authorized_http):
         identity = json.dumps([source.origin, source.username,
@@ -71,11 +73,19 @@ class ProviderLiveLocatorCache:
                 if self._clock() < slot.until and url is not None:
                     # A cached provider string cannot change owner/asset/DNS.
                     return source.with_provider_live_url(url)._request_url()
+                if self._descriptors is not None:
+                    remembered = self._descriptors.read(identity, source)
+                    if remembered is not None:
+                        slot.urls[source.asset.asset_id] = remembered
+                        slot.until = self._clock() + self._ttl
+                        return remembered
                 slot.urls = {}
                 slot.until = 0
                 selected, urls = loader()
                 slot.urls = urls
                 slot.until = self._clock() + self._ttl
+                if self._descriptors is not None:
+                    self._descriptors.write(identity, source, urls)
                 return selected
         finally:
             with self._lock:
