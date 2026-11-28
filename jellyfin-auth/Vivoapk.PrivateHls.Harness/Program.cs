@@ -18,27 +18,36 @@ using Jellyfin.Plugin.VivoapkMegaAuth;
     };
     var original = path + "?SegmentContainer=mp4&ApiKey=synthetic%26token&DeviceId=device%20one&PlaySessionId=11111111222233334444555555555555";
     var response = Response(true, original);
-    PrivatePlaybackResponse.ConstrainLiveSegments(response, item);
+    PrivatePlaybackResponse.ConstrainHlsSegments(response, item);
     var route = response["MediaSources"]![0]!["TranscodingUrl"]!.GetValue<string>();
     var fields = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri("https://synthetic.invalid" + route).Query);
     if (fields.Count != 4 || fields["SegmentContainer"] != "ts"
         || fields["ApiKey"] != "synthetic&token" || fields["DeviceId"] != "device one"
         || fields["PlaySessionId"] != "11111111222233334444555555555555")
         throw new InvalidOperationException("Live format negotiation changed identity");
-    var finite = Response(false, original);
-    PrivatePlaybackResponse.ConstrainLiveSegments(finite, item);
-    if (finite["MediaSources"]![0]!["TranscodingUrl"]!.GetValue<string>() != original)
-        throw new InvalidOperationException("Finite media negotiation changed");
+    var finite = Response(false, original + "&StartTimeTicks=90000000");
+    finite["MediaSources"]![0]!["RunTimeTicks"] = 1800000000L;
+    PrivatePlaybackResponse.ConstrainHlsSegments(finite, item);
+    var finiteRoute = finite["MediaSources"]![0]!["TranscodingUrl"]!.GetValue<string>();
+    var finiteFields = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(
+        new Uri("https://synthetic.invalid" + finiteRoute).Query);
+    if (finiteFields.Count != 5 || finiteFields["SegmentContainer"] != "ts"
+        || finiteFields["StartTimeTicks"] != "90000000"
+        || finiteFields["ApiKey"] != "synthetic&token" || finiteFields["DeviceId"] != "device one"
+        || finiteFields["PlaySessionId"] != "11111111222233334444555555555555"
+        || finite["MediaSources"]![0]!["RunTimeTicks"]!.GetValue<long>() != 1800000000L
+        || finite["MediaSources"]![0]!["IsInfiniteStream"]!.GetValue<bool>())
+        throw new InvalidOperationException("Finite HLS lost native seek or identity");
     foreach (var bad in new[] { "https://foreign.invalid" + original,
         "//foreign.invalid" + original, original + "&segmentcontainer=ts",
         "/Videos/11111111-2222-3333-4444-555555555555/master.m3u8?SegmentContainer=mp4" })
     {
         bool refused = false;
-        try { PrivatePlaybackResponse.ConstrainLiveSegments(Response(true, bad), item); }
+        try { PrivatePlaybackResponse.ConstrainHlsSegments(Response(true, bad), item); }
         catch (InvalidOperationException) { refused = true; }
         if (!refused) throw new InvalidOperationException("Unbound live negotiation accepted");
     }
-    Console.WriteLine("PRIVATE_NATIVE_LIVE_MPEGTS_NEGOTIATION=PASS");
+    Console.WriteLine("PRIVATE_NATIVE_LIVE_AND_FINITE_MPEGTS_NEGOTIATION=PASS");
 }
 
 // Real native FFmpeg live URI shape, with synthetic credentials only.

@@ -44,18 +44,15 @@ internal static class PrivatePlaybackResponse
     }
 
 
-    // The private rolling transport serves native MPEG-TS HLS segments.
-    // Advertise that contract during negotiation, before a client selects
-    // fragmented MP4 and copies ADTS AAC into an incompatible MP4 muxer.
-    // Finite sources retain their existing native seek/container negotiation.
-    internal static void ConstrainLiveSegments(JsonNode node, Guid item)
+    // Both guarded native routes serve MPEG-TS HLS segments: rolling live
+    // and finite hls1/main. Advertise their supported segment container
+    // before the client selects fragmented MP4. Preserve the finite source
+    // metadata and native seek parameters; only the HLS segment format changes.
+    internal static void ConstrainHlsSegments(JsonNode node, Guid item)
     {
         if (node is not JsonObject root || root["MediaSources"] is not JsonArray sources
             || sources.Count != 1 || sources[0] is not JsonObject media)
             throw new InvalidOperationException("Invalid private media negotiation");
-        if (media["IsInfiniteStream"] is not JsonValue infinite
-            || !infinite.TryGetValue<bool>(out var live) || !live)
-            return;
         if (media["TranscodingUrl"] is not JsonValue value
             || !value.TryGetValue<string>(out var route) || string.IsNullOrEmpty(route)
             || route.StartsWith("//", StringComparison.Ordinal) || route.Contains("://", StringComparison.Ordinal)
