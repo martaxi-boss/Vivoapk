@@ -1,10 +1,21 @@
 # VivoAPK — auditoria do percurso de reprodução em 26/11/2026
 
+## Resultado final desta intervenção — 28/11/2026
+
+**Reprodução real autorizada instalada e demonstrada no servidor Jellyfin, produção8f.** r262 [46092617061](https://github.com/martaxi-boss/VPS/actions/runs/46092617061): RTP1 HEVC/AAC de entrada,34segmentos HLS nativos em85,9s,2400 fotogramas e2250 blocos áudio descodificados;2383/2249 hashes distintos. Último segmento novo aos83,92s. **Dez segmentos.ts eliminados durante reprodução**, contador exclusivo de TS (exclui playlist), máximo25ficheiros próprios observados e0após Stop. Encoder atribuído ao PID filho do Jellyfin/UID/executável FFmpeg fixado, sem eliminar ficheiros de terceiros. SubscriçãoACTIVE200, guard permitido, acesso anónimo recusado, logout204; PIDs de quatro serviços/socket/namespace preservados. Evidência SHA-256 `8d54f1dd3661ac150f469422121c378add84514b73e9212ef56cb4a09576a957`.
+
+Filme e episódio também passaram na produção final (r255/r257 abaixo); RTP2/DNS TV passaram no mesmo candidato (r250). TLS/DNS/público200/rotas privadas404/journalcommitted/limpeza de temporários conhecidos passaram r261. Código ativo é exatamente8f, DLL `e9d9bf...`, FFmpeg099 preservado; commits posteriores no ramo são documentação. Sem nova APK, motor, serviço ou gestão de clientes.
+
+**Aceitação global ainda pendente:** ensaios nos seis aparelhos/aplicações oficiais, dois clientes reais distintos e revogação com conta de teste realmente expirada. Os ensaios sintéticos de isolamento/revogação existentes continuam válidos apenas no âmbito laboratorial. Não declarar compatibilidade física certificada. Arranque finito continua a exigir~30–32s após PlaybackInfo; pasta Movie fria levou71,47s. Não remover PINK/backups antes de confirmar migração nos aparelhos. Nenhuma recusa401/403 foi contornada.
+
+As notas anteriores abaixo são histórico e os seus “em curso” ficam substituídos pelos resultados acima.
+
+
 ## Estado e prova atuais — 28/11/2026
 
 A produção está em **8f7acfd0e3265e845a4413b6cbc5842106d439d0**, instalada pelo r254 [46091540692](https://github.com/martaxi-boss/VPS/actions/runs/46091540692), com transação committed e pós-verificação aprovada. Substitui12b do r201. As secções antigas abaixo conservam o estado histórico das suas datas. **Não instalar main.** A autenticação, a descoberta, as famílias DNS e o catálogo existentes foram preservados.
 
-A reversão dos nove ficheiros com os bytes reais foi ensaiada no r253; só mudaram plugin e referência do backend, sete ficheiros permaneceram iguais. Chaves, administrador, serviços protegidos, núcleo Jellyfin e FFmpeg preservados. CI nativo final46088866872 passou. RTP2 também passou com o perfil DNS de TV no r250:53 autorizações na origem esperada,9segmentos/26,4s e1350 fotogramas/1269 blocos áudio descodificados. Perfil do servidor não certifica aparelho físico. Pós-instalação, filme, episódio e métrica real da cache estão em curso.
+A reversão dos nove ficheiros com os bytes reais foi ensaiada no r253; só mudaram plugin e referência do backend, sete ficheiros permaneceram iguais. Chaves, administrador, serviços protegidos, núcleo Jellyfin e FFmpeg preservados. CI nativo final46088866872 passou. RTP2 também passou com o perfil DNS de TV no r250:53 autorizações na origem esperada,9segmentos/26,4s e1350 fotogramas/1269 blocos áudio descodificados. Perfil do servidor não certifica aparelho físico. Pós-instalação, filme, episódio e métrica real da cache foram aprovados nos r255/r257/r262, conforme provas acima.
 
 O percurso real é Mega OTT autorizado → leitor privado do backend existente → socket privado/bridge dentro do Jellyfin → FFprobe/FFmpeg nativo → HLS HTTPS protegido para as aplicações oficiais. O fornecedor entrega MPEG-TS contínuo; não precisa de oferecer HLS. É o Jellyfin que gera o HLS de saída. A origem e as credenciais do fornecedor ficam no servidor. O teletexto é identificado como faixa auxiliar; só vídeo/áudio é anunciado nesta integração.
 
