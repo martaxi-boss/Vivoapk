@@ -1,5 +1,14 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Em curso: correção da negociação Web dos conteúdos finitos — 28/11/2026
+
+Produção continua plugin9a/backend8f; RTP1 no Web oficial já passou conforme secção seguinte. **Não extrapolar a prova de TV para filmes/episódios.** r294 [46138485330](https://github.com/martaxi-boss/VPS/actions/runs/46138485330) testou Movie pela UI Web oficial e HTTPS público: login200, PlaybackInfo200, duas playlists200, mas pedido de mediaMP4 recebeu404 e não houve vídeo. A fonte éMP4 finita e a negociação anunciou SegmentContainer=mp4; a guarda implementada aceita apenas segmentosTS. Logout204/token revogado401, cache0, navegador temporário removido e produção preservada. Episódio Web ainda por testar, partilha o mesmo contrato finito.
+
+Candidato `b2e343134824341cd0a663eb333b2e2a82baa4c5`: a negociação das URLsHLS nativas privadas passa a anunciarTS tanto para fonte infinita como finita. Mantém dono/item/dispositivo/sessão/token, metadados finitos e StartTimeTicks; não abre rotasMP4 nem relaxa autenticação. Novos testes verificam preservação da posição de reprodução, duração e identidade finita. Compilação [46138830095](https://github.com/martaxi-boss/Vivoapk/actions/runs/46138830095) e transporte [46138830112](https://github.com/martaxi-boss/Vivoapk/actions/runs/46138830112) passaram; CI completo [46138830090](https://github.com/martaxi-boss/Vivoapk/actions/runs/46138830090) em execução. Plugin SHA256 `ad643acc19d7dcaa8afc87974fafe158b84f227f57f6f51fe9e20c339db36fa4` preparado isoladamente em r296 [46138942634](https://github.com/martaxi-boss/VPS/actions/runs/46138942634), backend idêntico8f. Reversão dos payloads reais aprovada em r298 [46139009393](https://github.com/martaxi-boss/VPS/actions/runs/46139009393),8/9ficheiros iguais, produção inalterada. Ensaio isolado de filme real r297 em execução.
+
+Próximos passos: verificar ensaio real, bundle exato doCI completo, instalar só o plugin com reversão e testar Movie/Episode no Web oficial. Manter código de produção9a até gates aprovados; aparelhos físicos continuam por certificar e PINK/backups preservados.
+
+
 ## Estado atual: correção instalada e imagem/som no Web oficial aprovados — 28/11/2026
 
 **Produção: plugin `9a9e19756d95f2008caa766f2357d9b81695cdd3`, backend `8f7acfd0e3265e845a4413b6cbc5842106d439d0`.** DLL SHA256 `5cf81f4c8b41ac3b3111b416da5fc894bf9003f985191226f9298085adc075a8`. Instalação r293 [46134394675](https://github.com/martaxi-boss/VPS/actions/runs/46134394675): transação committed, administrador/chaves/serviços protegidos preservados, sem troca do backend. Backup privado `native-upgrade-20261128-live-ts`; reversão com os nove payloads reais passou em r291 [46133209805](https://github.com/martaxi-boss/VPS/actions/runs/46133209805), oito ficheiros iguais e só o plugin alterado.
