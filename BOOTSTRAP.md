@@ -1,5 +1,15 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Causa demonstrada do novo404: faixa de teletexto DVB — 28/11/2026
+
+[r241 #46087127329](https://github.com/martaxi-boss/VPS/actions/runs/46087127329) falhou antes de reproduzir/medir cache: PlaybackInfo404 com guarda permitida eACTIVE200. [r245 #46087888884](https://github.com/martaxi-boss/VPS/actions/runs/46087888884), evidência `c921be018fd4a1b08832c5eb64517b20e305b2e5de47dfd90a115bacbd5a0188`, reproduziu numa instância nova: **origem302→200; open200/ts-probe200/close204;385024bytes em0,89s**, sem erros de autorização/leitura. FFprobe identificou **HEVC1920×1080, AAC estéreo48kHz e subtitle/dvb_teletext**. A amostra0600 e toda a instância foram removidas; produção12b preservada. Isto não é recusa de autorização, lentidão da origem nem apenas memória antiga da produção.
+
+HEVC/AAC já eram permitidos; PrivateMediaProbe.Parse recusava a emissão inteira por qualquer faixa extra. A correção reconhece **apenas subtitle/dvb_teletext emTS contínuo**, valida índices únicos/limites existentes e conserva a sua identidade numa lista tipada auxiliar. A fonte continua a anunciar/mapear só vídeo e áudio; não promete entrega de teletexto. Qualquer outro tipo/codec extra permanece recusado. Protocolos, formatos, limites, DNS, autenticação, origens e motores ficam iguais.
+
+Regressão operacional acrescentada: TS sintético com PMT/descriptor teletexto e um PES, reconhecido como3tracks pelo FFprobe local; a CI repetirá com FFprobe oficial e bridge real. O harness verifica AV separado do auxiliar, HEVC/AAC+teletexto e rejeição decodec desconhecido/tipo trocado/índice repetido/ausência de áudio. Exigir CI e descodificação realHEVC→H264/AAC no Jellyfin antes de instalar. As provas antigas de TV180,1s e filme/episódio continuam históricas; não certificam a reabertura agora falhada. Não alterar autenticação ou inventar causa401 para este404.
+
+**Atualização de gates:** a CI completa96f [#46086845782](https://github.com/martaxi-boss/Vivoapk/actions/runs/46086845782) passou após o isolamento dos cenários; é prova sintética anterior ao suporte de teletexto. Candidato atual8f7acfd0e3265e845a4413b6cbc5842106d439d0 em validação; backend/plugin passaram, transporte e integração completa pendentes. Produção continua12b.
+
 ## Filme e episódio reais no mesmo candidato04657f — 28/11/2026
 
 **Filme:** [r235 #46085318036](https://github.com/martaxi-boss/VPS/actions/runs/46085318036), evidência `ef9ea0a080b9ac0925449bc439bfd1e93f71b7a39f44a5acfd56074f6fadb832`:27s,7segmentos,504frames vídeo/984áudio H.264/AAC; PlaybackInfo27,11s e primeiro segmento33,78s, contra83,03s no candidato d584. **Episódio:** [r237 #46085786628](https://github.com/martaxi-boss/VPS/actions/runs/46085786628), evidência `6140e5398d70746343d047161296bbd2e4992c69eb753f243cad0d5744b72ccb`:26,8s,8segmentos,720vídeo/1034áudio; PlaybackInfo20,99s, primeiro segmento33,58s. Fontes MP4 realmente autorizadas e saída Jellyfin/FFmpeg nativa, sem motor alternativo.
