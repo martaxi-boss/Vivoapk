@@ -87,6 +87,10 @@ internal static class PrivateMediaProbe
             // A short TS sample normally has no format/video bit_rate. Counting
             // its actual encoded packets avoids reporting just the audio rate
             // as the whole channel, which made automatic quality choose 234p.
+            // The same parser also supports an actual endless TS source.
+            // Bound packet enumeration by media time, not process cancellation.
+            start.ArgumentList.Add("-read_intervals");
+            start.ArgumentList.Add("%+1");
             start.ArgumentList.Add("-show_packets");
             start.ArgumentList.Add("-show_entries");
             start.ArgumentList.Add("format=format_name,duration,bit_rate:stream=index,codec_type,codec_name,width,height,avg_frame_rate,channels,sample_rate,bit_rate,profile,level:packet=stream_index,size,pts_time,duration_time");
