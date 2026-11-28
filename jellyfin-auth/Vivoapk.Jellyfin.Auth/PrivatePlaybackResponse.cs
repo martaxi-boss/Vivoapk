@@ -72,6 +72,13 @@ internal static class PrivatePlaybackResponse
         if (query.Any(pair => pair.Value.Count != 1))
             throw new InvalidOperationException("Ambiguous private live query");
         query["SegmentContainer"] = "ts";
+        if (media["IsInfiniteStream"] is JsonValue infinite && infinite.TryGetValue<bool>(out var live) && live)
+        {
+            // Short live segments reduce initial wait and channel-change delay.
+            // Native keyframe alignment and the existing rolling cleaner remain.
+            query["SegmentLength"] = "1";
+            query["MinSegments"] = "1";
+        }
         media["TranscodingUrl"] = Microsoft.AspNetCore.WebUtilities.QueryHelpers.AddQueryString(
             parts[0], query.ToDictionary(pair => pair.Key, pair => (string?)pair.Value[0]));
     }

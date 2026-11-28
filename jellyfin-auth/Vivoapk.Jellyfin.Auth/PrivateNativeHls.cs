@@ -122,16 +122,19 @@ internal sealed class PrivateNativeHls(string socketPath, string keyPath) : IAsy
             Protocol = MediaProtocol.Http,
             IsRemote = true,
             IsInfiniteStream = infinite,
-            AnalyzeDurationMs = infinite ? 5000 : null,
+            AnalyzeDurationMs = infinite ? 1000 : null,
             Container = metadata.Container,
             RunTimeTicks = metadata.DurationTicks,
-            Bitrate = metadata.Bitrate,
+            // Zero is the native unknown-total sentinel: never infer a channel's
+            // total bitrate from audio alone if its video rate is unavailable.
+            Bitrate = infinite && !metadata.Streams.Any(s => s.Video && s.Bitrate is > 0)
+                ? 0 : metadata.Bitrate,
             MediaStreams = metadata.Streams.Select(s => new MediaStream
             {
                 Index = s.Index, Type = s.Video ? MediaStreamType.Video : MediaStreamType.Audio,
                 Codec = s.Codec, Width = s.Width, Height = s.Height,
                 AverageFrameRate = s.FrameRate, Channels = s.Channels,
-                SampleRate = s.SampleRate, BitRate = s.Bitrate
+                SampleRate = s.SampleRate, BitRate = s.Bitrate, Profile = s.Profile, Level = s.Level
             }).ToList(),
             SupportsDirectPlay = false, SupportsDirectStream = true, SupportsTranscoding = true,
             SupportsProbing = false, RequiresOpening = false, RequiresClosing = false

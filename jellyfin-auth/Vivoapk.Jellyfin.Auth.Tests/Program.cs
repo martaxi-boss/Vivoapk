@@ -7,6 +7,43 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using Jellyfin.Plugin.VivoapkMegaAuth;
 
+// Regression: a live TS probe may report only the audio bit_rate. Its actual
+// video packets must determine the channel rate rather than selecting 234p.
+{
+    var probeType = typeof(MegaResolverClient).Assembly.GetType(
+        "Jellyfin.Plugin.VivoapkMegaAuth.PrivateMediaProbe", true)!;
+    var probeParse = probeType.GetMethod("Parse", BindingFlags.NonPublic | BindingFlags.Static)!;
+    var probeFixture = new
+    {
+        format = new { format_name = "mpegts" },
+        streams = new object[]
+        {
+            new { index = 0, codec_type = "video", codec_name = "h264", width = 1280,
+                height = 720, avg_frame_rate = "25/1", profile = "High", level = 40 },
+            new { index = 1, codec_type = "audio", codec_name = "aac", channels = 2,
+                sample_rate = "48000", bit_rate = "160000", profile = "LC" },
+        },
+        packets = new object[]
+        {
+            new { stream_index = 0, size = "10000", pts_time = "0.00", duration_time = "0.04" },
+            new { stream_index = 0, size = "10000", pts_time = "0.04", duration_time = "0.04" },
+            new { stream_index = 0, size = "10000", pts_time = "0.08", duration_time = "0.04" },
+            new { stream_index = 1, size = "480", pts_time = "0.000", duration_time = "0.024" },
+            new { stream_index = 1, size = "480", pts_time = "0.024", duration_time = "0.024" },
+            new { stream_index = 1, size = "480", pts_time = "0.048", duration_time = "0.024" },
+            new { stream_index = 1, size = "480", pts_time = "0.072", duration_time = "0.024" },
+            new { stream_index = 1, size = "480", pts_time = "0.096", duration_time = "0.024" },
+        },
+    };
+    var probeResult = probeParse.Invoke(null, new object[] {
+        JsonSerializer.SerializeToUtf8Bytes(probeFixture), false, true })!;
+    if ((int?)probeResult.GetType().GetProperty("Bitrate")!.GetValue(probeResult) != 2160000)
+        throw new InvalidOperationException("Live TS total bitrate omitted encoded video packets");
+    if (probeResult.GetType().GetProperty("DurationTicks")!.GetValue(probeResult) is not null)
+        throw new InvalidOperationException("Probe sample incorrectly became live channel duration");
+    Console.WriteLine("VIVOAPK_LIVE_MEASURED_VIDEO_BITRATE=PASS");
+}
+
 // Exact dual transport used by official native players on server HLS URLs.
 {
     const string own = "synthetic-native-owner-token";

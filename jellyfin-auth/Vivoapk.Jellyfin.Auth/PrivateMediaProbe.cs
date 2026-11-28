@@ -20,7 +20,8 @@ internal static class PrivateMediaProbe
         { "aac", "mp2", "mp3", "ac3", "eac3", "opus", "flac", "vorbis", "pcm_s16le" };
 
     internal sealed record StreamInfo(int Index, bool Video, string Codec, int? Width, int? Height,
-        float? FrameRate, int? Channels, int? SampleRate, int? Bitrate);
+        float? FrameRate, int? Channels, int? SampleRate, int? Bitrate,
+        string? Profile = null, int? Level = null);
     internal sealed record AncillaryStreamInfo(int Index, string Codec);
     internal sealed record Observation(string Container, long? DurationTicks,
         int? Bitrate, IReadOnlyList<StreamInfo> Streams,
@@ -79,15 +80,25 @@ internal static class PrivateMediaProbe
             "-analyzeduration", "5000000", "-max_alloc", "67108864",
             "-f", finite ? "mov" : continuousTs ? "mpegts" : "hls",
             "-show_entries", "format=format_name,duration,bit_rate:stream=index,codec_type,codec_name,width,height,avg_frame_rate,channels,sample_rate,bit_rate",
-            "-of", "json", source.AbsoluteUri })
+            "-of", "json" })
             start.ArgumentList.Add(arg);
+        if (continuousTs)
+        {
+            // A short TS sample normally has no format/video bit_rate. Counting
+            // its actual encoded packets avoids reporting just the audio rate
+            // as the whole channel, which made automatic quality choose 234p.
+            start.ArgumentList.Add("-show_packets");
+            start.ArgumentList.Add("-show_entries");
+            start.ArgumentList.Add("format=format_name,duration,bit_rate:stream=index,codec_type,codec_name,width,height,avg_frame_rate,channels,sample_rate,bit_rate,profile,level:packet=stream_index,size,pts_time,duration_time");
+        }
+        start.ArgumentList.Add(source.AbsoluteUri);
         Process? process = null;
         try
         {
             token.ThrowIfCancellationRequested();
             process = Process.Start(start) ?? throw Unavailable();
             process.StandardInput.Close();
-            var output = ReadBoundedAsync(process.StandardOutput.BaseStream, 65536, token);
+            var output = ReadBoundedAsync(process.StandardOutput.BaseStream, continuousTs ? 1048576 : 65536, token);
             // Drain stderr with a separate cap, never include it in exceptions.
             var diagnostic = ReadBoundedAsync(process.StandardError.BaseStream, 65536, token);
             await Task.WhenAll(output, diagnostic, process.WaitForExitAsync(token)).ConfigureAwait(false);
@@ -166,9 +177,48 @@ internal static class PrivateMediaProbe
         return (float)a / b;
     }
 
+    private static Dictionary<int, int> PacketBitrates(JsonElement root)
+    {
+        var rates = new Dictionary<int, int>();
+        if (!root.TryGetProperty("packets", out var packets))
+            return rates;
+        if (packets.ValueKind != JsonValueKind.Array || packets.GetArrayLength() > 4096)
+            throw Unavailable();
+        var tracks = new Dictionary<int, (long Bytes, decimal Start, decimal End, int Count)>();
+        foreach (var packet in packets.EnumerateArray())
+        {
+            var index = IntValue(packet, "stream_index", 0, 1024);
+            var size = IntValue(packet, "size", 1, 16777216);
+            if (index is null || size is null || !decimal.TryParse(Value(packet, "pts_time"),
+                    NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                    CultureInfo.InvariantCulture, out var pts) || Math.Abs(pts) > 10000000)
+                continue;
+            decimal.TryParse(Value(packet, "duration_time"), NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture, out var duration);
+            if (duration < 0 || duration > 1)
+                continue;
+            var end = pts + duration;
+            if (tracks.TryGetValue(index.Value, out var track))
+                tracks[index.Value] = (track.Bytes + size.Value, Math.Min(track.Start, pts),
+                    Math.Max(track.End, end), track.Count + 1);
+            else
+                tracks[index.Value] = (size.Value, pts, end, 1);
+        }
+        foreach (var (index, track) in tracks)
+        {
+            var span = track.End - track.Start;
+            if (track.Count < 3 || span < .04m || span > 20)
+                continue;
+            var rate = track.Bytes * 8m / span;
+            if (rate >= 1 && rate <= 500000000)
+                rates[index] = decimal.ToInt32(decimal.Round(rate));
+        }
+        return rates;
+    }
+
     internal static Observation Parse(byte[] bytes, bool finite, bool continuousTs = false)
     {
-        if ((finite && continuousTs) || bytes.Length is < 2 or > 65536)
+        if ((finite && continuousTs) || bytes.Length < 2 || bytes.Length > (continuousTs ? 1048576 : 65536))
             throw Unavailable();
         using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 12 });
         var root = document.RootElement;
@@ -233,8 +283,26 @@ internal static class PrivateMediaProbe
         }
         if (parsed.Count(s => s.Video) != 1 || !parsed.Any(s => !s.Video))
             throw Unavailable();
+        if (continuousTs)
+        {
+            var measured = PacketBitrates(root);
+            parsed = parsed.Select(track => measured.TryGetValue(track.Index, out var rate)
+                ? track with { Bitrate = rate } : track).ToList();
+        }
+        parsed = parsed.Select(track =>
+        {
+            var observed = root.GetProperty("streams").EnumerateArray()
+                .First(stream => IntValue(stream, "index", 0, 1024) == track.Index);
+            var profile = Value(observed, "profile");
+            if (profile is not null && (profile.Length > 64 || profile.Any(char.IsControl)))
+                throw Unavailable();
+            return track with { Profile = profile, Level = IntValue(observed, "level", 0, 1000) };
+        }).ToList();
+        int? total = IntValue(format, "bit_rate", 0, 500000000);
+        if (continuousTs && parsed.Any(track => track.Video && track.Bitrate is > 0))
+            total = checked(parsed.Sum(track => track.Bitrate ?? 0));
         return new Observation(finite ? "mp4" : "mpegts", duration,
-            IntValue(format, "bit_rate", 0, 500000000), parsed.OrderBy(s => s.Index).ToArray(), ancillary.ToArray());
+            total, parsed.OrderBy(s => s.Index).ToArray(), ancillary.ToArray());
     }
 }
 
