@@ -1,5 +1,10 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Episódio real aprovado após instalação — 28/11/2026
+
+r257 [46092027906](https://github.com/martaxi-boss/VPS/actions/runs/46092027906), produção8f: Episode nativo,9segmentos/27,5s,810 fotogramas e1164 blocos áudio descodificados H264/AAC. Guard permitido, subscriçãoACTIVE200, acesso anónimo recusado. Encoder próprio identificado,0ficheiros após Stop/logout204, PIDs/socket/namespace preservados. Primeiro segmento32,26s após PlaybackInfo. Evidência SHA-256 `75400c02a28265a967a05bebf7d3cede6abdb92521a504bf39940997e3935901`. Filme e episódio estão validados na versão instalada; cache progressiva e aparelhos físicos continuam gates separados.
+
+
 ## Filme real aprovado após instalação — 28/11/2026
 
 r255 [46091634068](https://github.com/martaxi-boss/VPS/actions/runs/46091634068), produção8f: catálogo Movie nativo, PlaybackInfo permitido, HLS200,7segmentos/25,1s,504 fotogramas e984 blocos áudio descodificados. Acesso anónimo recusado, sessão parada/logout204, encoder nativo atribuído inequivocamente e zero ficheiros próprios após Stop. PIDs dos quatro serviços, socket e namespace preservados. Evidência SHA-256 `f471afea37bd74ddca724e2f59084a5f7c18be18a2ad2370a85a23806a77bf8b`. Pesquisa inicial da pasta71,47s e primeiro segmento30,49s após PlaybackInfo: limitações de latência registadas. Nenhuma eliminação progressiva observada na janela curta de25s; ensaio de55s para essa métrica ainda necessário. Episódio em validação.
