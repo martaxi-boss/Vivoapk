@@ -1,6 +1,39 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
-## Correção da autenticação da aplicação Android instalada — 28/11/2026
+## Produção: qualidade da fonte preservada e mudanças de canal medidas — 28/11/2026, 17h
+
+O utilizador confirmou áudio/vídeo na app Android após a correção anterior. A captura TVI seguinte mostrou degradação forte e motivou esta afinação; a qualidade desta nova versão no aparelho físico ainda requer confirmação.
+
+**Instalado:** plugin e backend `2852ddc827f95abdad823012a2f6d51ecf96487f`, DLL `c6a641ec52002a36d9df6536f4624640f4527d10d6dc372f8e63320adb4ed6f3`. [Ativação r335 / 46169748986](https://github.com/martaxi-boss/VPS/actions/runs/46169748986): committed, chaves/admin/serviços protegidos preservados, sem rollback. Mudaram a DLL e o seletor do backend; sete outros payloads preservados. Backup privado: /srv/projects/Vivoapk/backups/native-upgrade-20261128-quality. Mantidos PINK/backups; não instalar main.
+
+Causa demonstrada: metadados TS tinham vídeo sem BitRate; Jellyfin inferia o débito total apenas do áudio (~93–96kbit/s). A app escolhia vídeo ~78–79kbit/s e a conversão reduzia uma fonte1280×720 para416×234. A correção mede o bitrate dos pacotes de vídeo/áudio num segundo de media, conserva profile/level verdadeiros, evita inferir total de áudio quando o vídeo é desconhecido. Agora H264/AAC compatíveis podem ser copiados em vez de recomprimidos. Outros formatos continuam sujeitos à negociação nativa e às capacidades/limites do aparelho; não anuncia resoluções superiores à fonte.
+
+Arranque: AnalyzeDurationMs1000 em live privado, SegmentLength1/MinSegments1; finite/seek mantidos. O backend reutiliza em RAM URLs exatos emitidos pela playlist oficial, por até300s e no máximo2 contas/32768locators/4MiB por conta. A chave depende de origem/utilizador/password/políticaHTTP; cada hit revalida URL/asset/credenciais/origem. Cada open continua a autorizar subscrição/DNS/categoria/item; leituras e revogação mantêm os checks atuais. Nenhuma autorização é cacheada, nenhum URL é adivinhado, nenhuma recusa401/403 tem fallback automático. Limites da cache são de reutilização; entradas expiradas são descartadas na próxima consulta, não há promessa de eliminação física de RAM por timer.
+
+Comparação PINK: Media3PlaybackFacade prepara a URL do fornecedor diretamente e usa o descodificador do aparelho. Não havia um pacote especial de codecs a copiar. A perda atual vinha do cálculo de bitrate e da recompressão; o percurso Jellyfin mantém agora a fonte H264/AAC compatível por remux.
+
+**Verificações:** [CI integrado exato 46149771416](https://github.com/martaxi-boss/Vivoapk/actions/runs/46149771416) PASS nas dez portas: standard, category, catalog-race, regular-private-hls/file/live-recovery/ts-recovery, native-server-ffmpeg/long-cache/infinite-live. Compilação/unidades [46149771440](https://github.com/martaxi-boss/Vivoapk/actions/runs/46149771440) PASS. Transporte [46149552555](https://github.com/martaxi-boss/Vivoapk/actions/runs/46149552555) e backend [46149552553](https://github.com/martaxi-boss/Vivoapk/actions/runs/46149552553) PASS no mesmo código de aplicação2bdb; o candidato285 acrescentou apenas atualização das asserções de análise no smoke. Bundle exato15266047592 conferido: ZIP íntegro, tamanhos e hashes de todas as DLL/meta; manifesto SHA256 `c9f34bd7afabe701afda6684b97e46d29678649bf54ca85db225b0d573cfce01`. Reversão dos payloads reais [r333 / 46150100973](https://github.com/martaxi-boss/VPS/actions/runs/46150100973) passou sem ativação.
+
+[Ensaio real final exato r334 / 46150183226](https://github.com/martaxi-boss/VPS/actions/runs/46150183226): TVI720p50, H264/AACcopy,1100frames vídeo/1031áudio,20segmentos/26s, zero marcadores de erro de descodificação. RTP1HD5,36s e RTP2 4,56s desde PlaybackInfo ao primeiro segmento, ambos descodificados/cache0. Arranque frio29,18s, do qual open da playlist23,806s. Ambiente isolado, processos/endpoints/chaves/amostras removidos e produção preservada.
+
+**Prova pública da versão instalada:** [r336 / 46169845451](https://github.com/martaxi-boss/VPS/actions/runs/46169845451), URLs originais por HTTPS público com padrão de autenticação Android2.7.3, perfil compatível e limites nativos automáticos, sem forçar bitrate baixo:
+
+| Etapa | Primeiro segmento desde PlaybackInfo | Vídeo / áudio descodificados | Encerramento nativo | Cache própria após Stop |
+| --- | ---: | ---: | ---: | ---: |
+| TVI, início frio | 36,02s | 1100 / 1031 | 3,116s | 0 |
+| RTP1 HD, metadata reutilizada | 4,84s | 1100 / 1031 | 3,194s | 0 |
+| RTP2, metadata reutilizada | 4,17s | 800 / 1500 | 5,859s | 0 |
+
+TVI: saída1280×720@50fps, H264/AACcopy,23segmentos/26,9s, sem marcadores Packet corrupt/concealing/error while decoding/invalidNAL. Fonte total2,896Mbit/s, vídeo2,800Mbit/s; playlistmaster200 e todos os caminhos normais autorizados. Pedido anónimo e tokens contraditórios recusados. Logout204/tokenUsersMe401. Serviços/PIDs, socket e namespace preservados pelo teste.
+
+**Limites que continuam reais:** os4–5s medem início do novo pedido PlaybackInfo até primeiro segmento, depois de Stop anterior terminar; não são tempo de imagem no ecrã. Somando Stop anterior, TVI→RTP1HD levou cerca7,96s e RTP1HD→RTP2 cerca7,36s, excluindo navegação e buffer do aparelho. A cache não torna instantânea a primeira playlist fria: neste ensaio PlaybackInfo33,1s e total36,02s. Não anunciar arranque/fecho instantâneo ou zapping total4s. O fecho nativo ainda demora3–6s; fonte Jellyfin12.4 TranscodeManager.KillTranscodingJob aguarda job.Stop e DeletePartialStreamFiles com atraso inicial1500ms, além da libertação privada. Não retirar limpeza nem proteção para esconder essa demora.
+
+Depois do reinício desta instalação, a app deve terminar sessão e voltar a entrar com os mesmos dados Mega para reconstruir catálogo/autorização em RAM. Pedir confirmação da qualidade no aparelho. A reprodução física anterior foi confirmada pelo utilizador; esta nova afinação ainda só tem ensaios de protocolo/descodificação no servidor. Sem certificação universal de canais/aparelhos.
+
+
+Observação final independente só de leitura [r337 / 46170351791](https://github.com/martaxi-boss/VPS/actions/runs/46170351791): quatro serviços ativos, zero FFmpeg nativos, zero ficheiros de media na cache; nenhuma eliminação nem processo terminado pela observação.
+
+## Histórico: correção da autenticação Android — 28/11/2026
 
 O ecrã preto de PT | RTP 1 HD às 11:57 foi investigado nos pedidos reais. A aplicação oficial Jellyfin for Android 2.7.3 acrescenta Authorization às URLs do próprio servidor, que já contêm ApiKey. A guarda privada anterior recusava a combinação mesmo quando os tokens eram iguais. O candidato `1ca90e166659ffcf299b74ed5c6e607ad22fef62` aceita apenas tokens explícitos e idênticos entre os transportes; duplicados ambíguos, esquemas incompatíveis e tokens contraditórios continuam recusados. Autenticação nativa, dono, item, dispositivo, sessão e subscrição mantêm as verificações existentes.
 
