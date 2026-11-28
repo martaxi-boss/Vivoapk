@@ -7,6 +7,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../Vivoapk.Jellyfin.Auth/Vivoapk.Jellyfin.Auth.csproj" />
   </ItemGroup>
 </Project>

@@ -440,6 +440,18 @@ def require_native_query_owner(uri, owner_token, stage):
     return body
 
 
+
+def require_native_dual_owner(uri, owner_token, stage):
+    header = ('MediaBrowser Client="' + _SESSION_TEST_CLIENTS[owner_token] +
+              '", Device="CI", DeviceId="' + _SESSION_TEST_DEVICES[owner_token] +
+              '", Version="1.0.0", Token="' + owner_token + '"')
+    status, body, guard = native_bytes(native_query_fixture(uri, owner_token, owner_token),
+        auth_headers={"Authorization": header})
+    if status != 200 or guard != "allowed":
+        raise RuntimeError("Native identical query/header owner failed: " + json.dumps({
+            "stage": stage, "status": status, "guard": guard}))
+    return body
+
 def require_native_denial(uri, owner_token, foreign_token, stage):
     safe = safe_fixture_route(uri, owner_token)
     for name, denied_token in (("anonymous", None), ("foreign", foreign_token),
@@ -1240,6 +1252,11 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
                 continue
             route = native_route(state["route"], relative, state["item"])
             payload = owner_bytes(route, state["token"], "parallel_live_segment")
+            if private_backend is not None and state["count"] == 0:
+                dual_payload = require_native_dual_owner(route, state["token"], "native_player_segment")
+                if dual_payload != payload:
+                    raise RuntimeError("Native player dual-auth segment changed content")
+                print("JELLYFIN_NATIVE_PLAYER_DUAL_AUTH_LIVE_SEGMENT=PASS", flush=True)
             if len(payload) < 188 or payload[0] != 0x47:
                 raise RuntimeError("Parallel live invalid transport stream")
             state["last_route"] = route
@@ -1281,6 +1298,9 @@ def verify_parallel_infinite_live(base, first_item, first_owner, first_token,
             (v for k, v in parse_qsl(urlsplit(master).query) if k.lower() == "playsessionid"), None)
         if not session:
             raise RuntimeError("Parallel live session missing")
+        if private_backend is not None:
+            if not require_native_dual_owner(master, token, "native_player_master").startswith(b"#EXTM3U"):
+                raise RuntimeError("Native player master is not HLS")
         body = owner_bytes(master, token, "parallel_live_master")
         route = master
         if b"#EXT-X-STREAM-INF" in body:
@@ -1659,6 +1679,10 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
     require_native_denial(route, owner_token, foreign_token, "master_before_owner")
     query_route = native_query_fixture(route, owner_token, owner_token)
     require_denied_response(native_bytes(query_route, foreign_token), "master", "mixed_credentials")
+    require_denied_response(native_bytes(
+        native_query_fixture(route, foreign_token, owner_token),
+        auth_headers={"Authorization": authorization_header(owner_token)}),
+        "master", "foreign_query_own_header")
     separator = "&" if "?" in query_route else "?"
     duplicate = query_route + separator + urlencode({"ApiKey": "synthetic-invalid-token"})
     require_denied_response(native_bytes(duplicate), "master", "duplicate_credentials")
@@ -1668,6 +1692,11 @@ def verify_native_ffmpeg(item_id, owner, owner_token, foreign_token, base, provi
         "Authorization": authorization_header(owner_token)})
     if status != 200 or guard != "allowed" or not explicit_body.startswith(b"#EXTM3U"):
         raise RuntimeError("Native Authorization-only owner request failed")
+    same_status, same_body, same_guard = native_bytes(query_route,
+        auth_headers={"Authorization": authorization_header(owner_token)})
+    if same_status != 200 or same_guard != "allowed" or not same_body.startswith(b"#EXTM3U"):
+        raise RuntimeError("Official native player identical query/header token was rejected")
+    print("JELLYFIN_NATIVE_IDENTICAL_QUERY_HEADER_MASTER=PASS", flush=True)
     print("JELLYFIN_NATIVE_SHARED_AUTHORIZATION_HEADER_CONSISTENCY=PASS", flush=True)
     body = require_native_owner(route, owner_token, "master")
     if not body.startswith(b"#EXTM3U") or not require_native_query_owner(

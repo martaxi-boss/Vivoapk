@@ -97,9 +97,10 @@ internal static class NativePlaybackAuthorization
         bool legacy = request.Headers.ContainsKey("X-Emby-Authorization");
         bool embyToken = request.Headers.ContainsKey("X-Emby-Token");
         bool mediaToken = request.Headers.ContainsKey("X-MediaBrowser-Token");
+        string fromQuery = string.Empty;
         if (queryKeys.Length > 0)
         {
-            if (queryKeys.Length != 1 || standard || legacy || embyToken || mediaToken)
+            if (queryKeys.Length != 1)
                 return false;
             var key = queryKeys[0];
             if (!key.Equals("ApiKey", StringComparison.OrdinalIgnoreCase)
@@ -108,8 +109,7 @@ internal static class NativePlaybackAuthorization
             var values = request.Query[key];
             if (values.Count != 1 || values[0] is not string value || !ValidToken(value))
                 return false;
-            token = value;
-            return true;
+            fromQuery = value;
         }
 
         if ((standard && legacy) || (embyToken && mediaToken))
@@ -131,12 +131,17 @@ internal static class NativePlaybackAuthorization
             fromLegacy = value;
         }
 
-        // Some official clients send the same token twice. Accept only an exact
-        // match, never rely on the native precedence rule to select an identity.
-        if (fromAuthorization.Length > 0 && fromLegacy.Length > 0
-            && !string.Equals(fromAuthorization, fromLegacy, StringComparison.Ordinal))
+        // Official native players also add their Authorization header to a
+        // server-generated ApiKey URL. Accept only explicit, identical tokens
+        // across transports; never let native header precedence choose between
+        // identities. Duplicate keys/fields and conflicting schemes stay denied.
+        if (fromQuery.Length > 0 && (standard || legacy) && fromAuthorization.Length == 0)
             return false;
-        token = fromAuthorization.Length > 0 ? fromAuthorization : fromLegacy;
+        var valuesByTransport = new[] { fromQuery, fromAuthorization, fromLegacy }
+            .Where(value => value.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
+        if (valuesByTransport.Length != 1)
+            return false;
+        token = valuesByTransport[0];
         return ValidToken(token);
     }
 

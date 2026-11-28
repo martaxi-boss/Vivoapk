@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -5,6 +6,49 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using Jellyfin.Plugin.VivoapkMegaAuth;
+
+// Exact dual transport used by official native players on server HLS URLs.
+{
+    const string own = "synthetic-native-owner-token";
+    const string foreign = "synthetic-native-foreign-token";
+    var type = typeof(MegaResolverClient).Assembly.GetType(
+        "Jellyfin.Plugin.VivoapkMegaAuth.NativePlaybackAuthorization", true)!;
+    var parse = type.GetMethod("TryGetExplicitToken", BindingFlags.NonPublic | BindingFlags.Static)!;
+    (bool Allowed, string Token) Explicit(string query, params (string Key, string Value)[] headers)
+    {
+        var context = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+        context.Request.QueryString = new Microsoft.AspNetCore.Http.QueryString(query);
+        foreach (var pair in headers)
+            context.Request.Headers.Append(pair.Key, pair.Value);
+        object?[] arguments = { context.Request, null };
+        var allowed = (bool)parse.Invoke(null, arguments)!;
+        return (allowed, arguments[1] as string ?? "");
+    }
+    string Header(string value) => "MediaBrowser Client=\"Jellyfin for Android\", DeviceId=\"synthetic-device\", Version=\"2.7.3\", Token=\"" + value + "\"";
+    foreach (var result in new[]
+    {
+        Explicit("?ApiKey=" + own),
+        Explicit("", ("Authorization", Header(own))),
+        Explicit("?ApiKey=" + own, ("Authorization", Header(own))),
+        Explicit("?ApiKey=" + own, ("Authorization", Header(own)), ("X-Emby-Token", own)),
+    })
+        if (!result.Allowed || result.Token != own)
+            throw new InvalidOperationException("Identical native credentials were rejected");
+    foreach (var result in new[]
+    {
+        Explicit("?ApiKey=" + own, ("Authorization", Header(foreign))),
+        Explicit("?ApiKey=" + foreign, ("Authorization", Header(own))),
+        Explicit("?ApiKey=" + own, ("Authorization", Header(own)), ("X-Emby-Token", foreign)),
+        Explicit("?ApiKey=" + own + "&ApiKey=" + own),
+        Explicit("?ApiKey=" + own + "&api_key=" + own),
+        Explicit("?ApiKey=" + own, ("Authorization", Header(own) + ", Token=\"" + own + "\"")),
+        Explicit("?ApiKey=" + own, ("Authorization", "Bearer " + own)),
+        Explicit("?ApiKey=" + own, ("Authorization", "MediaBrowser Client=\"metadata only\"")),
+    })
+        if (result.Allowed)
+            throw new InvalidOperationException("Ambiguous native credentials were accepted");
+    Console.WriteLine("VIVOAPK_NATIVE_IDENTICAL_QUERY_HEADER_TOKENS=PASS");
+}
 
 var cases = new (string Response, HttpStatusCode Status, bool Expected)[]
 {
