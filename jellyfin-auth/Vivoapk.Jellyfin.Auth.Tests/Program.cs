@@ -25,16 +25,16 @@ using Jellyfin.Plugin.VivoapkMegaAuth;
         return (allowed, arguments[1] as string ?? "");
     }
     string Header(string value) => "MediaBrowser Client=\"Jellyfin for Android\", DeviceId=\"synthetic-device\", Version=\"2.7.3\", Token=\"" + value + "\"";
-    foreach (var result in new[]
+    foreach (var credentialCase in new[]
     {
         Explicit("?ApiKey=" + own),
         Explicit("", ("Authorization", Header(own))),
         Explicit("?ApiKey=" + own, ("Authorization", Header(own))),
         Explicit("?ApiKey=" + own, ("Authorization", Header(own)), ("X-Emby-Token", own)),
     })
-        if (!result.Allowed || result.Token != own)
+        if (!credentialCase.Allowed || credentialCase.Token != own)
             throw new InvalidOperationException("Identical native credentials were rejected");
-    foreach (var result in new[]
+    foreach (var credentialCase in new[]
     {
         Explicit("?ApiKey=" + own, ("Authorization", Header(foreign))),
         Explicit("?ApiKey=" + foreign, ("Authorization", Header(own))),
@@ -45,7 +45,7 @@ using Jellyfin.Plugin.VivoapkMegaAuth;
         Explicit("?ApiKey=" + own, ("Authorization", "Bearer " + own)),
         Explicit("?ApiKey=" + own, ("Authorization", "MediaBrowser Client=\"metadata only\"")),
     })
-        if (result.Allowed)
+        if (credentialCase.Allowed)
             throw new InvalidOperationException("Ambiguous native credentials were accepted");
     Console.WriteLine("VIVOAPK_NATIVE_IDENTICAL_QUERY_HEADER_TOKENS=PASS");
 }
