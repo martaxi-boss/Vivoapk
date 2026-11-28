@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## RTP1HEVC+teletexto descodificado pelo candidato8f — 28/11/2026
+
+[r248 #46089313058](https://github.com/martaxi-boss/VPS/actions/runs/46089313058), evidência `77ed38de8c63af6cdc3c73b5c1fc476359abed98c1060bc54a25c01413541b8e`: **fonte autorizadaHEVC1080/AAC48kHz/dvb_teletext, saída nativaH264/AAC confirmada porFFprobe,1200frames vídeo/1125áudio descodificados,8segmentos ao longo de27,6s e novo segmento aos25,56s**. É a mesmaRTP1 que falhava emr245. A guarda anónima recusou,54validações privadas devolveramACTIVE, origem302→200 e zero falhas. SourceMediaStreams sóAV, sem mapear teletexto como áudio. Primeiro segmento7,32s após o pedido de reprodução; PlaybackInfo21,79s medido separadamente, sem chamar arranque total7s.
+
+Stop aceite, cacheTS0; toda a instância, amostra, processos/grupos, credenciais e endpoints temporários removidos. Produção12b/4serviços/socket/namespace preservados. A CI8f do backend/plugin/transporte comTS real sintetizado+teletexto e casos inválidos passou. A CI completa8f #46088866872 ainda está a decorrer; a CI completa96f #46086845782 passou, mas é uma baseline anterior à correção do parser e não autoriza instalar8f por si.
+
+Próximo gate: bundle ordinário exato8f, ensaio de rollback dos9ficheiros reais, ativação coordenada12b→8f e ensaios no servidor instalado de filme/episódio e cache progressiva. Não trocar main. Aplicações físicas certificadas continuam0 e a prova de isolamento de duas contas permanece sintética. Não apresentar estes resultados como certificação de6dispositivos.
+
 ## Causa demonstrada do novo404: faixa de teletexto DVB — 28/11/2026
 
 [r241 #46087127329](https://github.com/martaxi-boss/VPS/actions/runs/46087127329) falhou antes de reproduzir/medir cache: PlaybackInfo404 com guarda permitida eACTIVE200. [r245 #46087888884](https://github.com/martaxi-boss/VPS/actions/runs/46087888884), evidência `c921be018fd4a1b08832c5eb64517b20e305b2e5de47dfd90a115bacbd5a0188`, reproduziu numa instância nova: **origem302→200; open200/ts-probe200/close204;385024bytes em0,89s**, sem erros de autorização/leitura. FFprobe identificou **HEVC1920×1080, AAC estéreo48kHz e subtitle/dvb_teletext**. A amostra0600 e toda a instância foram removidas; produção12b preservada. Isto não é recusa de autorização, lentidão da origem nem apenas memória antiga da produção.
