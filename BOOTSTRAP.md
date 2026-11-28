@@ -1,5 +1,10 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Filme real aprovado após instalação — 28/11/2026
+
+r255 [46091634068](https://github.com/martaxi-boss/VPS/actions/runs/46091634068), produção8f: catálogo Movie nativo, PlaybackInfo permitido, HLS200,7segmentos/25,1s,504 fotogramas e984 blocos áudio descodificados. Acesso anónimo recusado, sessão parada/logout204, encoder nativo atribuído inequivocamente e zero ficheiros próprios após Stop. PIDs dos quatro serviços, socket e namespace preservados. Evidência SHA-256 `f471afea37bd74ddca724e2f59084a5f7c18be18a2ad2370a85a23806a77bf8b`. Pesquisa inicial da pasta71,47s e primeiro segmento30,49s após PlaybackInfo: limitações de latência registadas. Nenhuma eliminação progressiva observada na janela curta de25s; ensaio de55s para essa métrica ainda necessário. Episódio em validação.
+
+
 ## Produção atualizada: teletexto e reprodução finita nativa — 28/11/2026
 
 **Produção ativa: `8f7acfd0e3265e845a4413b6cbc5842106d439d0`**, instalada a partir do ramo autorizado, nunca da main. Instalação Ferrari r254 [46091540692](https://github.com/martaxi-boss/VPS/actions/runs/46091540692) confirmou transação `committed`, administrador, chaves e serviços alheios preservados. Evidência SHA-256 `dd5b4c684e72b89d23276f8f59eaa5837f1b6cf429b19f5ca3348a133f3b778c`. Reversão automática dos nove ficheiros ensaiada com falha injetada em r253 [46091066866](https://github.com/martaxi-boss/VPS/actions/runs/46091066866); sete ficheiros ficaram byte a byte iguais, só mudaram DLL do plugin e seleção do código backend. Backups em `/srv/projects/Vivoapk/backups/native-upgrade-20261128-teletext`. Jellyfin-pink mantido.
