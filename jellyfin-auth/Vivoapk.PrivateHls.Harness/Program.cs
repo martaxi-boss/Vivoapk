@@ -21,7 +21,8 @@ using Jellyfin.Plugin.VivoapkMegaAuth;
     PrivatePlaybackResponse.ConstrainHlsSegments(response, item);
     var route = response["MediaSources"]![0]!["TranscodingUrl"]!.GetValue<string>();
     var fields = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri("https://synthetic.invalid" + route).Query);
-    if (fields.Count != 4 || fields["SegmentContainer"] != "ts"
+    if (fields.Count != 6 || fields["SegmentContainer"] != "ts"
+        || fields["SegmentLength"] != "1" || fields["MinSegments"] != "1"
         || fields["ApiKey"] != "synthetic&token" || fields["DeviceId"] != "device one"
         || fields["PlaySessionId"] != "11111111222233334444555555555555")
         throw new InvalidOperationException("Live format negotiation changed identity");
