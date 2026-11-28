@@ -1,5 +1,13 @@
 # BOOTSTRAP — VivoAPK / Jellyfin / Mega OTT
 
+## Causa demonstrada do novo404: faixa de teletexto DVB — 28/11/2026
+
+[r241 #46087127329](https://github.com/martaxi-boss/VPS/actions/runs/46087127329) falhou antes de reproduzir/medir cache: PlaybackInfo404 com guarda permitida eACTIVE200. [r245 #46087888884](https://github.com/martaxi-boss/VPS/actions/runs/46087888884), evidência `c921be018fd4a1b08832c5eb64517b20e305b2e5de47dfd90a115bacbd5a0188`, reproduziu numa instância nova: **origem302→200; open200/ts-probe200/close204;385024bytes em0,89s**, sem erros de autorização/leitura. FFprobe identificou **HEVC1920×1080, AAC estéreo48kHz e subtitle/dvb_teletext**. A amostra0600 e toda a instância foram removidas; produção12b preservada. Isto não é recusa de autorização, lentidão da origem nem apenas memória antiga da produção.
+
+HEVC/AAC já eram permitidos; PrivateMediaProbe.Parse recusava a emissão inteira por qualquer faixa extra. A correção reconhece **apenas subtitle/dvb_teletext emTS contínuo**, valida índices únicos/limites existentes e conserva a sua identidade numa lista tipada auxiliar. A fonte continua a anunciar/mapear só vídeo e áudio; não promete entrega de teletexto. Qualquer outro tipo/codec extra permanece recusado. Protocolos, formatos, limites, DNS, autenticação, origens e motores ficam iguais.
+
+Regressão operacional acrescentada: TS sintético com PMT/descriptor teletexto e um PES, reconhecido como3tracks pelo FFprobe local; a CI repetirá com FFprobe oficial e bridge real. O harness verifica AV separado do auxiliar, HEVC/AAC+teletexto e rejeição decodec desconhecido/tipo trocado/índice repetido/ausência de áudio. Exigir CI e descodificação realHEVC→H264/AAC no Jellyfin antes de instalar. As provas antigas de TV180,1s e filme/episódio continuam históricas; não certificam a reabertura agora falhada. Não alterar autenticação ou inventar causa401 para este404.
+
 ## Fecho por orçamento local reproduzido; isolamento dos cenários de CI — 28/11/2026
 
 [r239 #46086662787](https://github.com/martaxi-boss/VPS/actions/runs/46086662787), evidência `9a69fb48c595266d907c9fa15254b6d014e3c913f86c60c4de68923497c51faf`: reprodução isolada com o backend04657f, SQLite descartável, dados/IO inteiramente sintéticos e **zero pedidos ao fornecedor**. Open200,88leituras206; a89.ª deu404, após429 na admissão interna, contadores[180,180] e registry0. Base temporária eliminada e os4serviços de produção preservados. Portanto um fecho deste tipo pode ser causado pelo limite local, sem recusa externa nem incompatibilidade de formato.

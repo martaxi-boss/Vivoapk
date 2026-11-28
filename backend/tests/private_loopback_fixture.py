@@ -154,6 +154,64 @@ def generate_file(ffmpeg, path, suffix, frequency, *, timeline_marker=False):
     return path.read_bytes()
 
 
+def add_teletext_track(raw):
+    """Add a typed ancillary PID to a generated two-stream MPEG-TS fixture."""
+    assert len(raw) % 188 == 0
+    pid = 0x102
+    packets = [raw[i:i + 188] for i in range(0, len(raw), 188)]
+    assert all(packet[0] == 0x47 for packet in packets)
+    assert all(((packet[1] & 31) << 8 | packet[2]) != pid for packet in packets)
+
+    def crc(data):
+        value = 0xFFFFFFFF
+        for byte in data:
+            value ^= byte << 24
+            for _ in range(8):
+                value = ((value << 1) ^ (0x04C11DB7 if value & 0x80000000 else 0)) & 0xFFFFFFFF
+        return value
+
+    pts = 126000
+    timestamp = bytes((0x21 | ((pts >> 29) & 14), (pts >> 22) & 255,
+                       ((pts >> 14) & 254) | 1, (pts >> 7) & 255,
+                       ((pts << 1) & 254) | 1))
+    payload = b'\x10\x03\x2c\x07\xe4' + bytes([0x80]) * 42
+    pes_body = b'\x84\x80\x05' + timestamp + payload
+    pes = b'\x00\x00\x01\xbd' + len(pes_body).to_bytes(2, 'big') + pes_body
+    adaptation = 183 - len(pes)
+    caption = bytes((0x47, 0x40 | (pid >> 8), pid & 255, 0x30, adaptation, 0))
+    caption += b'\xff' * (adaptation - 1) + pes
+    assert len(caption) == 188
+
+    # Private PES + teletext descriptor (language, page type/magazine, page).
+    extra = bytes((0x06, 0xE0 | (pid >> 8), pid & 255, 0xF0, 7, 0x56, 5))
+    extra += b'por\x11\x00'
+    output = []
+    changed = 0
+    for packet in packets:
+        control = (packet[3] >> 4) & 3
+        offset = 4 + (1 + packet[4] if control == 3 else 0)
+        if control in (1, 3) and packet[1] & 0x40 and offset < 183:
+            start = offset + 1 + packet[offset]
+            if start + 3 < 188 and packet[start] == 0x02:
+                length = ((packet[start + 1] & 15) << 8) | packet[start + 2]
+                section = packet[start:start + 3 + length]
+                assert len(section) == 3 + length and crc(section) == 0
+                updated = bytearray(section[:-4] + extra)
+                updated[1] = (updated[1] & 0xF0) | ((length + len(extra)) >> 8)
+                updated[2] = (length + len(extra)) & 255
+                updated += crc(updated).to_bytes(4, 'big')
+                assert crc(updated) == 0 and start + len(updated) <= 188
+                packet = packet[:start] + updated + b'\xff' * (188 - start - len(updated))
+                changed += 1
+        output.append(packet)
+        if changed == 1 and caption is not None:
+            output.append(caption)
+            caption = None
+    assert changed > 0 and caption is None
+    return b''.join(output)
+
+
+
 def verify_native_ts_probe(ffmpeg, assembly, base):
     """Local generated raw MPEG-TS, no provider or backend media request."""
     ffprobe = shutil.which("ffprobe")
@@ -166,6 +224,7 @@ def verify_native_ts_probe(ffmpeg, assembly, base):
         "-b:v", "380k", "-g", "25", "-c:a", "mp2", "-b:a", "128k",
         "-muxrate", "600k", "-f", "mpegts", "pipe:1",
     ], check=True, capture_output=True, timeout=30).stdout
+    raw = add_teletext_track(raw)
     assert 188 * 3 <= len(raw) <= 2 * 1024 * 1024 and len(raw) % 188 == 0
     route = "/vivoapk/" + secrets.token_hex(24) + "/stream.ts"
     stopped = threading.Event()

@@ -21,8 +21,10 @@ internal static class PrivateMediaProbe
 
     internal sealed record StreamInfo(int Index, bool Video, string Codec, int? Width, int? Height,
         float? FrameRate, int? Channels, int? SampleRate, int? Bitrate);
+    internal sealed record AncillaryStreamInfo(int Index, string Codec);
     internal sealed record Observation(string Container, long? DurationTicks,
-        int? Bitrate, IReadOnlyList<StreamInfo> Streams);
+        int? Bitrate, IReadOnlyList<StreamInfo> Streams,
+        IReadOnlyList<AncillaryStreamInfo>? AncillaryStreams = null);
 
     private static InvalidOperationException Unavailable()
         => new("Private media metadata unavailable");
@@ -193,6 +195,7 @@ internal static class PrivateMediaProbe
             throw Unavailable();
 
         var parsed = new List<StreamInfo>();
+        var ancillary = new List<AncillaryStreamInfo>();
         var indices = new HashSet<int>();
         foreach (var stream in streams.EnumerateArray())
         {
@@ -216,16 +219,22 @@ internal static class PrivateMediaProbe
                         IntValue(stream, "channels", 1, 16) ?? throw Unavailable(),
                         IntValue(stream, "sample_rate", 8000, 192000) ?? throw Unavailable(), bitrate));
                     break;
+                case "subtitle" when continuousTs && codec == "dvb_teletext":
+                    // Observed on an authorized live TS alongside HEVC/AAC.
+                    // Retain its typed identity separately. This private
+                    // pipeline advertises and maps only video and audio;
+                    // it does not promise teletext subtitle delivery.
+                    ancillary.Add(new AncillaryStreamInfo(index, codec));
+                    break;
                 default:
-                    // Additional formats/tracks need explicit validation,
-                    // not fabricated codec guesses or silently dropped tracks.
+                    // Every other extra track still needs explicit validation.
                     throw Unavailable();
             }
         }
         if (parsed.Count(s => s.Video) != 1 || !parsed.Any(s => !s.Video))
             throw Unavailable();
         return new Observation(finite ? "mp4" : "mpegts", duration,
-            IntValue(format, "bit_rate", 0, 500000000), parsed.OrderBy(s => s.Index).ToArray());
+            IntValue(format, "bit_rate", 0, 500000000), parsed.OrderBy(s => s.Index).ToArray(), ancillary.ToArray());
     }
 }
 

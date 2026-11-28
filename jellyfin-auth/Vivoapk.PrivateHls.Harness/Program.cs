@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using System.Text;
 using Jellyfin.Plugin.VivoapkMegaAuth;
 
 string checkpoint = "fixture configuration";
@@ -35,6 +36,37 @@ try
             }
             catch (InvalidOperationException) { }
         }
+        if (metadata.AncillaryStreams is not { Count: 1 }
+            || metadata.AncillaryStreams[0].Index != 2
+            || metadata.AncillaryStreams[0].Codec != "dvb_teletext")
+            throw new InvalidOperationException("Generated TS ancillary metadata lost");
+
+        // Codec combination observed on the authorized real source; all
+        // numeric values here are an explicit synthetic parser fixture.
+        const string typed = """
+            {"format":{"format_name":"mpegts"},"streams":[{"index":0,"codec_type":"video","codec_name":"hevc","width":1920,"height":1080,"avg_frame_rate":"25/1"},{"index":1,"codec_type":"audio","codec_name":"aac","channels":2,"sample_rate":"48000"},{"index":2,"codec_type":"subtitle","codec_name":"dvb_teletext"}]}
+            """;
+        var admitted = PrivateMediaProbe.Parse(Encoding.UTF8.GetBytes(typed), false, true);
+        if (admitted.Streams.Count != 2 || admitted.Streams.Single(s => s.Video).Codec != "hevc"
+            || admitted.Streams.Single(s => !s.Video).Codec != "aac"
+            || admitted.AncillaryStreams is not { Count: 1 })
+            throw new InvalidOperationException("Ancillary track was mapped as audio/video");
+        foreach (var invalid in new[] {
+            typed.Replace("dvb_teletext", "unvalidated_subtitle"),
+            typed.Replace("\"codec_type\":\"subtitle\"", "\"codec_type\":\"data\""),
+            typed.Replace("\"index\":2", "\"index\":1"),
+            typed.Replace("\"codec_type\":\"audio\",\"codec_name\":\"aac\"",
+                "\"codec_type\":\"subtitle\",\"codec_name\":\"dvb_teletext\""),
+        })
+        {
+            try
+            {
+                PrivateMediaProbe.Parse(Encoding.UTF8.GetBytes(invalid), false, true);
+                throw new Exception("Unknown, duplicate or audio-less metadata accepted");
+            }
+            catch (InvalidOperationException) { }
+        }
+        Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_NATIVE_TS_TELETEXT_AND_DENIAL=PASS");
         Console.WriteLine("VIVOAPK_PRIVATE_LOOPBACK_NATIVE_TS_PROBE=PASS");
         return 0;
     }
