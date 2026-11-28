@@ -35,6 +35,7 @@ from app.services.private_hls import PrivateHlsSession
 from app.services.private_ts import PrivateTsSession
 from app.services.private_file import MAX_FILE_BYTES, MAX_WINDOW_BYTES, PrivateFileSession
 from app.services.private_subscription_cache import private_mega_client
+from app.services.provider_live import ProviderLiveLocatorCache
 
 _NO_STORE = {"Cache-Control": "no-store"}
 _MAX_SESSIONS = 2
@@ -213,6 +214,7 @@ class PrivateHlsRegistry:
 def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
     registry = PrivateHlsRegistry(settings.session_ttl_seconds)
     app.state.private_hls_registry = registry
+    app.state.private_provider_live_locator_cache = ProviderLiveLocatorCache()
     app.state.private_hls_factory = lambda source: PrivateHlsSession(
         source, entitlement=lambda: EntitlementState.UNAVAILABLE,
         allow_authorized_http=settings.private_media_allow_authorized_http,
@@ -245,6 +247,7 @@ def install_private_hls_routes(app: FastAPI, settings: Settings) -> None:
             db, settings, mega_client_factory=lambda: private_mega_client(request.app),
             xtream_client_factory=request.app.state.xtream_client_factory,
             catalog_client_factory=request.app.state.catalog_client_factory,
+            provider_locator_cache=request.app.state.private_provider_live_locator_cache,
         )
 
     def entitlement(service: CatalogService, entry: _Entry):

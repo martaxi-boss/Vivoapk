@@ -122,3 +122,67 @@ def test_http_still_requires_existing_explicit_transport_policy(source):
     source = replace(source, origin="http://assigned.example.com")
     with pytest.raises(MediaReadError):
         lookup_provider_ts_source(source)
+
+
+
+def test_private_locator_cache_reuses_other_channel_metadata_not_authorization(source):
+    from app.services.provider_live import ProviderLiveLocatorCache
+    cache = ProviderLiveLocatorCache()
+    pool = Pool(Response(b"#EXTM3U\nhttps://assigned.example.com/owner/fixture-secret/101\n"
+                         b"https://assigned.example.com/owner/fixture-secret/102\n"))
+    kwargs = dict(resolver=lambda *_: ["93.184.216.34"], pool_factory=lambda _: pool,
+                  locator_cache=cache)
+    assert lookup_provider_ts_source(source, **kwargs)._request_url().endswith("/101")
+    second = replace(source, asset=MediaAsset(CatalogKind.LIVE, "10", "102"))
+    assert lookup_provider_ts_source(second, **kwargs)._request_url().endswith("/102")
+    assert len(pool.requests) == 1  # Only one provider-issued playlist fetch.
+    foreign = replace(second, username="foreign")
+    with pytest.raises(MediaReadError):
+        lookup_provider_ts_source(foreign, **kwargs)
+    assert len(pool.requests) == 2
+
+
+def test_private_locator_cache_expiry_has_no_stale_fallback_on_denial(source):
+    from app.services.provider_live import ProviderLiveLocatorCache
+    now = [0.0]
+    cache = ProviderLiveLocatorCache(ttl_seconds=5, clock=lambda: now[0])
+    pool = Pool(Response(b"#EXTM3U\nhttps://assigned.example.com/owner/fixture-secret/101\n"))
+    kwargs = dict(resolver=lambda *_: ["93.184.216.34"], pool_factory=lambda _: pool,
+                  locator_cache=cache)
+    lookup_provider_ts_source(source, **kwargs)
+    now[0] = 6
+    denied = Response(b"private denied body", status=403)
+    pool.response = denied
+    with pytest.raises(MediaReadError):
+        lookup_provider_ts_source(source, **kwargs)
+    assert denied.reads == 0 and len(pool.requests) == 2
+
+
+def test_cached_locator_still_rejects_foreign_origin_and_changed_credentials(source):
+    from app.services.provider_live import ProviderLiveLocatorCache
+    cache = ProviderLiveLocatorCache()
+    pool = Pool(Response(b"#EXTM3U\nhttps://assigned.example.com/owner/fixture-secret/101\n"
+                         b"https://foreign.example.com/owner/fixture-secret/102\n"))
+    kwargs = dict(resolver=lambda *_: ["93.184.216.34"], pool_factory=lambda _: pool,
+                  locator_cache=cache)
+    lookup_provider_ts_source(source, **kwargs)
+    other = replace(source, asset=MediaAsset(CatalogKind.LIVE, "10", "102"))
+    with pytest.raises(MediaReadError):
+        lookup_provider_ts_source(other, **kwargs)
+    changed = replace(source, password=SecretStr("changed-secret"))
+    with pytest.raises(MediaReadError):
+        lookup_provider_ts_source(changed, **kwargs)
+    assert len(pool.requests) == 2  # Foreign cached asset cannot open any media.
+
+
+def test_cached_locator_requires_explicit_http_policy_on_every_hit(source):
+    from app.services.provider_live import ProviderLiveLocatorCache
+    cache = ProviderLiveLocatorCache()
+    source = replace(source, origin="http://assigned.example.com")
+    pool = Pool(Response(b"#EXTM3U\nhttp://assigned.example.com/owner/fixture-secret/101\n"))
+    kwargs = dict(resolver=lambda *_: ["93.184.216.34"], pool_factory=lambda _: pool,
+                  locator_cache=cache)
+    lookup_provider_ts_source(source, allow_authorized_http=True, **kwargs)
+    with pytest.raises(MediaReadError):
+        lookup_provider_ts_source(source, **kwargs)
+    assert len(pool.requests) == 1

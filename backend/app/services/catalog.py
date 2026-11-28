@@ -32,7 +32,7 @@ from app.schemas import (
 )
 from app.services.media_origin import AuthorizedMediaOrigin, MediaAsset
 from app.services.provider_dns import ProviderDNSUnavailable, select_provider_dns
-from app.services.provider_live import lookup_provider_ts_source
+from app.services.provider_live import ProviderLiveLocatorCache, lookup_provider_ts_source
 
 _SUB = re.compile(r"^mapping:([1-9][0-9]{0,18})$")
 _LOG = logging.getLogger(__name__)
@@ -80,12 +80,14 @@ class CatalogService:
         mega_client_factory: Callable[[], MegaOTTClient],
         xtream_client_factory: Callable[[], XtreamClient],
         catalog_client_factory: Callable[[], XtreamCatalogClient],
+        provider_locator_cache: ProviderLiveLocatorCache | None = None,
     ) -> None:
         self._db = db
         self._settings = settings
         self._mega_client_factory = mega_client_factory
         self._xtream_client_factory = xtream_client_factory
         self._catalog_client_factory = catalog_client_factory
+        self._provider_locator_cache = provider_locator_cache
 
     def _authorize(
         self, *, token: str, platform: ClientPlatform, required_live_format: str | None = None,
@@ -210,6 +212,8 @@ class CatalogService:
                     and self._settings.private_live_use_provider_playlist):
                 return lookup_provider_ts_source(
                     source, allow_authorized_http=self._settings.private_media_allow_authorized_http,
+                    **({"locator_cache": self._provider_locator_cache}
+                       if self._provider_locator_cache is not None else {}),
                 )
             return source
         except ValueError:
